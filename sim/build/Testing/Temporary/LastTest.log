@@ -1,0 +1,57 @@
+Start testing: Mar 26 02:37 EDT
+----------------------------------------------------------
+1/3 Testing: test_decoder
+1/3 Test: test_decoder
+Command: "/Users/colinbaird/Projects/GPU/sim/build/tests/test_decoder"
+Directory: /Users/colinbaird/Projects/GPU/sim/build/tests
+"test_decoder" start time: Mar 26 02:37 EDT
+Output:
+----------------------------------------------------------
+===============================================================================
+All tests passed (109 assertions in 24 test cases)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"test_decoder" end time: Mar 26 02:37 EDT
+"test_decoder" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/3 Testing: test_alu
+2/3 Test: test_alu
+Command: "/Users/colinbaird/Projects/GPU/sim/build/tests/test_alu"
+Directory: /Users/colinbaird/Projects/GPU/sim/build/tests
+"test_alu" start time: Mar 26 02:37 EDT
+Output:
+----------------------------------------------------------
+===============================================================================
+All tests passed (60 assertions in 30 test cases)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"test_alu" end time: Mar 26 02:37 EDT
+"test_alu" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/3 Testing: test_functional
+3/3 Test: test_functional
+Command: "/Users/colinbaird/Projects/GPU/sim/build/tests/test_functional"
+Directory: /Users/colinbaird/Projects/GPU/sim/build/tests
+"test_functional" start time: Mar 26 02:37 EDT
+Output:
+----------------------------------------------------------
+===============================================================================
+All tests passed (436 assertions in 16 test cases)
+
+<end of output>
+Test time =  11.09 sec
+----------------------------------------------------------
+Test Passed.
+"test_functional" end time: Mar 26 02:38 EDT
+"test_functional" time elapsed: 00:00:11
+----------------------------------------------------------
+
+End testing: Mar 26 02:38 EDT

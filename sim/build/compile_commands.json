@@ -1,0 +1,164 @@
+[
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/config.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/config.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/decoder.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/decoder.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/elf_loader.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/elf_loader.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/elf_loader.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/elf_loader.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/stats.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/stats.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/functional/alu.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/functional/alu.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/functional/functional_model.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/functional/functional_model.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/fetch_stage.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/fetch_stage.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/decode_stage.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/decode_stage.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/warp_scheduler.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/warp_scheduler.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/operand_collector.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/operand_collector.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/alu_unit.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/alu_unit.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/multiply_unit.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/multiply_unit.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/divide_unit.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/divide_unit.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/tlookup_unit.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/tlookup_unit.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/ldst_unit.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/ldst_unit.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/writeback_arbiter.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/writeback_arbiter.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/mshr.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/mshr.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/cache.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/cache.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/coalescing_unit.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/coalescing_unit.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/memory_interface.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/memory_interface.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/panic_controller.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/panic_controller.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/timing_model.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/timing/timing_model.cpp",
+  "output": "CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/gpu_sim.dir/src/main.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/main.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/src/main.cpp",
+  "output": "CMakeFiles/gpu_sim.dir/src/main.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build/tests",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/tests/vendor -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/catch_main.dir/catch_main.cpp.o -c /Users/colinbaird/Projects/GPU/sim/tests/catch_main.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/tests/catch_main.cpp",
+  "output": "tests/CMakeFiles/catch_main.dir/catch_main.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build/tests",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/tests/vendor -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/test_decoder.dir/test_decoder.cpp.o -c /Users/colinbaird/Projects/GPU/sim/tests/test_decoder.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/tests/test_decoder.cpp",
+  "output": "tests/CMakeFiles/test_decoder.dir/test_decoder.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build/tests",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/tests/vendor -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/test_alu.dir/test_alu.cpp.o -c /Users/colinbaird/Projects/GPU/sim/tests/test_alu.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/tests/test_alu.cpp",
+  "output": "tests/CMakeFiles/test_alu.dir/test_alu.cpp.o"
+},
+{
+  "directory": "/Users/colinbaird/Projects/GPU/sim/build/tests",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/colinbaird/Projects/GPU/sim/tests/vendor -I/Users/colinbaird/Projects/GPU/sim/include -g -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk -o CMakeFiles/test_functional.dir/test_functional.cpp.o -c /Users/colinbaird/Projects/GPU/sim/tests/test_functional.cpp",
+  "file": "/Users/colinbaird/Projects/GPU/sim/tests/test_functional.cpp",
+  "output": "tests/CMakeFiles/test_functional.dir/test_functional.cpp.o"
+}
+]

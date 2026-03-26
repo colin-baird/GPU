@@ -1,0 +1,4 @@
+test_decoder 1 0.00677646
+test_alu 1 0.00651
+test_functional 1 11.0876
+---

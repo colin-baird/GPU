@@ -1,0 +1,22 @@
+#pragma once
+
+#include "gpu_sim/types.h"
+#include "gpu_sim/timing/instruction_buffer.h"
+
+namespace gpu_sim {
+
+struct WarpState {
+    uint32_t pc = 0;
+    bool active = false;
+    InstructionBuffer instr_buffer;
+
+    explicit WarpState(uint32_t buffer_depth = 2) : instr_buffer(buffer_depth) {}
+
+    void reset(uint32_t start_pc) {
+        pc = start_pc;
+        active = true;
+        instr_buffer.reset();
+    }
+};
+
+} // namespace gpu_sim

@@ -20,6 +20,7 @@ A single streaming multiprocessor (SM) executing SIMT warps of 32 threads, using
 ### 2.1 Base ISA
 
 - **RISC-V RV32IM** (32-bit integer base + multiply/divide extension)
+- **Divide-by-zero** follows standard RV32M behavior: `DIV` by zero returns `−1`, `REM` by zero returns the dividend. No exception or panic is triggered. Software that needs to trap on zero divisors should check explicitly before dividing.
 
 ### 2.2 Custom Extension: Packed INT8 Dot-Product Accumulate
 
@@ -148,6 +149,7 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 **Decode stage:**
 - Takes the raw instruction word from the fetch stage output register and decodes it (opcode, register indices, immediate, functional unit target, operand count).
 - The decoded instruction is placed into the **per-warp instruction buffer** of the warp it belongs to.
+- **Panic detection:** if the decoded instruction is EBREAK, the decode stage triggers the panic sequence (§4.8) instead of placing the instruction into the buffer.
 
 **Per-warp instruction buffer:**
 - **Depth:** Parameterizable (default: 2 entries). Implemented as a small FIFO per warp.
@@ -205,7 +207,7 @@ All units use a **valid-in / valid-out interface**. Warp tag and destination reg
 |-----------------|-----------------------------------------------------------------|-----------------------------|
 | ALU             | Add, subtract, shift, bitwise logic                             | 1 cycle                     |
 | Multiply/VDOT8  | Pipelined; accepts new op every cycle; VDOT8 uses same DSP slices with packed INT8 routing | Parameterizable (`STAGES`)  |
-| Divide          | Iterative (radix-2); busy until complete                        | ~32 cycles for 32-bit       |
+| Divide          | Iterative (radix-2); busy until complete; follows stock RV32M div-by-zero behavior (DIV/0 → −1, REM/0 → dividend) | ~32 cycles for 32-bit       |
 | LD/ST           | Address generation only; decoupled from cache via FIFO          | Variable (see §5)           |
 | TLOOKUP         | Dedicated BRAM read; bypasses data cache                        | 2 cycles per thread lane    |
 
@@ -225,6 +227,61 @@ All units use a **valid-in / valid-out interface**. Warp tag and destination reg
 **Scoreboard interaction:** The scoreboard clears the pending flag for the destination register when the arbiter selects a unit and the write commits. Not when the unit's buffer becomes valid — only when the write actually happens. This ensures no reader sees stale data.
 
 **No forwarding:** There is no bypass path from writeback to the operand collector. The scoreboard prevents a warp from issuing an instruction that reads a pending register. Once the write commits and the scoreboard clears, the warp becomes eligible on the next scheduler scan. There is a minimum 1-cycle gap between a write committing and the dependent warp reading the result (scoreboard clear → next scheduler cycle → operand collect reads committed value). This gap is acceptable; warp-switching hides it.
+
+### 4.8 Panic Mechanism
+
+EBREAK is a **panic instruction** that immediately halts the entire SM and captures diagnostic state for host inspection. Unlike ECALL (which marks only the executing warp inactive), EBREAK is a fatal, whole-SM halt.
+
+#### 4.8.1 Panic Sequence
+
+When the decode stage identifies an EBREAK instruction, the SM performs the following sequence atomically from the perspective of the host:
+
+1. **Assert panic-pending.** The warp scheduler is immediately inhibited — no new instructions are issued to any warp.
+2. **Read cause register.** The operand collector is commandeered for a single-cycle read of `r31` (lane 0) from the panicking warp's register file bank. Register `r31` holds the software-defined cause code (see §4.8.3).
+3. **Latch diagnostics.** The panic diagnostic registers (§6.1) are written:
+   - `PANIC_WARP` ← warp ID of the panicking warp
+   - `PANIC_LANE` ← 0 (EBREAK is detected at decode, before per-lane execution; since all threads in a SIMT warp execute the same instruction, lane 0 is reported)
+   - `PANIC_PC` ← program counter of the EBREAK instruction
+   - `PANIC_CAUSE` ← value read from `r31`
+4. **Assert global panic wire.** The single-bit `panic` signal propagates to the SM top-level controller.
+5. **Drain in-flight instructions.** Instructions already dispatched to execution units are allowed to complete and write back. Their results are architecturally irrelevant (the SM is halting), but allowing drain avoids the complexity of mid-pipeline squash logic.
+6. **Mark all warps inactive.** After drain completes, all warps (not just the panicking warp) are marked inactive.
+7. **Signal host.** `STATUS.PANIC` (bit 2) and `STATUS.DONE` (bit 1) are both set. The SM is now idle.
+
+**Timing:** Steps 1–4 take 2 cycles (1 cycle for decode + panic-pending assertion, 1 cycle for r31 read + latch + panic assertion). Step 5 takes a variable number of cycles (bounded by the longest pipeline depth, ~32 cycles for divide). Steps 6–7 occur once drain is complete. The host sees `STATUS.DONE` and `STATUS.PANIC` set simultaneously.
+
+**Priority:** If two warps execute EBREAK in the same cycle (possible if two decoded EBREAKs arrive at the scheduler simultaneously), the **lowest-numbered warp** wins the diagnostic latch. This is an arbitrary but deterministic tie-breaking rule implemented by a fixed-priority mux on the panic latch inputs.
+
+#### 4.8.2 Panic Signal Microarchitecture
+
+A single-bit global `panic` wire connects all potential panic sources to the SM top-level controller. In Phase 1, the only source is EBREAK at the decode stage; the wire is designed for extensibility.
+
+| Source   | Detection point | Signals provided to panic latch                                                    |
+|----------|-----------------|-------------------------------------------------------------------------------------|
+| EBREAK   | Decode stage    | warp_id, lane_id (hardwired 0), PC, r31 value (read from register file)            |
+
+**Extensibility:** Future hardware panic sources (e.g., illegal instruction detection, MSHR timeout watchdogs) connect to the same global `panic` wire with their own cause codes in the reserved 0x01–0xFF range. Adding a new source requires only a new input to the priority mux and a defined cause code — no changes to the panic sequencing logic.
+
+#### 4.8.3 Panic Cause Codes
+
+Cause codes occupy the full 32-bit `PANIC_CAUSE` register. Values 0x0000_0000 through 0x0000_00FF are reserved for hardware-defined causes (none in Phase 1; reserved for future use). Values 0x0000_0100 and above are available for software use.
+
+| Code                       | Source   | Meaning                                               |
+|----------------------------|----------|-------------------------------------------------------|
+| 0x0000_0000                | Software | Generic / unspecified panic (software did not set r31) |
+| 0x0000_0001–0x0000_00FF    | —        | Reserved for future hardware-defined causes            |
+| ≥ 0x0000_0100              | Software | Application-defined                                   |
+
+To trigger a panic with a meaningful cause code, software writes the cause value to register `r31` before executing EBREAK:
+
+```
+LI   r31, 0x100     # application-defined cause: e.g., "assertion failed"
+EBREAK               # panic — SM halts, PANIC_CAUSE latched from r31
+```
+
+If software does not write `r31` before EBREAK, `PANIC_CAUSE` will contain whatever value `r31` held at the time (which is 0 if registers were not otherwise modified since launch, per §6.3).
+
+**Register `r31` convention:** `r31` (aliased `t6` in the standard RISC-V ABI) is designated as the panic cause register by software convention only. The hardware reads `r31` of the panicking thread's lane unconditionally on any EBREAK — no ISA encoding change is needed.
 
 ---
 
@@ -357,14 +414,18 @@ The SM is controlled by an external host CPU (soft-core on FPGA or external proc
 
 | Offset | Name              | R/W | Description                                                       |
 |--------|-------------------|-----|-------------------------------------------------------------------|
-| 0x00   | `CTRL`            | R/W | Bit 0: START (write 1 to launch). Bit 1: RESET (write 1 to reset SM). |
-| 0x04   | `STATUS`          | R   | Bit 0: BUSY (1 while kernel is running). Bit 1: DONE (1 when all warps inactive). |
+| 0x00   | `CTRL`            | R/W | Bit 0: START (write 1 to launch). Bit 1: RESET (write 1 to reset SM, including all panic state). |
+| 0x04   | `STATUS`          | R   | Bit 0: BUSY (1 while kernel is running). Bit 1: DONE (1 when all warps inactive). Bit 2: PANIC (1 if SM halted due to a panic; when set, DONE is always also set). |
 | 0x08   | `NUM_WARPS`       | R/W | Number of active warps (1–N, where N is the parameterized max).   |
 | 0x0C   | `START_PC`        | R/W | Starting program counter for all warps.                           |
 | 0x10   | `DMA_SRC_ADDR`    | R/W | External memory source address for DMA transfer.                  |
 | 0x14   | `DMA_LENGTH`      | R/W | Number of bytes to DMA.                                           |
 | 0x18   | `DMA_CTRL`        | R/W | Bit 0: DMA_START. Bit 1: DMA_BUSY (read-only). Bit 2: DMA_DONE (read-only). Bits 4–5: DMA_TARGET (00 = instruction BRAM, 01 = lookup table BRAM). |
 | 0x20–0x2C | `ARG0`–`ARG3` | R/W | Kernel argument values. Preloaded into registers r1–r4 of every warp's every thread before launch. |
+| 0x30   | `PANIC_WARP`      | R   | Warp ID of the panicking warp (0 to NUM_WARPS−1). Undefined when `STATUS.PANIC` is not set. |
+| 0x34   | `PANIC_LANE`      | R   | Lane ID of the panicking thread (0–31). Undefined when `STATUS.PANIC` is not set. |
+| 0x38   | `PANIC_PC`        | R   | Program counter of the instruction that triggered the panic. Undefined when `STATUS.PANIC` is not set. |
+| 0x3C   | `PANIC_CAUSE`     | R   | Cause code: software-defined via r31, or hardware-defined (see §4.8.3). Undefined when `STATUS.PANIC` is not set. |
 
 ### 6.2 Kernel Launch Sequence
 
@@ -374,7 +435,9 @@ The host follows this sequence to launch a kernel:
 2. **Load lookup tables:** Write `DMA_SRC_ADDR`, `DMA_LENGTH`, and set `DMA_TARGET = 01` (lookup table BRAM) in `DMA_CTRL`. Set `DMA_START`. Poll `DMA_DONE` until complete.
 3. **Configure kernel:** Write `NUM_WARPS`, `START_PC`, and `ARG0`–`ARG3`.
 4. **Launch:** Write 1 to `CTRL.START`. The SM initializes all active warps (sets PCs, preloads argument registers, clears scoreboards) and begins fetch/decode/execute.
-5. **Wait for completion:** Poll `STATUS.DONE`. When set, all warps have executed `ECALL` and the SM is idle.
+5. **Wait for completion:** Poll `STATUS`. When `DONE` is set:
+   - If `PANIC` is clear: normal completion. Proceed to step 6.
+   - If `PANIC` is set: kernel panicked. Read `PANIC_WARP`, `PANIC_LANE`, `PANIC_PC`, and `PANIC_CAUSE` for diagnostics. Handle error (log, reset SM via `CTRL.RESET`, retry, etc.).
 6. **Read results:** Results are in external memory (written by store instructions during execution). The host reads them via the normal memory interface.
 
 ### 6.3 Kernel Arguments
@@ -396,14 +459,26 @@ Threads discover their position via **read-only CSRs** using the standard RISC-V
 
 A thread computes its global thread ID as: `global_id = warp_id × 32 + lane_id`.
 
-### 6.5 Warp Completion
+### 6.5 Warp Completion and Panic
 
-- A warp signals completion by executing the **ECALL** instruction (standard RV32I, opcode `1110011`).
-- On ECALL, the hardware marks the warp as **inactive**. An inactive warp is excluded from fetch round-robin and warp scheduler eligibility.
-- When **all active warps** are inactive, the SM sets `STATUS.DONE` and halts.
-- ECALL is the only supported environment call. EBREAK is treated identically to ECALL for Phase 1 (marks warp inactive). No trap handler or exception vector.
+- A warp signals **normal completion** by executing the **ECALL** instruction (standard RV32I, opcode `1110011`). On ECALL, the hardware marks the warp as **inactive**. An inactive warp is excluded from fetch round-robin and warp scheduler eligibility. When **all active warps** are inactive, the SM sets `STATUS.DONE` and halts.
+- A warp signals a **panic** by executing the **EBREAK** instruction (standard RV32I, opcode `1110011`). On EBREAK, the hardware halts the **entire SM** — all warps, not just the executing warp — and latches diagnostic state into the panic registers (§6.1). See §4.8 for the full panic sequence. When a panic occurs, `STATUS.DONE` and `STATUS.PANIC` are both set.
+- ECALL and EBREAK are the only supported environment calls. No trap handler or exception vector.
 
-### 6.6 DMA Engine
+### 6.6 Reset Behavior
+
+Writing 1 to `CTRL.RESET` resets the entire SM to its initial state:
+
+- All warps are marked inactive; PCs, instruction buffers, and scoreboards are cleared.
+- `STATUS` is zeroed (BUSY, DONE, PANIC all cleared).
+- `PANIC_WARP`, `PANIC_LANE`, `PANIC_PC`, `PANIC_CAUSE` are zeroed.
+- Pipeline state (operand collector, dispatch controllers, writeback buffers) is flushed.
+- The L1 cache, MSHRs, and write buffer are invalidated/cleared.
+- Instruction BRAM and lookup table BRAM contents are **not** cleared (they persist across resets; the host reloads them only if the program or tables change).
+
+The SM is ready for a new kernel launch after reset completes.
+
+### 6.7 DMA Engine
 
 A simple DMA engine transfers data from external memory into on-chip BRAMs (instruction BRAM or lookup table BRAM) before kernel launch. It is controlled by the host via the DMA CSRs (§6.1).
 
@@ -451,6 +526,7 @@ A simple DMA engine transfers data from external memory into on-chip BRAMs (inst
 - **Issue-time check covers all source operands:** for 2-operand instructions, rs1 and rs2 must not be pending. For 3-operand instructions (`VDOT8`), rs1, rs2, and rd must all not be pending. A warp is ineligible if any required source register is pending.
 - **Load destinations:** marked pending on load issue; cleared when the MSHR fill completes and data is written to the register file via the writeback arbiter.
 - **Minimum read-after-write latency:** 1 cycle after scoreboard clear (write commits → scoreboard clears → next scheduler cycle the warp becomes eligible → operand collect reads committed value). Warp-switching hides this gap.
+- **Panic interaction:** when a panic is triggered, the scoreboard state is abandoned (not explicitly cleared). The `CTRL.RESET` path handles full cleanup before the next kernel launch.
 
 ---
 
@@ -488,6 +564,7 @@ The following features are explicitly deferred:
 | Special function units (SFU)     | Replaced by lookup tables                                            |
 | Divergence handling / reconvergence stack | Adds significant control complexity                         |
 | Multiple SMs / inter-SM fabric   | Single SM first; multi-SM is a scaling exercise                       |
+| Hardware-triggered panic sources | Phase 1 panic is software-only (EBREAK); cause codes 0x01–0xFF reserved for future hardware faults (e.g., illegal instruction, watchdog timeout) |
 
 ---
 
@@ -498,6 +575,7 @@ The following features are explicitly deferred:
 3. **Uniform execution unit interfaces.** Valid-in / valid-out with warp tags. The scheduler is agnostic to pipeline depths.
 4. **Hide latency via warp switching.** Multiple resident warps cover memory, multiply, and divide latency.
 5. **FPGA-friendly structures.** DSP slices for multiply, BRAMs for storage, avoid associative matching and multi-ported structures.
+6. **Fail loud.** EBREAK panics the entire SM with full diagnostic capture. No silent failure modes — software bugs produce actionable halt state rather than corrupt output.
 
 ---
 
@@ -511,8 +589,8 @@ All architectural questions have been resolved. This appendix records the resolu
 - ~~Instruction memory architecture~~ → Resolved: preloaded BRAM, no cache (§4.1).
 - ~~External memory interface~~ → Resolved: Avalon-MM behind modular wrapper (§5.6).
 - ~~Thread block / kernel launch~~ → Resolved: CSR-based host interface with DMA program loading (§6).
-- ~~Program loading interface~~ → Resolved: DMA from external memory (§6.1, §6.2, §6.6).
-- ~~Interrupt and exception handling~~ → Resolved: no exceptions; ECALL marks warp inactive, host polls STATUS.DONE (§6.5).
+- ~~Program loading interface~~ → Resolved: DMA from external memory (§6.1, §6.2, §6.7).
+- ~~Interrupt and exception handling~~ → Resolved: no exceptions; ECALL marks warp inactive, EBREAK triggers whole-SM panic with diagnostic capture, host polls STATUS.DONE and STATUS.PANIC (§6.5).
 - ~~Coalescing granularity~~ → Resolved: all-or-nothing for Phase 1; proper cache-line grouping deferred to Phase 2 (§5.2).
 - ~~MSHR design details~~ → Resolved: parameterizable count (default 4), stall on exhaustion, no duplicate detection/merging, separate fill paths for load and store misses (§5.3.1).
 - ~~Writeback arbiter policy~~ → Resolved: round-robin among units with valid output; single-cycle parallel write to all 32 banks (§4.7).
@@ -521,5 +599,6 @@ All architectural questions have been resolved. This appendix records the resolu
 - ~~VDOT8 overflow behavior~~ → Resolved: wrapping (2's complement), consistent with RV32I convention; software manages range (§2.2).
 - ~~VDOT8 encoding details~~ → Resolved: R-type in custom-0, funct7=0000000, funct3=000 (§2.2).
 - ~~DSP slice packing for VDOT8~~ → Moved to FPGA Implementation Notes (physical mapping detail, not architecture).
-- ~~DMA engine details~~ → Resolved: simple state machine, 32-byte fixed bursts, no FIFO, exclusive memory access before kernel launch (§6.6).
+- ~~DMA engine details~~ → Resolved: simple state machine, 32-byte fixed bursts, no FIFO, exclusive memory access before kernel launch (§6.7).
 - ~~Read-after-write across cache misses~~ → Resolved: changed to write-allocate policy; store misses fetch the line via MSHR, update L1, then write through. RAW hazard eliminated (§5.3, §5.4).
+- ~~EBREAK / panic behavior~~ → Resolved: EBREAK triggers whole-SM panic with diagnostic latch (warp, lane, PC, cause). Software convention: r31 holds cause code. Divide-by-zero follows stock RV32M (no panic). Panic wire extensible for future hardware sources (§4.8).
