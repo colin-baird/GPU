@@ -204,6 +204,145 @@ test_functional/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_functional.dir/build.make tests/CMakeFiles/test_functional.dir/build
 .PHONY : test_functional/fast
 
+#=============================================================================
+# Target rules for targets named test_scoreboard
+
+# Build rule for target.
+test_scoreboard: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_scoreboard
+.PHONY : test_scoreboard
+
+# fast build rule for target.
+test_scoreboard/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scoreboard.dir/build.make tests/CMakeFiles/test_scoreboard.dir/build
+.PHONY : test_scoreboard/fast
+
+#=============================================================================
+# Target rules for targets named test_cache
+
+# Build rule for target.
+test_cache: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_cache
+.PHONY : test_cache
+
+# fast build rule for target.
+test_cache/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cache.dir/build.make tests/CMakeFiles/test_cache.dir/build
+.PHONY : test_cache/fast
+
+#=============================================================================
+# Target rules for targets named test_coalescing
+
+# Build rule for target.
+test_coalescing: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_coalescing
+.PHONY : test_coalescing
+
+# fast build rule for target.
+test_coalescing/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_coalescing.dir/build.make tests/CMakeFiles/test_coalescing.dir/build
+.PHONY : test_coalescing/fast
+
+#=============================================================================
+# Target rules for targets named test_warp_scheduler
+
+# Build rule for target.
+test_warp_scheduler: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_warp_scheduler
+.PHONY : test_warp_scheduler
+
+# fast build rule for target.
+test_warp_scheduler/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_warp_scheduler.dir/build.make tests/CMakeFiles/test_warp_scheduler.dir/build
+.PHONY : test_warp_scheduler/fast
+
+#=============================================================================
+# Target rules for targets named test_branch
+
+# Build rule for target.
+test_branch: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_branch
+.PHONY : test_branch
+
+# fast build rule for target.
+test_branch/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_branch.dir/build.make tests/CMakeFiles/test_branch.dir/build
+.PHONY : test_branch/fast
+
+#=============================================================================
+# Target rules for targets named test_panic
+
+# Build rule for target.
+test_panic: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_panic
+.PHONY : test_panic
+
+# fast build rule for target.
+test_panic/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_panic.dir/build.make tests/CMakeFiles/test_panic.dir/build
+.PHONY : test_panic/fast
+
+#=============================================================================
+# Target rules for targets named test_integration
+
+# Build rule for target.
+test_integration: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_integration
+.PHONY : test_integration
+
+# fast build rule for target.
+test_integration/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_integration.dir/build.make tests/CMakeFiles/test_integration.dir/build
+.PHONY : test_integration/fast
+
+src/backend.o: src/backend.cpp.o
+.PHONY : src/backend.o
+
+# target to build an object file
+src/backend.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/gpu_sim_lib.dir/build.make CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o
+.PHONY : src/backend.cpp.o
+
+src/backend.i: src/backend.cpp.i
+.PHONY : src/backend.i
+
+# target to preprocess a source file
+src/backend.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/gpu_sim_lib.dir/build.make CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.i
+.PHONY : src/backend.cpp.i
+
+src/backend.s: src/backend.cpp.s
+.PHONY : src/backend.s
+
+# target to generate assembly for a file
+src/backend.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/gpu_sim_lib.dir/build.make CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.s
+.PHONY : src/backend.cpp.s
+
+src/backends/perf_sim_backend.o: src/backends/perf_sim_backend.cpp.o
+.PHONY : src/backends/perf_sim_backend.o
+
+# target to build an object file
+src/backends/perf_sim_backend.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/gpu_sim_lib.dir/build.make CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o
+.PHONY : src/backends/perf_sim_backend.cpp.o
+
+src/backends/perf_sim_backend.i: src/backends/perf_sim_backend.cpp.i
+.PHONY : src/backends/perf_sim_backend.i
+
+# target to preprocess a source file
+src/backends/perf_sim_backend.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/gpu_sim_lib.dir/build.make CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.i
+.PHONY : src/backends/perf_sim_backend.cpp.i
+
+src/backends/perf_sim_backend.s: src/backends/perf_sim_backend.cpp.s
+.PHONY : src/backends/perf_sim_backend.s
+
+# target to generate assembly for a file
+src/backends/perf_sim_backend.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/gpu_sim_lib.dir/build.make CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.s
+.PHONY : src/backends/perf_sim_backend.cpp.s
+
 src/config.o: src/config.cpp.o
 .PHONY : src/config.o
 
@@ -769,8 +908,21 @@ help:
 	@echo "... gpu_sim"
 	@echo "... gpu_sim_lib"
 	@echo "... test_alu"
+	@echo "... test_branch"
+	@echo "... test_cache"
+	@echo "... test_coalescing"
 	@echo "... test_decoder"
 	@echo "... test_functional"
+	@echo "... test_integration"
+	@echo "... test_panic"
+	@echo "... test_scoreboard"
+	@echo "... test_warp_scheduler"
+	@echo "... src/backend.o"
+	@echo "... src/backend.i"
+	@echo "... src/backend.s"
+	@echo "... src/backends/perf_sim_backend.o"
+	@echo "... src/backends/perf_sim_backend.i"
+	@echo "... src/backends/perf_sim_backend.s"
 	@echo "... src/config.o"
 	@echo "... src/config.i"
 	@echo "... src/config.s"

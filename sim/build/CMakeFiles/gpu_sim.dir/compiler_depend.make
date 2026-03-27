@@ -796,14 +796,58 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stddef.h \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/stdint.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/config.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/decoder.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/elf_loader.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/functional/functional_model.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/functional/memory.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/functional/register_file.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/stats.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/alu_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/cache.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/coalescing_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/decode_stage.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/divide_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/execution_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/fetch_stage.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/instruction_buffer.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/ldst_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/memory_interface.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/mshr.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/multiply_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/operand_collector.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/panic_controller.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/pipeline_stage.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/scoreboard.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/timing_model.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/tlookup_unit.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/warp_scheduler.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/warp_state.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/writeback_arbiter.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/trace_event.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/types.h
 
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/warp_state.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/warp_scheduler.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/timing_model.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/pipeline_stage.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/operand_collector.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/mshr.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/ldst_unit.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/execution_unit.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/divide_unit.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/cache.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/alu_unit.h:
 
 /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/stats.h:
 
@@ -945,6 +989,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/sys/_types/_ino64_t.h:
 
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/writeback_arbiter.h:
+
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/sys/_types/_in_port_t.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/sys/_types/_id_t.h:
@@ -1018,6 +1064,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/pthread/qos.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/pthread/pthread_impl.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/decode_stage.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/math.h:
 
@@ -1155,6 +1203,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 
 /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include/__stdarg___gnuc_va_list.h:
 
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/scoreboard.h:
+
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__type_traits/is_pod.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__utility/no_destroy.h:
@@ -1170,6 +1220,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__type_traits/is_destructible.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/print:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/decoder.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__utility/forward_like.h:
 
@@ -1296,6 +1348,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__type_traits/is_constant_evaluated.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/sys/_pthread/_pthread_mutexattr_t.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/coalescing_unit.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__type_traits/is_const.h:
 
@@ -1851,6 +1905,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/mach/arm/_structs.h:
 
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/fetch_stage.h:
+
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__utility/declval.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__configuration/language.h:
@@ -1942,6 +1998,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__memory/compressed_pair.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/queue:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/multiply_unit.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__thread/support.h:
 
@@ -2055,9 +2113,13 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__algorithm/ranges_copy.h:
 
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/tlookup_unit.h:
+
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__type_traits/void_t.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__functional/mem_fun_ref.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/instruction_buffer.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/AvailabilityInternalLegacy.h:
 
@@ -2215,6 +2277,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__algorithm/is_sorted_until.h:
 
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/panic_controller.h:
+
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__type_traits/conjunction.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__iterator/size.h:
@@ -2286,6 +2350,8 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/ma
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__algorithm/copy_n.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__fwd/queue.h:
+
+/Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/memory_interface.h:
 
 /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/_stdlib.h:
 

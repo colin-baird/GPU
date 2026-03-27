@@ -1,4 +1,11 @@
-test_decoder 1 0.00677646
-test_alu 1 0.00651
-test_functional 1 11.0876
+test_decoder 2 0.106005
+test_alu 2 0.140299
+test_functional 2 5.61838
+test_scoreboard 1 0.230242
+test_cache 1 0.177584
+test_coalescing 1 0.186378
+test_warp_scheduler 1 11.0326
+test_branch 1 3.63244
+test_panic 1 3.07187
+test_integration 1 28.454
 ---

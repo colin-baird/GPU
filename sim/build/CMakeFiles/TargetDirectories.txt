@@ -7,6 +7,13 @@
 /Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_decoder.dir
 /Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_alu.dir
 /Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_functional.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_scoreboard.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_cache.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_coalescing.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_warp_scheduler.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_branch.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_panic.dir
+/Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test_integration.dir
 /Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/test.dir
 /Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/edit_cache.dir
 /Users/colinbaird/Projects/GPU/sim/build/tests/CMakeFiles/rebuild_cache.dir

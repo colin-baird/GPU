@@ -182,6 +182,104 @@ test_functional/fast:
 	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_functional.dir/build.make tests/CMakeFiles/test_functional.dir/build
 .PHONY : test_functional/fast
 
+# Convenience name for target.
+tests/CMakeFiles/test_scoreboard.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_scoreboard.dir/rule
+.PHONY : tests/CMakeFiles/test_scoreboard.dir/rule
+
+# Convenience name for target.
+test_scoreboard: tests/CMakeFiles/test_scoreboard.dir/rule
+.PHONY : test_scoreboard
+
+# fast build rule for target.
+test_scoreboard/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scoreboard.dir/build.make tests/CMakeFiles/test_scoreboard.dir/build
+.PHONY : test_scoreboard/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_cache.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_cache.dir/rule
+.PHONY : tests/CMakeFiles/test_cache.dir/rule
+
+# Convenience name for target.
+test_cache: tests/CMakeFiles/test_cache.dir/rule
+.PHONY : test_cache
+
+# fast build rule for target.
+test_cache/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cache.dir/build.make tests/CMakeFiles/test_cache.dir/build
+.PHONY : test_cache/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_coalescing.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_coalescing.dir/rule
+.PHONY : tests/CMakeFiles/test_coalescing.dir/rule
+
+# Convenience name for target.
+test_coalescing: tests/CMakeFiles/test_coalescing.dir/rule
+.PHONY : test_coalescing
+
+# fast build rule for target.
+test_coalescing/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_coalescing.dir/build.make tests/CMakeFiles/test_coalescing.dir/build
+.PHONY : test_coalescing/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_warp_scheduler.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_warp_scheduler.dir/rule
+.PHONY : tests/CMakeFiles/test_warp_scheduler.dir/rule
+
+# Convenience name for target.
+test_warp_scheduler: tests/CMakeFiles/test_warp_scheduler.dir/rule
+.PHONY : test_warp_scheduler
+
+# fast build rule for target.
+test_warp_scheduler/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_warp_scheduler.dir/build.make tests/CMakeFiles/test_warp_scheduler.dir/build
+.PHONY : test_warp_scheduler/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_branch.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_branch.dir/rule
+.PHONY : tests/CMakeFiles/test_branch.dir/rule
+
+# Convenience name for target.
+test_branch: tests/CMakeFiles/test_branch.dir/rule
+.PHONY : test_branch
+
+# fast build rule for target.
+test_branch/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_branch.dir/build.make tests/CMakeFiles/test_branch.dir/build
+.PHONY : test_branch/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_panic.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_panic.dir/rule
+.PHONY : tests/CMakeFiles/test_panic.dir/rule
+
+# Convenience name for target.
+test_panic: tests/CMakeFiles/test_panic.dir/rule
+.PHONY : test_panic
+
+# fast build rule for target.
+test_panic/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_panic.dir/build.make tests/CMakeFiles/test_panic.dir/build
+.PHONY : test_panic/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_integration.dir/rule:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_integration.dir/rule
+.PHONY : tests/CMakeFiles/test_integration.dir/rule
+
+# Convenience name for target.
+test_integration: tests/CMakeFiles/test_integration.dir/rule
+.PHONY : test_integration
+
+# fast build rule for target.
+test_integration/fast:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_integration.dir/build.make tests/CMakeFiles/test_integration.dir/build
+.PHONY : test_integration/fast
+
 catch_main.o: catch_main.cpp.o
 .PHONY : catch_main.o
 
@@ -229,6 +327,78 @@ test_alu.s: test_alu.cpp.s
 test_alu.cpp.s:
 	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_alu.dir/build.make tests/CMakeFiles/test_alu.dir/test_alu.cpp.s
 .PHONY : test_alu.cpp.s
+
+test_branch.o: test_branch.cpp.o
+.PHONY : test_branch.o
+
+# target to build an object file
+test_branch.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_branch.dir/build.make tests/CMakeFiles/test_branch.dir/test_branch.cpp.o
+.PHONY : test_branch.cpp.o
+
+test_branch.i: test_branch.cpp.i
+.PHONY : test_branch.i
+
+# target to preprocess a source file
+test_branch.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_branch.dir/build.make tests/CMakeFiles/test_branch.dir/test_branch.cpp.i
+.PHONY : test_branch.cpp.i
+
+test_branch.s: test_branch.cpp.s
+.PHONY : test_branch.s
+
+# target to generate assembly for a file
+test_branch.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_branch.dir/build.make tests/CMakeFiles/test_branch.dir/test_branch.cpp.s
+.PHONY : test_branch.cpp.s
+
+test_cache.o: test_cache.cpp.o
+.PHONY : test_cache.o
+
+# target to build an object file
+test_cache.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cache.dir/build.make tests/CMakeFiles/test_cache.dir/test_cache.cpp.o
+.PHONY : test_cache.cpp.o
+
+test_cache.i: test_cache.cpp.i
+.PHONY : test_cache.i
+
+# target to preprocess a source file
+test_cache.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cache.dir/build.make tests/CMakeFiles/test_cache.dir/test_cache.cpp.i
+.PHONY : test_cache.cpp.i
+
+test_cache.s: test_cache.cpp.s
+.PHONY : test_cache.s
+
+# target to generate assembly for a file
+test_cache.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cache.dir/build.make tests/CMakeFiles/test_cache.dir/test_cache.cpp.s
+.PHONY : test_cache.cpp.s
+
+test_coalescing.o: test_coalescing.cpp.o
+.PHONY : test_coalescing.o
+
+# target to build an object file
+test_coalescing.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_coalescing.dir/build.make tests/CMakeFiles/test_coalescing.dir/test_coalescing.cpp.o
+.PHONY : test_coalescing.cpp.o
+
+test_coalescing.i: test_coalescing.cpp.i
+.PHONY : test_coalescing.i
+
+# target to preprocess a source file
+test_coalescing.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_coalescing.dir/build.make tests/CMakeFiles/test_coalescing.dir/test_coalescing.cpp.i
+.PHONY : test_coalescing.cpp.i
+
+test_coalescing.s: test_coalescing.cpp.s
+.PHONY : test_coalescing.s
+
+# target to generate assembly for a file
+test_coalescing.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_coalescing.dir/build.make tests/CMakeFiles/test_coalescing.dir/test_coalescing.cpp.s
+.PHONY : test_coalescing.cpp.s
 
 test_decoder.o: test_decoder.cpp.o
 .PHONY : test_decoder.o
@@ -278,6 +448,102 @@ test_functional.cpp.s:
 	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_functional.dir/build.make tests/CMakeFiles/test_functional.dir/test_functional.cpp.s
 .PHONY : test_functional.cpp.s
 
+test_integration.o: test_integration.cpp.o
+.PHONY : test_integration.o
+
+# target to build an object file
+test_integration.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_integration.dir/build.make tests/CMakeFiles/test_integration.dir/test_integration.cpp.o
+.PHONY : test_integration.cpp.o
+
+test_integration.i: test_integration.cpp.i
+.PHONY : test_integration.i
+
+# target to preprocess a source file
+test_integration.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_integration.dir/build.make tests/CMakeFiles/test_integration.dir/test_integration.cpp.i
+.PHONY : test_integration.cpp.i
+
+test_integration.s: test_integration.cpp.s
+.PHONY : test_integration.s
+
+# target to generate assembly for a file
+test_integration.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_integration.dir/build.make tests/CMakeFiles/test_integration.dir/test_integration.cpp.s
+.PHONY : test_integration.cpp.s
+
+test_panic.o: test_panic.cpp.o
+.PHONY : test_panic.o
+
+# target to build an object file
+test_panic.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_panic.dir/build.make tests/CMakeFiles/test_panic.dir/test_panic.cpp.o
+.PHONY : test_panic.cpp.o
+
+test_panic.i: test_panic.cpp.i
+.PHONY : test_panic.i
+
+# target to preprocess a source file
+test_panic.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_panic.dir/build.make tests/CMakeFiles/test_panic.dir/test_panic.cpp.i
+.PHONY : test_panic.cpp.i
+
+test_panic.s: test_panic.cpp.s
+.PHONY : test_panic.s
+
+# target to generate assembly for a file
+test_panic.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_panic.dir/build.make tests/CMakeFiles/test_panic.dir/test_panic.cpp.s
+.PHONY : test_panic.cpp.s
+
+test_scoreboard.o: test_scoreboard.cpp.o
+.PHONY : test_scoreboard.o
+
+# target to build an object file
+test_scoreboard.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scoreboard.dir/build.make tests/CMakeFiles/test_scoreboard.dir/test_scoreboard.cpp.o
+.PHONY : test_scoreboard.cpp.o
+
+test_scoreboard.i: test_scoreboard.cpp.i
+.PHONY : test_scoreboard.i
+
+# target to preprocess a source file
+test_scoreboard.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scoreboard.dir/build.make tests/CMakeFiles/test_scoreboard.dir/test_scoreboard.cpp.i
+.PHONY : test_scoreboard.cpp.i
+
+test_scoreboard.s: test_scoreboard.cpp.s
+.PHONY : test_scoreboard.s
+
+# target to generate assembly for a file
+test_scoreboard.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scoreboard.dir/build.make tests/CMakeFiles/test_scoreboard.dir/test_scoreboard.cpp.s
+.PHONY : test_scoreboard.cpp.s
+
+test_warp_scheduler.o: test_warp_scheduler.cpp.o
+.PHONY : test_warp_scheduler.o
+
+# target to build an object file
+test_warp_scheduler.cpp.o:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_warp_scheduler.dir/build.make tests/CMakeFiles/test_warp_scheduler.dir/test_warp_scheduler.cpp.o
+.PHONY : test_warp_scheduler.cpp.o
+
+test_warp_scheduler.i: test_warp_scheduler.cpp.i
+.PHONY : test_warp_scheduler.i
+
+# target to preprocess a source file
+test_warp_scheduler.cpp.i:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_warp_scheduler.dir/build.make tests/CMakeFiles/test_warp_scheduler.dir/test_warp_scheduler.cpp.i
+.PHONY : test_warp_scheduler.cpp.i
+
+test_warp_scheduler.s: test_warp_scheduler.cpp.s
+.PHONY : test_warp_scheduler.s
+
+# target to generate assembly for a file
+test_warp_scheduler.cpp.s:
+	cd /Users/colinbaird/Projects/GPU/sim/build && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_warp_scheduler.dir/build.make tests/CMakeFiles/test_warp_scheduler.dir/test_warp_scheduler.cpp.s
+.PHONY : test_warp_scheduler.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -289,20 +555,48 @@ help:
 	@echo "... test"
 	@echo "... catch_main"
 	@echo "... test_alu"
+	@echo "... test_branch"
+	@echo "... test_cache"
+	@echo "... test_coalescing"
 	@echo "... test_decoder"
 	@echo "... test_functional"
+	@echo "... test_integration"
+	@echo "... test_panic"
+	@echo "... test_scoreboard"
+	@echo "... test_warp_scheduler"
 	@echo "... catch_main.o"
 	@echo "... catch_main.i"
 	@echo "... catch_main.s"
 	@echo "... test_alu.o"
 	@echo "... test_alu.i"
 	@echo "... test_alu.s"
+	@echo "... test_branch.o"
+	@echo "... test_branch.i"
+	@echo "... test_branch.s"
+	@echo "... test_cache.o"
+	@echo "... test_cache.i"
+	@echo "... test_cache.s"
+	@echo "... test_coalescing.o"
+	@echo "... test_coalescing.i"
+	@echo "... test_coalescing.s"
 	@echo "... test_decoder.o"
 	@echo "... test_decoder.i"
 	@echo "... test_decoder.s"
 	@echo "... test_functional.o"
 	@echo "... test_functional.i"
 	@echo "... test_functional.s"
+	@echo "... test_integration.o"
+	@echo "... test_integration.i"
+	@echo "... test_integration.s"
+	@echo "... test_panic.o"
+	@echo "... test_panic.i"
+	@echo "... test_panic.s"
+	@echo "... test_scoreboard.o"
+	@echo "... test_scoreboard.i"
+	@echo "... test_scoreboard.s"
+	@echo "... test_warp_scheduler.o"
+	@echo "... test_warp_scheduler.i"
+	@echo "... test_warp_scheduler.s"
 .PHONY : help
 
 

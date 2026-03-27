@@ -11,6 +11,8 @@ add_library(gpu_sim_lib
     src/decoder.cpp
     src/elf_loader.cpp
     src/stats.cpp
+    src/backend.cpp
+    src/backends/perf_sim_backend.cpp
     src/functional/alu.cpp
     src/functional/functional_model.cpp
     src/timing/fetch_stage.cpp

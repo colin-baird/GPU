@@ -643,6 +643,7 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__algorithm/pstl.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__algorithm/sample.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/bit \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/elf_loader.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/functional/functional_model.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/trace_event.h \
   /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/types.h \
@@ -759,8 +760,7 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/_types/_nl_item.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__locale_dir/locale_base_api/bsd_locale_defaults.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/cstdarg \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/timing_model.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/stats.h \
+  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/backend.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/iostream \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/istream \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__ostream/basic_ostream.h \
@@ -800,26 +800,4 @@ CMakeFiles/gpu_sim.dir/src/main.cpp.o: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/stack \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/__fwd/stack.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/c++/v1/print \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/unistd.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/warp_state.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/instruction_buffer.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/scoreboard.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/fetch_stage.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/pipeline_stage.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/decode_stage.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/decoder.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/warp_scheduler.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/execution_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/operand_collector.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/alu_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/multiply_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/divide_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/tlookup_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/ldst_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/writeback_arbiter.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/memory_interface.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/cache.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/mshr.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/coalescing_unit.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/timing/panic_controller.h \
-  /Users/colinbaird/Projects/GPU/sim/include/gpu_sim/elf_loader.h
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk/usr/include/unistd.h

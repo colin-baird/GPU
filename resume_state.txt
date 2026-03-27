@@ -109,31 +109,36 @@
     The entire codebase compiles cleanly and all 70 existing tests pass.
 
     ---
-    What Still Needs To Be Done
+    What Has Been Completed (continued)
 
-    Phase 5 Remaining: Integration Testing & Validation
+    Phase 5 Remaining: Integration Testing & Validation (COMPLETE)
 
-    1. Create a test binary and run the timing model end-to-end — This was the exact point where development was interrupted. Need to:
-      - Create a small hand-assembled RISC-V binary (e.g., ADDI chain ending with ECALL)
-      - Run it through the timing model
-      - Verify correct register state AND reasonable cycle count
-    2. Integration tests (sim/tests/test_integration.cpp — not yet created):
-      - ADD chain: verify cycle count matches pipeline depth expectations
-      - Load-use stall: load into r5, immediately use r5, verify stall-on-use behavior
-      - Branch loop: loop N times, verify branch flush penalty
-      - Multi-warp: 4 warps computing different results, all ECALL
-      - Memory coalescing: contiguous vs scattered addresses, compare cycle counts
-      - VDOT8 matmul kernel
-      - TLOOKUP interpolation
-    3. Additional unit tests still needed:
-      - test_scoreboard.cpp — double-buffer semantics, r0 never pending
-      - test_cache.cpp — hit/miss patterns, MSHR stall, write-through, write-allocate
-      - test_coalescing.cpp — coalesced vs serialized
-      - test_warp_scheduler.cpp — RR fairness, stall categorization
-      - test_branch.cpp — flush + redirect + penalty measurement
-      - test_panic.cpp — EBREAK sequence, diagnostic capture
-    4. Cycle-count validation against hand calculations from the architectural spec
-    5. Per-cycle trace — The trace_cycle() function exists but needs testing/validation
+    All integration and unit tests have been implemented and are passing.
+
+    New test files created:
+    - sim/tests/test_scoreboard.cpp — 9 test cases: r0 never pending, set/clear/is_pending, double-buffer isolation,
+      set+clear same cycle, multi-warp independence, seed_next preservation, all registers, reset
+    - sim/tests/test_cache.cpp — 7 test cases: load miss then hit, store hit write buffer, store miss write-allocate,
+      MSHR stall when full, direct-mapped conflict eviction, write buffer full stall, reset
+    - sim/tests/test_coalescing.cpp — 3 test cases: contiguous coalesces to 1 request, scattered serializes to 32,
+      boundary check (1 lane different = serialize)
+    - sim/tests/test_warp_scheduler.cpp — 8 test cases: issues from non-empty buffer, skips empty buffer,
+      stalls on scoreboard hazard, stalls when opcoll busy, stalls when target unit busy, RR fairness,
+      sets scoreboard pending on issue, RR pointer advances when idle
+    - sim/tests/test_branch.cpp — 4 test cases: taken branch redirects+flushes, not-taken no flush, loop counts
+      correctly (5 iterations, 4 flushes), taken branch incurs pipeline penalty
+    - sim/tests/test_panic.cpp — 4 test cases: EBREAK halts simulation, multi-warp EBREAK, state machine
+      progression (step-by-step), reset clears state
+    - sim/tests/test_integration.cpp — 19 test cases: ADD chain correctness, independent ADDIs, RAW dependency
+      chain, load-use stall, store-then-load, branch loop, JAL link register, multi-warp CSR computation,
+      multi-warp ECALL completion, memory coalescing, LUI+ADDI, multiply, multiply latency > ALU, VDOT8,
+      TLOOKUP, EBREAK panic, statistics collection, x0 write discard, max cycles limit
+
+    Total test suite: 10 test executables, 124 test cases, 833 assertions — all passing.
+
+    Known issue discovered: EBREAK is caught at the decode stage by the timing model's panic controller,
+    so the functional model's is_panicked() flag is never set. The panic state is tracked entirely within
+    the timing model's panic controller and warp states.
 
     Known Issues / Things To Watch For
 
@@ -152,6 +157,9 @@
     instruction before becoming inactive, which it does since ECALL reaches the dispatch stage).
     5. Stores don't set scoreboard pending — This is correct per the plan (stores have no rd), but verify that the timing model
     handles the store completing without any writeback entry correctly.
+
+    ---
+    What Still Needs To Be Done
 
     Phase 6: Validation & Polish (NOT STARTED)
 
@@ -173,5 +181,5 @@
 
     - Headers: 26 files in sim/include/gpu_sim/
     - Source: 22 files in sim/src/
-    - Tests: 5 files in sim/tests/ (catch_main + 3 test suites + CMakeLists)
-    - Total: ~53 files, all compiling, all existing tests passing
+    - Tests: 12 files in sim/tests/ (catch_main + 10 test suites + CMakeLists)
+    - Total: ~60 files, all compiling, all 124 test cases passing (833 assertions)

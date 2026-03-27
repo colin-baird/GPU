@@ -18,16 +18,18 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 ## Key References
 
 - **Architectural specification:** [/resources/gpu_architectural_spec.md](/resources/gpu_architectural_spec.md) — the fully specified architectural spec covering ISA, pipeline, memory system, host interface, register file, scoreboard, and all design decisions.
-- **RISC-V ISA reference:** [/resources/RISCV_CARD.md](/resources/RISCV_CARD.md) — reference card for the RISC-V instruction set. The base ISA for this project is RV32IM (integer base + multiply/divide extension).
-- **FPGA implementation notes:** [/resources/fpga_implementation_notes.md](/resources/fpga_implementation_notes.md) — BRAM usage, DSP slice packing, resource estimation, clock domains, and synthesis portability guidelines.
+- **RISC-V ISA reference:** [/resources/riscv_card.md](/resources/riscv_card.md) — reference card for the RISC-V instruction set. The base ISA for this project is RV32IM (integer base + multiply/divide extension).
+- **Performance Sim Documentation:** [/resources/perf_sim_arch.md](/resources/perf_sim_arch.md) —  a single reference sheet covering every file in the simulator
+- **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
 
 ## Project Structure
 
 ```
 /resources/
   gpu_architectural_spec.md    # Full architectural spec (the source of truth)
-  fpga_implementation_notes.md # FPGA-specific implementation guidance
-  RISCV_CARD.md                # RISC-V ISA reference card
+  riscv_card.md                # RISC-V ISA reference card
+  perf_sim_arch.md             # Documentation for the performance simulator
+  cpp_coding_standard.md       # C++ style and conventions for the simulator
 ```
 
 ## Design Principles
@@ -41,3 +43,10 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 ## Target Workload
 
 Quantized LLM inference: INT8 weights × INT8 activations with INT32 accumulation for matrix operations, ROM lookup tables with software interpolation for nonlinear functions (softmax, GELU, SiLU, layer norm). Realistic demo targets are 100M–300M parameter models.
+
+## Instructions
+- When updating files in the performance simulator, be sure to update the relative entries in perf_sim_arch.md.
+- Don't make assumptions about any interfaces, consult the documentation and if necessary consult the definition or implementation files.
+- When creating a new documentation artifact, use Markdown, place the file in ./resources, and add a pointer to CLAUDE.md.
+- Strictly adhere to the architectural spec, ask before making assumptions or deviations. 
+- Strictly adhere to the coding standard documentation.

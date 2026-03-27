@@ -50,4 +50,11 @@ set(CMAKE_DEPEND_INFO_FILES
   "tests/CMakeFiles/test_decoder.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_alu.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_functional.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_scoreboard.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_cache.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_coalescing.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_warp_scheduler.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_branch.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_panic.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_integration.dir/DependInfo.cmake"
   )

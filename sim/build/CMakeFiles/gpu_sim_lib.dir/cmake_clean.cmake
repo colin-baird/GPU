@@ -1,4 +1,8 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o"
+  "CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o.d"
+  "CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o"
+  "CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o.d"
   "CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o"
   "CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o.d"
   "CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o"

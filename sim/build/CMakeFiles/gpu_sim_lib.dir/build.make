@@ -125,10 +125,38 @@ CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.s"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/colinbaird/Projects/GPU/sim/src/stats.cpp -o CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.s
 
+CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
+CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/backend.cpp
+CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o"
+	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/backend.cpp
+
+CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.i"
+	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/colinbaird/Projects/GPU/sim/src/backend.cpp > CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.i
+
+CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.s"
+	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/colinbaird/Projects/GPU/sim/src/backend.cpp -o CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.s
+
+CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
+CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/backends/perf_sim_backend.cpp
+CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o"
+	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/backends/perf_sim_backend.cpp
+
+CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.i"
+	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/colinbaird/Projects/GPU/sim/src/backends/perf_sim_backend.cpp > CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.i
+
+CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.s"
+	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/colinbaird/Projects/GPU/sim/src/backends/perf_sim_backend.cpp -o CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.s
+
 CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/functional/alu.cpp
 CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/functional/alu.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.i: cmake_force
@@ -142,7 +170,7 @@ CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/functional/functional_model.cpp
 CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/functional/functional_model.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.i: cmake_force
@@ -156,7 +184,7 @@ CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/fetch_stage.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/fetch_stage.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.i: cmake_force
@@ -170,7 +198,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/decode_stage.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/decode_stage.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.i: cmake_force
@@ -184,7 +212,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/warp_scheduler.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/warp_scheduler.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.i: cmake_force
@@ -198,7 +226,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/operand_collector.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/operand_collector.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.i: cmake_force
@@ -212,7 +240,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/alu_unit.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/alu_unit.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.i: cmake_force
@@ -226,7 +254,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/multiply_unit.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/multiply_unit.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.i: cmake_force
@@ -240,7 +268,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/divide_unit.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/divide_unit.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.i: cmake_force
@@ -254,7 +282,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/tlookup_unit.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/tlookup_unit.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.i: cmake_force
@@ -268,7 +296,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/ldst_unit.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/ldst_unit.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.i: cmake_force
@@ -282,7 +310,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/writeback_arbiter.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/writeback_arbiter.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.i: cmake_force
@@ -296,7 +324,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/mshr.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/mshr.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.i: cmake_force
@@ -310,7 +338,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/cache.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/cache.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.i: cmake_force
@@ -324,7 +352,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/coalescing_unit.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/coalescing_unit.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.i: cmake_force
@@ -338,7 +366,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/memory_interface.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/memory_interface.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.i: cmake_force
@@ -352,7 +380,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/panic_controller.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/panic_controller.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.i: cmake_force
@@ -366,7 +394,7 @@ CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.s: cmake_force
 CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o: CMakeFiles/gpu_sim_lib.dir/flags.make
 CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o: /Users/colinbaird/Projects/GPU/sim/src/timing/timing_model.cpp
 CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o: CMakeFiles/gpu_sim_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o"
 	/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o -MF CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o.d -o CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o -c /Users/colinbaird/Projects/GPU/sim/src/timing/timing_model.cpp
 
 CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.i: cmake_force
@@ -383,6 +411,8 @@ gpu_sim_lib_OBJECTS = \
 "CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o" \
 "CMakeFiles/gpu_sim_lib.dir/src/elf_loader.cpp.o" \
 "CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.o" \
+"CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o" \
+"CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o" \
 "CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o" \
 "CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o" \
 "CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o" \
@@ -409,6 +439,8 @@ libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/elf_loader.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.o
+libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/backend.cpp.o
+libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/backends/perf_sim_backend.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o
@@ -429,7 +461,7 @@ libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/build.make
 libgpu_sim_lib.a: CMakeFiles/gpu_sim_lib.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Linking CXX static library libgpu_sim_lib.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/colinbaird/Projects/GPU/sim/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Linking CXX static library libgpu_sim_lib.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/gpu_sim_lib.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/gpu_sim_lib.dir/link.txt --verbose=$(VERBOSE)
 

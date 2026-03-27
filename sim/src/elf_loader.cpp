@@ -68,11 +68,11 @@ std::vector<uint8_t> read_file(const std::string& path) {
 
 namespace gpu_sim {
 
-uint32_t load_program(FunctionalModel& model, const std::string& path) {
+ProgramImage load_program_image(const std::string& path) {
     auto data = read_file(path);
+    ProgramImage image;
 
     if (is_elf(data)) {
-        // ELF loading
         Elf32_Ehdr ehdr;
         std::memcpy(&ehdr, data.data(), sizeof(ehdr));
 
@@ -87,6 +87,8 @@ uint32_t load_program(FunctionalModel& model, const std::string& path) {
                 std::to_string(ehdr.e_machine) + ")");
         }
 
+        image.entry_pc = ehdr.e_entry;
+
         for (uint16_t i = 0; i < ehdr.e_phnum; ++i) {
             Elf32_Phdr phdr;
             size_t offset = ehdr.e_phoff + i * ehdr.e_phentsize;
@@ -96,47 +98,54 @@ uint32_t load_program(FunctionalModel& model, const std::string& path) {
             if (phdr.p_type != PT_LOAD) continue;
             if (phdr.p_filesz == 0) continue;
 
-            // Determine if this segment goes to instruction memory or data memory.
-            // Convention: addresses below instruction_mem_size go to instruction memory,
-            // others go to data memory.
-            uint32_t instr_mem_end = model.instruction_memory().size_bytes();
+            ProgramSegment seg;
+            seg.vaddr = phdr.p_vaddr;
+            seg.data.resize(phdr.p_filesz);
+            std::memcpy(seg.data.data(), data.data() + phdr.p_offset,
+                        phdr.p_filesz);
+            image.segments.push_back(std::move(seg));
+        }
+    } else {
+        // Raw binary: single segment at address 0
+        ProgramSegment seg;
+        seg.vaddr = 0;
+        seg.data = std::move(data);
+        image.segments.push_back(std::move(seg));
+        image.entry_pc = 0;
+    }
 
-            if (phdr.p_vaddr < instr_mem_end) {
-                // Load into instruction memory
-                uint32_t copy_size = std::min(phdr.p_filesz,
-                    instr_mem_end - phdr.p_vaddr);
-                uint32_t num_instrs = copy_size / 4;
-                const uint8_t* src = data.data() + phdr.p_offset;
-                for (uint32_t j = 0; j < num_instrs; ++j) {
-                    uint32_t instr;
-                    std::memcpy(&instr, src + j * 4, 4);
-                    model.instruction_memory().write(phdr.p_vaddr / 4 + j, instr);
-                }
-            } else {
-                // Load into data memory
-                const uint8_t* src = data.data() + phdr.p_offset;
-                uint32_t copy_size = phdr.p_filesz;
-                if (phdr.p_vaddr + copy_size <= model.memory().size()) {
-                    std::memcpy(model.memory().data() + phdr.p_vaddr, src, copy_size);
-                }
+    return image;
+}
+
+void load_image_into_model(FunctionalModel& model, const ProgramImage& image) {
+    uint32_t instr_mem_end = model.instruction_memory().size_bytes();
+
+    for (const auto& seg : image.segments) {
+        if (seg.vaddr < instr_mem_end) {
+            // Load into instruction memory
+            uint32_t copy_size = std::min(static_cast<uint32_t>(seg.data.size()),
+                instr_mem_end - seg.vaddr);
+            uint32_t num_instrs = copy_size / 4;
+            for (uint32_t j = 0; j < num_instrs; ++j) {
+                uint32_t instr;
+                std::memcpy(&instr, seg.data.data() + j * 4, 4);
+                model.instruction_memory().write(seg.vaddr / 4 + j, instr);
+            }
+        } else {
+            // Load into data memory
+            uint32_t copy_size = static_cast<uint32_t>(seg.data.size());
+            if (seg.vaddr + copy_size <= model.memory().size()) {
+                std::memcpy(model.memory().data() + seg.vaddr,
+                            seg.data.data(), copy_size);
             }
         }
-
-        return ehdr.e_entry;
-    } else {
-        // Raw binary: flat sequence of 32-bit LE instruction words
-        uint32_t num_instrs = static_cast<uint32_t>(data.size()) / 4;
-        uint32_t max_instrs = model.instruction_memory().num_instructions();
-        num_instrs = std::min(num_instrs, max_instrs);
-
-        for (uint32_t i = 0; i < num_instrs; ++i) {
-            uint32_t instr;
-            std::memcpy(&instr, data.data() + i * 4, 4);
-            model.instruction_memory().write(i, instr);
-        }
-
-        return 0;
     }
+}
+
+uint32_t load_program(FunctionalModel& model, const std::string& path) {
+    ProgramImage image = load_program_image(path);
+    load_image_into_model(model, image);
+    return image.entry_pc;
 }
 
 void load_lookup_table(FunctionalModel& model, const std::string& path) {
