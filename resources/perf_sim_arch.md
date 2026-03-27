@@ -8,10 +8,12 @@ This document describes every file in the simulator, what it does, and where to 
 
 | File | Purpose |
 |------|---------|
-| `CMakeLists.txt` | Top-level build. Builds `gpu_sim_lib` (static library from all src/), `gpu_sim` (executable), and optionally test targets. C++17. |
-| `tests/CMakeLists.txt` | Registers each `test_*.cpp` as a Catch2 test executable linked against `gpu_sim_lib`. |
+| `/CMakeLists.txt` | Top-level build. Includes `sim/` and `runner/` as subdirectories. C++17. |
+| `sim/CMakeLists.txt` | Builds `gpu_sim_lib` (static library) and optionally test targets. Can also be built standalone. |
+| `runner/CMakeLists.txt` | Builds `runner_lib` (backend abstraction) and `gpu_sim` executable. Links against `gpu_sim_lib`. |
+| `sim/tests/CMakeLists.txt` | Registers each `test_*.cpp` as a Catch2 test executable linked against `gpu_sim_lib`. |
 
-Build: `cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j8`
+Build: `cmake -B build && cmake --build build -j8`
 
 ---
 
@@ -83,20 +85,24 @@ Statistics collection and reporting.
 - **`report(ostream, num_warps)`**: Human-readable text summary.
 - **`report_json(ostream, num_warps)`**: Machine-parseable JSON.
 
-### `include/gpu_sim/backend.h` -- `src/backend.cpp`
+---
+
+## Runner (lives in `/runner/`, separate from `sim/`)
+
+### `runner/include/runner/backend.h` -- `runner/src/backend.cpp`
 
 Backend routing system. Decouples program loading from execution so multiple backends can consume the same `ProgramImage`.
 
 - **Class `Backend`** (abstract): `run(image, config, argc, argv)` -> exit code, `name()` -> string.
 - **`create_backend(name)`** -> `unique_ptr<Backend>`. Factory function; returns `nullptr` for unknown names. Currently supports `"perf_sim"`.
 
-### `include/gpu_sim/backends/perf_sim_backend.h` -- `src/backends/perf_sim_backend.cpp`
+### `runner/include/runner/backends/perf_sim_backend.h` -- `runner/src/backends/perf_sim_backend.cpp`
 
 Performance simulator backend. Wraps `FunctionalModel` and `TimingModel`.
 
 - **Class `PerfSimBackend`**: Implements `Backend`. Loads `ProgramImage` into a `FunctionalModel`, handles `--lookup-table`, `--data`, `--json`, `--max-cycles` CLI options, runs functional-only or timing simulation, reports stats and register state.
 
-### `src/main.cpp`
+### `runner/src/main.cpp`
 
 Entry point. Parses `--backend=<name>` (default: `perf_sim`), loads config, calls `load_program_image()`, creates and runs the selected backend. See `--help` for usage.
 

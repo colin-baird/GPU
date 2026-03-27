@@ -25,12 +25,23 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 ## Project Structure
 
 ```
+/sim/                          # Performance simulator library (C++17)
+  src/                           # Functional model, timing model, decoder, etc.
+  include/gpu_sim/               # Public headers
+  tests/                         # Catch2 unit tests
+/runner/                       # Backend router and executable
+  src/                           # Entry point, backend abstraction, backends
+  include/runner/                # Runner headers
+/tests/                        # Backend-agnostic test suites
+  riscv-isa/                     # Official RISC-V ISA compliance tests
 /resources/
-  gpu_architectural_spec.md    # Full architectural spec (the source of truth)
-  riscv_card.md                # RISC-V ISA reference card
-  perf_sim_arch.md             # Documentation for the performance simulator
-  cpp_coding_standard.md       # C++ style and conventions for the simulator
+  gpu_architectural_spec.md      # Full architectural spec (the source of truth)
+  riscv_card.md                  # RISC-V ISA reference card
+  perf_sim_arch.md               # Documentation for the simulator and runner
+  cpp_coding_standard.md         # C++ style and conventions for the simulator
 ```
+
+Build from the project root: `cmake -B build && cmake --build build -j8`
 
 ## Design Principles
 
@@ -50,3 +61,4 @@ Quantized LLM inference: INT8 weights × INT8 activations with INT32 accumulatio
 - When creating a new documentation artifact, use Markdown, place the file in ./resources, and add a pointer to CLAUDE.md.
 - Strictly adhere to the architectural spec, ask before making assumptions or deviations. 
 - Strictly adhere to the coding standard documentation.
+- When creating new sources of build artifacts, be sure to update the global .gitignore to exclude them from tracking.

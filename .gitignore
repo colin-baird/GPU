@@ -1,0 +1,19 @@
+# CMake/Ninja/CTest build output directories
+/build/
+/sim/build/
+/runner/build/
+/tests/riscv-isa/build/
+
+# Generic out-of-tree build folders created in subdirectories
+**/build/
+
+# Common CMake-generated metadata inside build trees
+**/CMakeFiles/
+**/Testing/
+**/CMakeCache.txt
+**/cmake_install.cmake
+
+# IDE/tooling files generated during local development
+.clangd/
+.cache/
+.DS_Store

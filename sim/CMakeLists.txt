@@ -1,18 +1,19 @@
 cmake_minimum_required(VERSION 3.16)
-project(gpu_sim VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# When built standalone (not as a subdirectory), set up the project.
+if(NOT CMAKE_PROJECT_NAME OR CMAKE_PROJECT_NAME STREQUAL "gpu_sim")
+    project(gpu_sim VERSION 0.1.0 LANGUAGES CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif()
 
-# Main library
+# Simulator library
 add_library(gpu_sim_lib
     src/config.cpp
     src/decoder.cpp
     src/elf_loader.cpp
     src/stats.cpp
-    src/backend.cpp
-    src/backends/perf_sim_backend.cpp
     src/functional/alu.cpp
     src/functional/functional_model.cpp
     src/timing/fetch_stage.cpp
@@ -34,10 +35,6 @@ add_library(gpu_sim_lib
 )
 
 target_include_directories(gpu_sim_lib PUBLIC include)
-
-# Main executable
-add_executable(gpu_sim src/main.cpp)
-target_link_libraries(gpu_sim PRIVATE gpu_sim_lib)
 
 # Tests
 option(BUILD_TESTS "Build tests" ON)
