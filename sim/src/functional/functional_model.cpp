@@ -210,6 +210,9 @@ TraceEvent FunctionalModel::execute(WarpId warp_id, uint32_t pc) {
             }
             break;
 
+        case InstructionType::FENCE:
+            break;
+
         case InstructionType::INVALID:
             break;
         }
@@ -219,7 +222,8 @@ TraceEvent FunctionalModel::execute(WarpId warp_id, uint32_t pc) {
         // Write result to register file
         if (d.has_rd && d.rd != 0 && d.type != InstructionType::ECALL &&
             d.type != InstructionType::EBREAK && d.type != InstructionType::BRANCH &&
-            d.type != InstructionType::STORE && d.type != InstructionType::INVALID) {
+            d.type != InstructionType::STORE && d.type != InstructionType::FENCE &&
+            d.type != InstructionType::INVALID) {
             reg_file_.write(warp_id, lane, d.rd, result);
         }
     }

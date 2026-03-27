@@ -21,6 +21,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **RISC-V ISA reference:** [/resources/riscv_card.md](/resources/riscv_card.md) — reference card for the RISC-V instruction set. The base ISA for this project is RV32IM (integer base + multiply/divide extension).
 - **Performance Sim Documentation:** [/resources/perf_sim_arch.md](/resources/perf_sim_arch.md) —  a single reference sheet covering every file in the simulator
 - **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
+- **Performance Reference Methodology:** [/resources/perf_reference_methodology.md](/resources/perf_reference_methodology.md) — analytical methodology for deriving reference performance statistics from the architectural spec, including worked examples and timing derivations
 
 ## Project Structure
 

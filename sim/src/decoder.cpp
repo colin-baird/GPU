@@ -176,6 +176,14 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
         }
         break;
 
+    // ---- FENCE (pipeline NOP) ----
+    case isa::OP_FENCE:
+        d.type = InstructionType::FENCE;
+        d.target_unit = ExecUnit::SYSTEM;
+        d.has_rd = false;
+        d.num_src_regs = 0;
+        break;
+
     // ---- SYSTEM (ECALL, EBREAK, CSR) ----
     case isa::OP_SYSTEM:
         if (f3 == isa::FUNCT3_ECALL_EBREAK) {

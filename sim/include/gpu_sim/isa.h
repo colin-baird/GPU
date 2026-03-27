@@ -15,6 +15,7 @@ static constexpr uint32_t OP_LOAD     = 0b0000011;
 static constexpr uint32_t OP_STORE    = 0b0100011;
 static constexpr uint32_t OP_ALU_I    = 0b0010011;
 static constexpr uint32_t OP_ALU_R    = 0b0110011;
+static constexpr uint32_t OP_FENCE    = 0b0001111;
 static constexpr uint32_t OP_SYSTEM   = 0b1110011;
 
 // Custom opcodes

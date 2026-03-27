@@ -44,6 +44,7 @@ enum class InstructionType : uint8_t {
     ECALL,
     EBREAK,
     CSR,
+    FENCE,
     INVALID
 };
 

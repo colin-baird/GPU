@@ -395,3 +395,48 @@ Fetch --> Decode --> Scheduler --> OpColl --> Dispatch --> Exec Units
   +--- branch redirect <--- Writeback Arbiter <--+-------------------+
                              (scoreboard clear)
 ```
+
+---
+
+## Performance Reference Testing
+
+Analytical reference statistics derived from the architectural spec (not the timing model) serve as ground truth for validating the timing model. See [`/resources/perf_reference_methodology.md`](/resources/perf_reference_methodology.md) for the full derivation methodology.
+
+### Directory Layout
+
+```
+tests/references/
+  isa/                          # Reference JSON files (one per ISA test)
+    rv32ui-p-add.json           # ... 46 total
+  tools/
+    analyze_elf.py              # Analytical reference generator
+    validate.py                 # Validation runner
+  validate.sh                   # Shell entry point for validation
+```
+
+### `tests/references/tools/analyze_elf.py`
+
+Generates reference performance statistics by disassembling an ELF, tracing the dynamic execution path with a minimal RV32IM interpreter, and applying the spec's timing rules.
+
+- **`disassemble(elf_path)`**: Calls `riscv64-unknown-elf-objdump -d`, parses output into `Instruction` objects with mnemonic classification via `MNEMONIC_TABLE`.
+- **`trace_isa_test(instructions, elf_path)`**: Full RV32IM interpreter. Decodes raw instruction words, simulates all register operations and memory accesses, resolves all branch conditions from actual register values. Loads `.data` section from ELF for load/store tests.
+- **`compute_timing(trace, config)`**: Applies spec timing rules to the traced instruction sequence: pipeline fill (2 cycles), scoreboard stalls (ALU: 0, MUL: 2, DIV: 31, LOAD hit: 3, LOAD miss: 103), branch penalties (2 cycles per taken branch/JAL/JALR), direct-mapped cache simulation with actual effective addresses.
+- **`generate_reference(elf_path, config)`**: Produces complete JSON reference including config, instruction mix, and all expected stats fields.
+
+Usage:
+```
+python3 analyze_elf.py <elf>                              # Single test
+python3 analyze_elf.py --batch <dir> --output-dir <dir>   # All tests
+python3 analyze_elf.py <elf> --trace                      # Print execution trace
+```
+
+### `tests/references/tools/validate.py`
+
+Runs the simulator on each test ELF with `--json`, compares 17 key fields against the reference JSON. Reports PASS/FAIL/SKIP (timeout).
+
+Usage:
+```
+./tests/references/validate.sh                    # Run all
+./tests/references/validate.sh --filter add       # Filter by pattern
+./tests/references/validate.sh --timeout 30       # Custom timeout
+```

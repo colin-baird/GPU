@@ -17,3 +17,7 @@
 .clangd/
 .cache/
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc

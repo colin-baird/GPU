@@ -77,27 +77,74 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
 
 void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "{\n";
+
+    // Global
     out << "  \"total_cycles\": " << total_cycles << ",\n";
     out << "  \"total_instructions_issued\": " << total_instructions_issued << ",\n";
     if (total_cycles > 0) {
         out << "  \"ipc\": " << std::fixed << std::setprecision(6)
             << static_cast<double>(total_instructions_issued) / static_cast<double>(total_cycles) << ",\n";
     }
+
+    // Pipeline
+    out << "  \"fetch_skip_count\": " << fetch_skip_count << ",\n";
     out << "  \"scheduler_idle_cycles\": " << scheduler_idle_cycles << ",\n";
+    out << "  \"operand_collector_busy_cycles\": " << operand_collector_busy_cycles << ",\n";
     out << "  \"branch_flushes\": " << branch_flushes << ",\n";
+
+    // Execution units
+    auto emit_unit = [&](const char* prefix, const UnitStats& s) {
+        out << "  \"" << prefix << "_busy_cycles\": " << s.busy_cycles << ",\n";
+        out << "  \"" << prefix << "_instructions\": " << s.instructions << ",\n";
+    };
+    emit_unit("alu", alu_stats);
+    emit_unit("mul", mul_stats);
+    emit_unit("div", div_stats);
+    emit_unit("ldst", ldst_stats);
+    emit_unit("tlookup", tlookup_stats);
+
+    // Memory system
     out << "  \"cache_hits\": " << cache_hits << ",\n";
     out << "  \"cache_misses\": " << cache_misses << ",\n";
+    out << "  \"load_hits\": " << load_hits << ",\n";
+    out << "  \"load_misses\": " << load_misses << ",\n";
+    out << "  \"store_hits\": " << store_hits << ",\n";
+    out << "  \"store_misses\": " << store_misses << ",\n";
+    out << "  \"mshr_stall_cycles\": " << mshr_stall_cycles << ",\n";
+    out << "  \"write_buffer_stall_cycles\": " << write_buffer_stall_cycles << ",\n";
     out << "  \"coalesced_requests\": " << coalesced_requests << ",\n";
     out << "  \"serialized_requests\": " << serialized_requests << ",\n";
     out << "  \"external_memory_reads\": " << external_memory_reads << ",\n";
     out << "  \"external_memory_writes\": " << external_memory_writes << ",\n";
+    out << "  \"total_load_latency\": " << total_load_latency << ",\n";
+    out << "  \"total_loads_completed\": " << total_loads_completed << ",\n";
 
-    out << "  \"warp_instructions\": [";
+    // Writeback
+    out << "  \"writeback_conflicts\": " << writeback_conflicts << ",\n";
+
+    // Per-warp arrays
+    auto emit_warp_array = [&](const char* name,
+                               const std::array<uint64_t, MAX_WARPS>& arr) {
+        out << "  \"" << name << "\": [";
+        for (uint32_t w = 0; w < num_warps; ++w) {
+            if (w > 0) out << ", ";
+            out << arr[w];
+        }
+        out << "],\n";
+    };
+    emit_warp_array("warp_instructions", warp_instructions);
+    emit_warp_array("warp_cycles_active", warp_cycles_active);
+    emit_warp_array("warp_stall_scoreboard", warp_stall_scoreboard);
+    emit_warp_array("warp_stall_buffer_empty", warp_stall_buffer_empty);
+
+    // Last field — no trailing comma
+    out << "  \"warp_stall_unit_busy\": [";
     for (uint32_t w = 0; w < num_warps; ++w) {
         if (w > 0) out << ", ";
-        out << warp_instructions[w];
+        out << warp_stall_unit_busy[w];
     }
     out << "]\n";
+
     out << "}\n";
 }
 
