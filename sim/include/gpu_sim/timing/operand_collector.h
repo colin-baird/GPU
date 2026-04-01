@@ -30,6 +30,15 @@ public:
     // Output to dispatch
     std::optional<DispatchInput>& output() { return next_output_; }
     const std::optional<DispatchInput>& current_output() const { return current_output_; }
+    bool busy() const { return busy_; }
+    uint32_t cycles_remaining() const { return cycles_remaining_; }
+    std::optional<uint32_t> resident_warp() const {
+        if (!busy_) return std::nullopt;
+        return current_instr_.warp_id;
+    }
+    const IssueOutput* current_instruction() const {
+        return busy_ ? &current_instr_ : nullptr;
+    }
 
 private:
     Stats& stats_;

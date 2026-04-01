@@ -23,7 +23,9 @@ void LdStUnit::accept(const DispatchInput& input, uint64_t cycle) {
 void LdStUnit::evaluate() {
     if (busy_) {
         stats_.ldst_stats.busy_cycles++;
-        cycles_remaining_--;
+        if (cycles_remaining_ > 0) {
+            cycles_remaining_--;
+        }
         if (cycles_remaining_ == 0) {
             // Try to push to FIFO
             if (addr_gen_fifo_.size() < fifo_depth_) {

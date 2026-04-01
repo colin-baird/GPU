@@ -25,6 +25,9 @@ public:
 
     // The writeback that happened this cycle (for stats/trace)
     const std::optional<WritebackEntry>& committed_entry() const { return committed_; }
+    bool has_pending_work() const;
+    const WritebackEntry& fill_buffer_entry() const { return fill_buffer_; }
+    uint32_t ready_source_count() const;
 
 private:
     Scoreboard& scoreboard_;

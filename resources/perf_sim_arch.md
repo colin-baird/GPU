@@ -34,7 +34,7 @@ Simulator configuration. All parameterizable values live in `SimConfig`.
 - **Struct `SimConfig`**: `num_warps`, `instruction_mem_size_bytes`, `instruction_buffer_depth`, `multiply_pipeline_stages`, `num_ldst_units`, `addr_gen_fifo_depth`, `l1_cache_size_bytes`, `cache_line_size_bytes`, `num_mshrs`, `write_buffer_depth`, `lookup_table_entries`, `external_memory_latency_cycles`, `external_memory_size_bytes`, `kernel_args[4]`, `start_pc`, `trace_enabled`, `functional_only`
 - **`validate()`**: Checks constraints (warp count in [1,8], cache size power-of-2, etc.). Throws on failure.
 - **`from_json(path)`**: Minimal hand-rolled JSON parser (key-value pairs).
-- **`apply_cli_overrides(argc, argv)`**: Parses `--key=value` CLI arguments.
+- **`apply_cli_overrides(argc, argv)`**: Parses `--key=value` CLI arguments plus boolean aliases such as `--trace-text` for the human-readable stderr trace.
 
 ### `include/gpu_sim/isa.h`
 
@@ -85,6 +85,15 @@ Statistics collection and reporting.
 - **`report(ostream, num_warps)`**: Human-readable text summary.
 - **`report_json(ostream, num_warps)`**: Machine-parseable JSON.
 
+### `include/gpu_sim/timing/timing_trace.h` -- `src/timing/timing_trace.cpp`
+
+Structured timing-trace types and Chrome trace writer.
+
+- **Struct `TimingTraceOptions`**: Structured trace configuration (`output_path`). This is separate from `SimConfig` so trace-file emission remains a backend/CLI concern.
+- **Enums `WarpTraceState` / `WarpRestReason`**: Canonical per-cycle warp classification for structured traces and tests.
+- **Structs `WarpTraceSnapshot` / `CycleTraceSnapshot`**: Post-commit per-cycle summaries used for trace emission and test assertions.
+- **Class `ChromeTraceWriter`**: Dependency-free Chrome trace JSON emitter supporting metadata, complete events, instant events, and counters.
+
 ---
 
 ## Runner (lives in `/runner/`, separate from `sim/`)
@@ -100,11 +109,11 @@ Backend routing system. Decouples program loading from execution so multiple bac
 
 Performance simulator backend. Wraps `FunctionalModel` and `TimingModel`.
 
-- **Class `PerfSimBackend`**: Implements `Backend`. Loads `ProgramImage` into a `FunctionalModel`, handles `--lookup-table`, `--data`, `--json`, `--max-cycles` CLI options, runs functional-only or timing simulation, reports stats and register state.
+- **Class `PerfSimBackend`**: Implements `Backend`. Loads `ProgramImage` into a `FunctionalModel`, handles `--lookup-table`, `--data`, `--json`, `--max-cycles`, `--trace`, `--trace-text`, and `--trace-file` CLI options, runs functional-only or timing simulation, reports stats and register state, and can emit structured Chrome trace JSON for Perfetto.
 
 ### `runner/src/main.cpp`
 
-Entry point. Parses `--backend=<name>` (default: `perf_sim`), loads config, calls `load_program_image()`, creates and runs the selected backend. See `--help` for usage.
+Entry point. Parses `--backend=<name>` (default: `perf_sim`), loads config, calls `load_program_image()`, creates and runs the selected backend. `--trace` / `--trace-text` enable the legacy text trace; `--trace-file=<path>` enables structured timing traces. See `--help` for usage.
 
 ---
 
@@ -144,6 +153,7 @@ Top-level functional execution engine.
 
 - **`FunctionalModel(const SimConfig&)`**: Allocates memory regions, calls `init_kernel()`.
 - **`execute(warp_id, pc)`** -> `TraceEvent`: Fetches instruction, decodes, executes across all 32 lanes. Reads source registers, computes results, writes destination registers, performs memory operations. Handles ECALL (marks warp inactive), EBREAK (sets panic state), CSR reads (warp_id, lane_id, num_warps). Returns fully populated `TraceEvent`.
+- **`latch_panic(warp_id, pc, cause)`**: Lets the timing model publish host-visible panic diagnostics when decode intercepts EBREAK before functional execution.
 - **`init_kernel(config)`**: Marks warps active per `num_warps`, calls `register_file().init_warp()` for each.
 - **Accessors**: `register_file()`, `memory()`, `instruction_memory()`, `lookup_table()`, `is_warp_active()`, `set_warp_active()`, `is_panicked()`, `panic_warp()`, `panic_cause()`, `panic_pc()`.
 
@@ -163,7 +173,7 @@ Abstract base for pipeline stages. Header-only.
 
 Abstract base for execution units plus the writeback data structure. Header-only.
 
-- **Struct `WritebackEntry`**: `valid`, `warp_id`, `dest_reg`, `values[WARP_SIZE]`, `source_unit`, `issue_cycle`.
+- **Struct `WritebackEntry`**: `valid`, `warp_id`, `dest_reg`, `values[WARP_SIZE]`, `source_unit`, `pc`, `raw_instruction`, `issue_cycle`.
 - **Class `ExecutionUnit`**: Extends pipeline stage interface with `is_ready()`, `has_result()`, `consume_result()`, `get_type()`.
 
 ### `include/gpu_sim/timing/warp_state.h`
@@ -195,8 +205,10 @@ Double-buffered register dependency tracking. Header-only.
 Instruction fetch with round-robin warp selection.
 
 - **`FetchStage(num_warps, warps_ptr, imem_ref, stats_ref)`**
-- **`evaluate()`**: Selects warp via `rr_pointer`, skips if inactive or buffer full. Reads instruction from `InstructionMemory`, increments warp PC by 4. Pointer advances unconditionally.
+- **`set_stall(bool)`**: Lets the top-level model freeze fetch when decode is already holding an uncommitted instruction, preventing frontend instruction loss under backpressure.
+- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, increments warp PC by 4. Pointer advances unconditionally on non-stalled cycles.
 - **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp.
+- **Snapshot helper**: `stalled()`.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`.
 
 ### `include/gpu_sim/timing/decode_stage.h` -- `src/timing/decode_stage.cpp`
@@ -204,8 +216,10 @@ Instruction fetch with round-robin warp selection.
 Instruction decode with EBREAK detection.
 
 - **`DecodeStage(warps_ptr, fetch_ref)`**
-- **`evaluate()`**: Reads `fetch_.current_output()`. Decodes via `Decoder::decode()`. If EBREAK, signals panic and returns. Otherwise stages decoded instruction for commit.
-- **`commit()`**: Pushes staged instruction to target warp's instruction buffer.
+- **`evaluate()`**: Reads `fetch_.current_output()`. Decodes via `Decoder::decode()`. If EBREAK, signals panic and returns. Otherwise stages one decoded instruction for commit. If a prior decode is still pending because the target warp buffer is full, evaluate holds that instruction and does not overwrite it.
+- **`commit()`**: Pushes the staged instruction to the target warp's instruction buffer once space is available; otherwise the staged decode remains pending.
+- **`has_pending()`**: Reports whether decode is holding an uncommitted instruction so fetch can be stalled.
+- **Snapshot helpers**: `pending_warp()`, `pending_entry()`.
 - **`invalidate_warp(warp_id)`**: Clears any pending decode for that warp (branch redirect).
 - **`ebreak_detected()`**, **`ebreak_warp()`**, **`ebreak_pc()`**: Panic detection interface.
 
@@ -213,9 +227,11 @@ Instruction decode with EBREAK detection.
 
 Issue stage with round-robin scheduling and 4-way eligibility check.
 
+- **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
 - **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, func_model_ref, stats_ref)`**
-- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent. Sets scoreboard pending for `rd`. Pointer advances unconditionally.
+- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent. Sets scoreboard pending for `rd`. Pointer advances unconditionally. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
 - **`set_opcoll_free(bool)`**, **`set_unit_ready_fn(fn)`**: External readiness inputs.
+- **`current_diagnostics()`**: Returns the committed per-warp `SchedulerIssueOutcome` array.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `IssueOutput`: `decoded`, `trace`, `warp_id`, `pc`.
 
 ### `include/gpu_sim/timing/operand_collector.h` -- `src/timing/operand_collector.cpp`
@@ -226,6 +242,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 - **`accept(IssueOutput)`**: Sets `cycles_remaining` to 1 (2-operand) or 2 (VDOT8/3-operand).
 - **`evaluate()`**: Decrements counter. When 0, produces output.
 - **`is_free()`**: True when not busy.
+- **Snapshot helpers**: `busy()`, `cycles_remaining()`, `resident_warp()`, `current_instruction()`.
 - **Outputs**: Struct `DispatchInput`: `decoded`, `trace`, `warp_id`, `pc`.
 
 ### `include/gpu_sim/timing/alu_unit.h` -- `src/timing/alu_unit.cpp`
@@ -237,6 +254,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 - **`evaluate()`**: Produces result in `result_buffer_` in 1 cycle.
 - **`is_ready()`**: True when result buffer is empty and no pending input.
 - **`has_result()`** / **`consume_result()`**: Writeback interface.
+- **Snapshot helpers**: `busy()`, `active_warp()`, `pending_input()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/multiply_unit.h` -- `src/timing/multiply_unit.cpp`
 
@@ -244,8 +262,9 @@ Pipelined multiply/VDOT8 unit with configurable depth.
 
 - **`MultiplyUnit(pipeline_stages, stats_ref)`**
 - **`accept()`**: Pushes entry into pipeline shift register with `pipeline_stages` cycles remaining.
-- **`evaluate()`**: Decrements all pipeline entries. Head with 0 remaining moves to `result_buffer_` (structural hazard if occupied -- pipeline stalls).
+- **`evaluate()`**: Decrements pipeline entries toward completion. If the head is ready but `result_buffer_` is occupied, the ready head is held at 0 until writeback consumes the buffer, then it resumes cleanly instead of underflowing.
 - **`is_ready()`**: True when result buffer is empty (can accept into pipeline every cycle).
+- **Snapshot helpers**: `pipeline_occupancy()`, `pipeline_snapshot()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/divide_unit.h` -- `src/timing/divide_unit.cpp`
 
@@ -254,13 +273,14 @@ Iterative divide unit, 32-cycle latency.
 - **`DivideUnit(stats_ref)`**. Constant `DIVIDE_LATENCY = 32`.
 - **`accept()`**: Starts countdown. Busy until complete.
 - **`is_ready()`**: True when not busy and result buffer empty.
+- **Snapshot helpers**: `busy()`, `cycles_remaining()`, `pending_entry()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/tlookup_unit.h` -- `src/timing/tlookup_unit.cpp`
 
 Serial table lookup, 64-cycle latency (2 cycles/lane x 32 lanes).
 
 - **`TLookupUnit(stats_ref)`**. Constant `TLOOKUP_LATENCY = 64`.
-- Same interface pattern as DivideUnit.
+- Same interface pattern as DivideUnit, plus snapshot helpers `busy()`, `cycles_remaining()`, `pending_entry()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/ldst_unit.h` -- `src/timing/ldst_unit.cpp`
 
@@ -269,9 +289,10 @@ Address generation unit with output FIFO.
 - **Struct `AddrGenFIFOEntry`**: `valid`, `warp_id`, `dest_reg`, `is_load`, `is_store`, `trace`, `issue_cycle`.
 - **`LdStUnit(num_ldst_units, fifo_depth, stats_ref)`**
 - **`accept()`**: Begins address generation. Latency = `ceil(32 / num_ldst_units)` cycles.
-- **`evaluate()`**: When address gen completes, pushes entry to FIFO (stalls if FIFO full).
+- **`evaluate()`**: When address gen completes, pushes entry to FIFO. If the FIFO is full, the completed entry is held at 0 cycles remaining until space opens instead of underflowing and disappearing.
 - **`fifo_empty()`**, **`fifo_front()`**, **`fifo_pop()`**: Interface consumed by `CoalescingUnit`.
 - **`has_result()`**: Always false -- LD/ST results flow through cache/MSHR fill path, not through the execution unit result buffer.
+- **Snapshot helpers**: `busy()`, `cycles_remaining()`, `pending_entry()`, `fifo_entries()`.
 
 ### `include/gpu_sim/timing/writeback_arbiter.h` -- `src/timing/writeback_arbiter.cpp`
 
@@ -282,24 +303,30 @@ Round-robin writeback arbitration among execution units and MSHR fills.
 - **`submit_fill(WritebackEntry)`**: Accepts cache hit or MSHR fill results into a dedicated fill buffer.
 - **`evaluate()`**: Round-robin scans sources + fill buffer. First with valid result wins. Calls `scoreboard_.clear_pending(warp, reg)`. Counts conflicts when multiple sources ready.
 - **`committed_entry()`**: The writeback that happened this cycle (for trace/stats).
+- **`has_pending_work()`**: Reports buffered fill/writeback work so DONE/PANIC waits for the writeback path to drain.
+- **Snapshot helpers**: `fill_buffer_entry()`, `ready_source_count()`.
 
 ### `include/gpu_sim/timing/cache.h` -- `src/timing/cache.cpp`
 
 Direct-mapped L1 data cache with MSHRs and write buffer.
 
+- **Enum `CacheStallReason`**: `NONE`, `MSHR_FULL`, `WRITE_BUFFER_FULL`.
 - **`L1Cache(cache_size, line_size, num_mshrs, write_buffer_depth, mem_if_ref, stats_ref)`**
-- **`process_load(addr, warp_id, dest_reg, results, issue_cycle, wb_out)`**: Hit -> fills `wb_out` immediately. Miss -> allocates MSHR, submits read to external memory. Returns false if MSHR full (stall).
-- **`process_store(line_addr)`**: Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate). Returns false if MSHR or write buffer full.
-- **`handle_responses(wb_out, wb_valid)`**: Processes external memory responses. Installs cache lines. For load misses: produces writeback entry. For store misses: installs line and pushes to write buffer.
+- **`process_load(addr, warp_id, dest_reg, results, issue_cycle, pc, raw_instruction, wb_out)`**: Hit -> fills `wb_out` immediately. Miss -> allocates MSHR, submits read to external memory, and records a one-cycle miss-allocation trace event. Returns false if MSHR full (stall).
+- **`process_store(line_addr, warp_id, issue_cycle, pc, raw_instruction)`**: Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate) with trace metadata. Returns false if MSHR or write buffer full.
+- **`handle_responses(wb_out, wb_valid)`**: Processes at most one readable cache-line fill per cycle. Responses are buffered internally if a store fill is blocked by the write buffer, so MSHRs are not freed early and multiple fills are replayed across cycles instead of being dropped.
 - **`drain_write_buffer()`**: Submits one write-buffer entry per cycle to external memory.
+- **`evaluate()`**: Clears one-cycle cache backpressure so the coalescer retries once resources free up.
+- **`is_idle()`**: True only when there are no live MSHRs, queued write-through entries, or pending fills.
+- **Snapshot helpers**: `stall_reason()`, `active_mshr_count()`, `write_buffer_size()`, `pending_fill()`, `mshrs()`, `last_miss_event()`, `last_fill_event()`.
 - **Indexing**: `set = (addr / line_size) % num_sets`, `tag = addr / line_size / num_sets`.
 
 ### `include/gpu_sim/timing/mshr.h` -- `src/timing/mshr.cpp`
 
 Miss Status Holding Registers.
 
-- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`).
-- **Class `MSHRFile`**: Vector of entries. `allocate(entry)` -> index or -1. `free(index)`. `has_free()`. `at(index)`.
+- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`).
+- **Class `MSHRFile`**: Vector of entries. `allocate(entry)` -> index or -1. `free(index)`. `has_free()`. `has_active()`. `at(index)`.
 
 ### `include/gpu_sim/timing/coalescing_unit.h` -- `src/timing/coalescing_unit.cpp`
 
@@ -307,6 +334,8 @@ All-or-nothing address coalescing.
 
 - **`CoalescingUnit(ldst_ref, cache_ref, line_size, stats_ref)`**
 - **`evaluate(wb_out, wb_valid)`**: Pulls entry from LD/ST FIFO. Checks if all 32 thread addresses fall in the same cache line. If yes: 1 cache request. If no: serializes to 32 individual requests (1 per cycle). Stalls if cache cannot accept.
+- **`is_idle()`**: Reports whether the unit is currently holding a warp entry mid-coalescing/serialization.
+- **Snapshot helpers**: `active_warp()`, `current_entry()`, `is_coalesced()`, `serial_index()`.
 
 ### `include/gpu_sim/timing/memory_interface.h` -- `src/timing/memory_interface.cpp`
 
@@ -318,30 +347,44 @@ Fixed-latency external memory model.
 - **`submit_read(line_addr, mshr_id)`**, **`submit_write(line_addr)`**: Enqueue request with `latency` countdown.
 - **`evaluate()`**: Decrements all in-flight countdowns. Moves completed requests to response queue.
 - **`has_response()`**, **`get_response()`**: Response consumption interface.
+- **`is_idle()`**: True only when no requests are in flight and no responses are queued.
+- **Snapshot helpers**: `in_flight_count()`, `response_count()`.
 
 ### `include/gpu_sim/timing/panic_controller.h` -- `src/timing/panic_controller.cpp`
 
 EBREAK state machine.
 
 - **`PanicController(num_warps, warps_ptr, func_model_ref)`**
-- **`trigger(warp_id, pc)`**: Activates the 5-step panic sequence.
-- **`evaluate()`**: Steps 0-2: diagnostic latching (1 cycle each). Step 3: drain in-flight instructions (waits for `units_drained_` or `MAX_DRAIN_CYCLES = 64`). Step 4: marks all warps inactive, sets `done_`.
-- **`set_units_drained(bool)`**: Called by timing model each cycle with `all_units_idle()`.
+- **`trigger(warp_id, pc)`**: Activates the decode-detected panic sequence.
+- **`evaluate()`**: Cycle 1 asserts panic-pending. Cycle 2 reads `r31` lane 0 and latches panic diagnostics into `FunctionalModel`. Later cycles drain the full execute/memory pipeline (bounded by `MAX_DRAIN_CYCLES = 64`) before marking all warps inactive and setting `done_`.
+- **`set_units_drained(bool)`**: Called by timing model each cycle with `pipeline_drained()`.
 - **`is_active()`**, **`is_done()`**: State queries.
+- **Snapshot helpers**: `step()`, `panic_warp()`, `panic_pc()`, `panic_cause()`.
 
 ### `include/gpu_sim/timing/timing_model.h` -- `src/timing/timing_model.cpp`
 
 Top-level cycle stepper wiring everything together.
 
-- **`TimingModel(config, func_model_ref, stats_ref)`**: Constructs and wires all sub-components. Sets up scheduler's unit readiness callback.
+- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Sets up scheduler's unit readiness callback. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. Forward-order evaluation:
-  1. `scoreboard_.seed_next()`
+  1. `scoreboard_.seed_next()` and `cache_.evaluate()`
   2. `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`
   3. All `.commit()`
-  4. Termination check: `all_warps_done() && all_units_idle()`
+  4. Termination check: `all_warps_done() && pipeline_drained()`
 - **`run(max_cycles)`**: Calls `tick()` in a loop.
 - **`dispatch_to_unit(DispatchInput)`**: Routes to appropriate execution unit. ECALL marks warp inactive. CSR reads routed through ALU.
+- **`pipeline_drained()`**: Includes operand collector, execution units, coalescer, cache, memory interface, and buffered writeback state so DONE/PANIC waits for the whole timing pipeline rather than only the arithmetic units.
+- **`build_cycle_snapshot()`**: Classifies each warp after commit into one `WarpTraceState` plus optional `WarpRestReason`, preferring explicit ownership (`fetch`, `decode_pending`, `operand_collect`, `execute_*`, `addr_gen`, `ldst_fifo`, `coalescing`, `memory_wait`, `writeback_wait`, `panic_drain`) and falling back to committed scheduler diagnostics for active rest reasons.
+- **`record_cycle_trace()` / `emit_cycle_events()`**: Coalesce adjacent identical warp/hardware states into complete trace slices, emit per-cycle counters, and publish instant events (`issue`, `branch_redirect`, `writeback`, `panic_trigger`, `cache_miss_alloc`, `memory_response_complete`).
+- **`last_cycle_snapshot()`**: Returns the most recent committed `CycleTraceSnapshot` for tests.
 - **`trace_cycle()`**: Prints per-cycle pipeline state to stderr when `--trace` enabled.
+
+### Structured Trace Workflow
+
+- Run the simulator with `--trace-file=/tmp/gpu_trace.json` to emit Chrome trace JSON while preserving the simulator's normal stdout/stderr reporting.
+- Open the file in Perfetto using its legacy Chrome-trace import path.
+- Warp tracks show coalesced state slices; hardware tracks show occupancy/state slices; counter tracks expose active warps, unit occupancy, LD/ST FIFO depth, active MSHRs, and write-buffer depth.
+- Helper analysis queries live in [`/resources/perfetto_trace_queries.sql`](/Users/colinbaird/Projects/GPU/resources/perfetto_trace_queries.sql).
 
 ---
 
@@ -355,14 +398,15 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_alu.cpp` | 30 | All ALU ops, MUL/DIV edge cases (overflow, div-by-zero), VDOT8 byte patterns, branch conditions. |
 | `test_functional.cpp` | 16 | End-to-end functional model: ADDI chains, x0 discard, load/store, branches, ECALL/EBREAK, CSR, VDOT8, TLOOKUP, kernel args, multi-warp independence. |
 | `test_scoreboard.cpp` | 9 | r0 never pending, set/clear, double-buffer isolation, same-cycle set+clear, multi-warp independence, seed_next, all-registers, reset. |
-| `test_cache.cpp` | 7 | Load miss-then-hit, store hit write buffer, store miss write-allocate, MSHR stall, direct-mapped eviction, write buffer full, reset. |
+| `test_cache.cpp` | 10 | Load miss-then-hit, transient MSHR retry, store hit write buffer, store miss write-allocate, store-fill write-buffer backpressure, replayed multiple fills, direct-mapped eviction, write buffer full, reset. |
 | `test_coalescing.cpp` | 3 | Contiguous addresses coalesce (1 request), scattered addresses serialize (32), boundary case (1 lane different). |
-| `test_warp_scheduler.cpp` | 8 | Issues from buffer, skips empty, scoreboard stall, opcoll-busy stall, unit-busy stall, RR fairness, scoreboard-pending-on-issue, idle pointer advance. |
+| `test_warp_scheduler.cpp` | 10 | Issues from buffer, skips empty, scoreboard stall, VDOT8 rd-as-source hazard, opcoll-busy stall, unit-busy stall, RR fairness, committed scheduler diagnostics, scoreboard-pending-on-issue, idle pointer advance. |
 | `test_branch.cpp` | 4 | Taken branch redirect+flush, not-taken no penalty, loop iteration counting, taken vs straight-line cycle comparison. |
 | `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
-| `test_integration.cpp` | 19 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit. |
+| `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
+| `test_timing_components.cpp` | 12 | Fetch/decode backpressure, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration. |
 
-**Totals**: 124 test cases, 833 assertions.
+**Totals**: 145 test cases.
 
 ---
 

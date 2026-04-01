@@ -20,6 +20,17 @@ public:
     ExecUnit get_type() const override { return ExecUnit::ALU; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
+    bool busy() const { return has_pending_; }
+    std::optional<uint32_t> active_warp() const {
+        if (!has_pending_) return std::nullopt;
+        return pending_input_.warp_id;
+    }
+    const DispatchInput* pending_input() const {
+        return has_pending_ ? &pending_input_ : nullptr;
+    }
+    const WritebackEntry* result_entry() const {
+        return result_buffer_.valid ? &result_buffer_ : nullptr;
+    }
 
 private:
     Stats& stats_;

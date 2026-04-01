@@ -134,6 +134,7 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         if (eq == std::string::npos) {
             // Boolean flags
             if (arg == "--trace") trace_enabled = true;
+            else if (arg == "--trace-text") trace_enabled = true;
             else if (arg == "--functional-only") functional_only = true;
             continue;
         }

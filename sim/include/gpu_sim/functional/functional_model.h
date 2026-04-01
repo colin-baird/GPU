@@ -32,6 +32,7 @@ public:
     uint32_t panic_warp() const { return panic_warp_; }
     uint32_t panic_cause() const { return panic_cause_; }
     uint32_t panic_pc() const { return panic_pc_; }
+    void latch_panic(WarpId warp, uint32_t pc, uint32_t cause);
 
     // Initialize all warps for kernel launch
     void init_kernel(const SimConfig& config);

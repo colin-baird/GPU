@@ -37,9 +37,11 @@ TEST_CASE("Panic: EBREAK halts simulation", "[panic]") {
 
     // Program:
     // 0x00: ADDI x31, x0, 0xAB  # Set panic cause
-    // 0x04: EBREAK
+    // 0x04: ADDI x0, x0, 0      # Bubble so x31 reaches committed state
+    // 0x08: EBREAK
     model.instruction_memory().write(0, encode_addi(31, 0, 0xAB));
-    model.instruction_memory().write(1, encode_ebreak());
+    model.instruction_memory().write(1, encode_addi(0, 0, 0));
+    model.instruction_memory().write(2, encode_ebreak());
     model.init_kernel(config);
 
     Stats stats;
@@ -48,6 +50,10 @@ TEST_CASE("Panic: EBREAK halts simulation", "[panic]") {
 
     // Simulation should have terminated early (EBREAK triggers panic controller)
     REQUIRE(timing.cycle_count() < 1000);
+    REQUIRE(model.is_panicked());
+    REQUIRE(model.panic_warp() == 0);
+    REQUIRE(model.panic_pc() == 0x08);
+    REQUIRE(model.panic_cause() == 0xAB);
 }
 
 TEST_CASE("Panic: multi-warp EBREAK marks all warps inactive", "[panic]") {
@@ -95,25 +101,24 @@ TEST_CASE("PanicController: state machine progression", "[panic]") {
     REQUIRE(panic.is_active());
     REQUIRE_FALSE(panic.is_done());
 
-    // Steps 0-2: diagnostic latching (3 cycles)
+    // Two cycles to latch panic diagnostics, then drain.
     panic.evaluate(); // step 0 -> 1
     REQUIRE_FALSE(panic.is_done());
     panic.evaluate(); // step 1 -> 2
     REQUIRE_FALSE(panic.is_done());
-    panic.evaluate(); // step 2 -> 3
-    REQUIRE_FALSE(panic.is_done());
+    REQUIRE(model.is_panicked());
+    REQUIRE(model.panic_warp() == 0);
+    REQUIRE(model.panic_pc() == 0x04);
 
-    // Step 3: drain -- report units not drained
+    // Drain step -- report units not drained
     panic.set_units_drained(false);
     panic.evaluate(); // still draining
     REQUIRE_FALSE(panic.is_done());
 
     // Now report units drained
     panic.set_units_drained(true);
-    panic.evaluate(); // step 3 -> 4
-    REQUIRE_FALSE(panic.is_done()); // step 4 hasn't run yet
-
-    // Step 4: mark all inactive
+    panic.evaluate(); // drain -> halt
+    REQUIRE_FALSE(panic.is_done());
     panic.evaluate();
     REQUIRE(panic.is_done());
 

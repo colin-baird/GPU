@@ -9,6 +9,11 @@ FetchStage::FetchStage(uint32_t num_warps, WarpState* warps,
 void FetchStage::evaluate() {
     next_output_ = std::nullopt;
 
+    if (stalled_) {
+        stats_.fetch_skip_count++;
+        return;
+    }
+
     uint32_t w = rr_pointer_;
     if (w < num_warps_ && warps_[w].active && !warps_[w].instr_buffer.is_full()) {
         uint32_t pc = warps_[w].pc;
@@ -31,6 +36,7 @@ void FetchStage::commit() {
 
 void FetchStage::reset() {
     rr_pointer_ = 0;
+    stalled_ = false;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
 }

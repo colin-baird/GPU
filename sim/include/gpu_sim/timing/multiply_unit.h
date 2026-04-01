@@ -9,6 +9,13 @@ namespace gpu_sim {
 
 class MultiplyUnit : public ExecutionUnit {
 public:
+    struct PipelineSnapshot {
+        uint32_t warp_id = 0;
+        uint32_t pc = 0;
+        uint32_t raw_instruction = 0;
+        uint8_t dest_reg = 0;
+    };
+
     MultiplyUnit(uint32_t pipeline_stages, Stats& stats)
         : pipeline_stages_(pipeline_stages), stats_(stats) {}
 
@@ -21,6 +28,13 @@ public:
     ExecUnit get_type() const override { return ExecUnit::MULTIPLY; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
+    bool busy() const { return !pipeline_.empty(); }
+    uint32_t pipeline_occupancy() const { return static_cast<uint32_t>(pipeline_.size()); }
+    std::vector<uint32_t> active_warps() const;
+    std::vector<PipelineSnapshot> pipeline_snapshot() const;
+    const WritebackEntry* result_entry() const {
+        return result_buffer_.valid ? &result_buffer_ : nullptr;
+    }
 
 private:
     struct PipelineEntry {

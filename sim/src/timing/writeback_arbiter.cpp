@@ -68,6 +68,30 @@ void WritebackArbiter::commit() {
     committed_ = pending_commit_;
 }
 
+bool WritebackArbiter::has_pending_work() const {
+    if (fill_buffer_.valid || pending_commit_.has_value()) {
+        return true;
+    }
+
+    for (const auto* source : sources_) {
+        if (source->has_result()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+uint32_t WritebackArbiter::ready_source_count() const {
+    uint32_t count = fill_buffer_.valid ? 1 : 0;
+    for (const auto* source : sources_) {
+        if (source->has_result()) {
+            count++;
+        }
+    }
+    return count;
+}
+
 void WritebackArbiter::reset() {
     rr_pointer_ = 0;
     committed_ = std::nullopt;

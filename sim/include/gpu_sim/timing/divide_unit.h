@@ -19,6 +19,18 @@ public:
     ExecUnit get_type() const override { return ExecUnit::DIVIDE; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
+    bool busy() const { return busy_; }
+    uint32_t cycles_remaining() const { return cycles_remaining_; }
+    std::optional<uint32_t> active_warp() const {
+        if (!busy_) return std::nullopt;
+        return pending_result_.warp_id;
+    }
+    const WritebackEntry* pending_entry() const {
+        return busy_ ? &pending_result_ : nullptr;
+    }
+    const WritebackEntry* result_entry() const {
+        return result_buffer_.valid ? &result_buffer_ : nullptr;
+    }
 
 private:
     static constexpr uint32_t DIVIDE_LATENCY = 32;

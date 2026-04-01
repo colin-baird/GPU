@@ -12,6 +12,8 @@ struct WritebackEntry {
     uint8_t dest_reg = 0;
     std::array<uint32_t, WARP_SIZE> values{};
     ExecUnit source_unit = ExecUnit::NONE;
+    uint32_t pc = 0;
+    uint32_t raw_instruction = 0;
     uint64_t issue_cycle = 0;  // For latency tracking
 };
 

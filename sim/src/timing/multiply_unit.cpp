@@ -9,6 +9,8 @@ void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
     entry.wb.dest_reg = input.decoded.rd;
     entry.wb.values = input.trace.results;
     entry.wb.source_unit = ExecUnit::MULTIPLY;
+    entry.wb.pc = input.pc;
+    entry.wb.raw_instruction = input.decoded.raw;
     entry.wb.issue_cycle = cycle;
     entry.cycles_remaining = pipeline_stages_;
     pipeline_.push_back(entry);
@@ -18,8 +20,16 @@ void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
 void MultiplyUnit::evaluate() {
     stats_.mul_stats.busy_cycles += pipeline_.empty() ? 0 : 1;
 
+    bool head_blocked = result_buffer_.valid && !pipeline_.empty() &&
+                        pipeline_.front().cycles_remaining == 0;
+
     for (auto& entry : pipeline_) {
-        entry.cycles_remaining--;
+        if (head_blocked && &entry == &pipeline_.front()) {
+            continue;
+        }
+        if (entry.cycles_remaining > 0) {
+            entry.cycles_remaining--;
+        }
     }
 
     // Check if head of pipeline is done
@@ -57,6 +67,29 @@ WritebackEntry MultiplyUnit::consume_result() {
     WritebackEntry entry = result_buffer_;
     result_buffer_.valid = false;
     return entry;
+}
+
+std::vector<uint32_t> MultiplyUnit::active_warps() const {
+    std::vector<uint32_t> warps;
+    warps.reserve(pipeline_.size());
+    for (const auto& entry : pipeline_) {
+        warps.push_back(entry.wb.warp_id);
+    }
+    return warps;
+}
+
+std::vector<MultiplyUnit::PipelineSnapshot> MultiplyUnit::pipeline_snapshot() const {
+    std::vector<PipelineSnapshot> snapshot;
+    snapshot.reserve(pipeline_.size());
+    for (const auto& entry : pipeline_) {
+        PipelineSnapshot item;
+        item.warp_id = entry.wb.warp_id;
+        item.pc = entry.wb.pc;
+        item.raw_instruction = entry.wb.raw_instruction;
+        item.dest_reg = entry.wb.dest_reg;
+        snapshot.push_back(item);
+    }
+    return snapshot;
 }
 
 } // namespace gpu_sim

@@ -8,6 +8,7 @@
 #include "gpu_sim/stats.h"
 #include <optional>
 #include <functional>
+#include <array>
 
 namespace gpu_sim {
 
@@ -16,6 +17,20 @@ struct IssueOutput {
     TraceEvent trace;
     uint32_t warp_id;
     uint32_t pc;
+};
+
+enum class SchedulerIssueOutcome {
+    INACTIVE,
+    BUFFER_EMPTY,
+    SCOREBOARD,
+    OPCOLL_BUSY,
+    UNIT_BUSY_ALU,
+    UNIT_BUSY_MULTIPLY,
+    UNIT_BUSY_DIVIDE,
+    UNIT_BUSY_TLOOKUP,
+    UNIT_BUSY_LDST,
+    READY_NOT_SELECTED,
+    ISSUED
 };
 
 class WarpScheduler : public PipelineStage {
@@ -38,9 +53,13 @@ public:
 
     std::optional<IssueOutput>& output() { return next_output_; }
     const std::optional<IssueOutput>& current_output() const { return current_output_; }
+    const std::array<SchedulerIssueOutcome, MAX_WARPS>& current_diagnostics() const {
+        return current_diagnostics_;
+    }
 
 private:
     bool is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const;
+    static SchedulerIssueOutcome unit_busy_outcome(ExecUnit unit);
 
     uint32_t num_warps_;
     WarpState* warps_;
@@ -54,6 +73,8 @@ private:
 
     std::optional<IssueOutput> current_output_;
     std::optional<IssueOutput> next_output_;
+    std::array<SchedulerIssueOutcome, MAX_WARPS> current_diagnostics_{};
+    std::array<SchedulerIssueOutcome, MAX_WARPS> next_diagnostics_{};
 };
 
 } // namespace gpu_sim

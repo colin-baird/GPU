@@ -5,6 +5,9 @@
 #include "gpu_sim/stats.h"
 #include "gpu_sim/isa.h"
 #include "gpu_sim/decoder.h"
+#include <cstdio>
+#include <fstream>
+#include <sstream>
 
 using namespace gpu_sim;
 
@@ -124,6 +127,13 @@ struct IntegrationFixture {
     }
 };
 
+static std::string slurp_file(const std::string& path) {
+    std::ifstream in(path);
+    std::ostringstream out;
+    out << in.rdbuf();
+    return out.str();
+}
+
 // ========== Integration Tests ==========
 
 TEST_CASE("Integration: ADD chain correctness and completion", "[integration]") {
@@ -225,6 +235,124 @@ TEST_CASE("Integration: store then load same address", "[integration]") {
 
     // The functional model handles store-load forwarding correctly
     REQUIRE(f.reg(0, 0, 6) == 42);
+}
+
+TEST_CASE("Integration: completion waits for write-through drain", "[integration]") {
+    IntegrationFixture f;
+    f.config.kernel_args[0] = 0x1000;
+    f.config.external_memory_latency_cycles = 10;
+    f.model = FunctionalModel(f.config);
+
+    f.load_program({
+        ADDI(5, 0, 42),
+        SW(5, 1, 0),
+        ECALL()
+    });
+
+    uint64_t cycles = f.run();
+
+    REQUIRE(f.stats.external_memory_reads == 1);
+    REQUIRE(f.stats.external_memory_writes == 1);
+    REQUIRE(cycles >= 20);
+}
+
+TEST_CASE("Trace snapshot: load miss is classified as memory_wait", "[integration][trace]") {
+    IntegrationFixture f;
+    f.config.kernel_args[0] = 0x1000;
+    f.config.external_memory_latency_cycles = 20;
+    f.model = FunctionalModel(f.config);
+    f.model.memory().write32(0x1000, 0xDEADBEEF);
+
+    f.load_program({
+        LW(5, 1, 0),
+        ADDI(6, 5, 1),
+        ECALL()
+    });
+
+    TimingModel timing(f.config, f.model, f.stats);
+    bool saw_memory_wait = false;
+    for (uint32_t i = 0; i < 40 && timing.tick(); ++i) {
+        REQUIRE(timing.last_cycle_snapshot().has_value());
+        const auto& warp = timing.last_cycle_snapshot()->warps[0];
+        if (warp.state == WarpTraceState::MEMORY_WAIT) {
+            saw_memory_wait = true;
+            REQUIRE(warp.rest_reason == WarpRestReason::WAIT_MEMORY_RESPONSE);
+            REQUIRE(warp.pc == 0);
+            REQUIRE(warp.raw_instruction == LW(5, 1, 0));
+            break;
+        }
+    }
+    REQUIRE(saw_memory_wait);
+}
+
+TEST_CASE("Trace snapshot: MSHR pressure is classified as wait_l1_mshr", "[integration][trace]") {
+    IntegrationFixture f(2);
+    f.config.num_warps = 2;
+    f.config.num_mshrs = 1;
+    f.config.kernel_args[0] = 0x1000;
+    f.config.external_memory_latency_cycles = 20;
+    f.model = FunctionalModel(f.config);
+    f.model.memory().write32(0x1000, 0x12345678);
+
+    f.load_program({
+        LW(5, 1, 0),
+        ADDI(6, 5, 1),
+        ECALL()
+    });
+
+    TimingModel timing(f.config, f.model, f.stats);
+    bool saw_mshr_wait = false;
+    for (uint32_t i = 0; i < 60 && timing.tick(); ++i) {
+        REQUIRE(timing.last_cycle_snapshot().has_value());
+        const auto& snapshot = *timing.last_cycle_snapshot();
+        for (uint32_t w = 0; w < 2; ++w) {
+            const auto& warp = snapshot.warps[w];
+            if (warp.state == WarpTraceState::AT_REST &&
+                warp.rest_reason == WarpRestReason::WAIT_L1_MSHR) {
+                saw_mshr_wait = true;
+            }
+        }
+        if (saw_mshr_wait) {
+            break;
+        }
+    }
+    REQUIRE(saw_mshr_wait);
+}
+
+TEST_CASE("Trace file: emits Chrome trace JSON with warp states and counters",
+          "[integration][trace]") {
+    IntegrationFixture f(2);
+    f.config.kernel_args[0] = 0x1000;
+    f.config.external_memory_latency_cycles = 20;
+    f.model = FunctionalModel(f.config);
+    f.model.memory().write32(0x1000, 0xCAFEBABE);
+
+    f.load_program({
+        LW(5, 1, 0),
+        ADDI(6, 5, 1),
+        ECALL()
+    });
+
+    const std::string trace_path = "/tmp/gpu_trace_integration_test.json";
+    std::remove(trace_path.c_str());
+
+    TimingTraceOptions trace_options;
+    trace_options.output_path = trace_path;
+
+    {
+        TimingModel timing(f.config, f.model, f.stats, trace_options);
+        timing.run(200);
+    }
+
+    const std::string trace = slurp_file(trace_path);
+    REQUIRE_FALSE(trace.empty());
+    REQUIRE(trace.find("\"traceEvents\"") != std::string::npos);
+    REQUIRE(trace.find("Warp 0") != std::string::npos);
+    REQUIRE(trace.find("active_warps") != std::string::npos);
+    REQUIRE(trace.find("memory_wait") != std::string::npos);
+    REQUIRE(trace.find("issue") != std::string::npos);
+
+    std::remove(trace_path.c_str());
 }
 
 TEST_CASE("Integration: branch loop", "[integration]") {
@@ -413,6 +541,8 @@ TEST_CASE("Integration: multiply pipeline latency > ALU", "[integration]") {
     timing_mul.run(1000);
 
     // MUL chain should take more cycles than ADD chain due to higher latency
+    REQUIRE(timing_add.cycle_count() < 1000);
+    REQUIRE(timing_mul.cycle_count() < 1000);
     REQUIRE(timing_mul.cycle_count() > timing_add.cycle_count());
 }
 

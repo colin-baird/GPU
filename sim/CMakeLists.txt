@@ -31,6 +31,7 @@ add_library(gpu_sim_lib
     src/timing/coalescing_unit.cpp
     src/timing/memory_interface.cpp
     src/timing/panic_controller.cpp
+    src/timing/timing_trace.cpp
     src/timing/timing_model.cpp
 )
 

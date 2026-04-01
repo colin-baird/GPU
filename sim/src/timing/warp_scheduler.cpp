@@ -2,6 +2,17 @@
 
 namespace gpu_sim {
 
+SchedulerIssueOutcome WarpScheduler::unit_busy_outcome(ExecUnit unit) {
+    switch (unit) {
+        case ExecUnit::ALU:      return SchedulerIssueOutcome::UNIT_BUSY_ALU;
+        case ExecUnit::MULTIPLY: return SchedulerIssueOutcome::UNIT_BUSY_MULTIPLY;
+        case ExecUnit::DIVIDE:   return SchedulerIssueOutcome::UNIT_BUSY_DIVIDE;
+        case ExecUnit::TLOOKUP:  return SchedulerIssueOutcome::UNIT_BUSY_TLOOKUP;
+        case ExecUnit::LDST:     return SchedulerIssueOutcome::UNIT_BUSY_LDST;
+        default:                 return SchedulerIssueOutcome::OPCOLL_BUSY;
+    }
+}
+
 WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
                              Scoreboard& scoreboard, FunctionalModel& func_model,
                              Stats& stats)
@@ -20,15 +31,24 @@ bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d
 
 void WarpScheduler::evaluate() {
     next_output_ = std::nullopt;
+    next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
 
     bool issued = false;
+    uint32_t selected_warp = 0;
+    BufferEntry selected_entry{};
+    bool has_selected_entry = false;
 
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
 
-        if (!warps_[w].active) continue;
+        if (!warps_[w].active) {
+            next_diagnostics_[w] = SchedulerIssueOutcome::INACTIVE;
+            continue;
+        }
+
         if (warps_[w].instr_buffer.is_empty()) {
             stats_.warp_stall_buffer_empty[w]++;
+            next_diagnostics_[w] = SchedulerIssueOutcome::BUFFER_EMPTY;
             continue;
         }
 
@@ -36,45 +56,49 @@ void WarpScheduler::evaluate() {
 
         if (!is_scoreboard_clear(w, entry.decoded)) {
             stats_.warp_stall_scoreboard[w]++;
+            next_diagnostics_[w] = SchedulerIssueOutcome::SCOREBOARD;
             continue;
         }
 
         if (!opcoll_free_) {
+            next_diagnostics_[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
             continue;
         }
 
         if (unit_ready_fn_ && !unit_ready_fn_(entry.decoded.target_unit)) {
             stats_.warp_stall_unit_busy[w]++;
+            next_diagnostics_[w] = unit_busy_outcome(entry.decoded.target_unit);
             continue;
         }
 
-        // Issue this instruction
-        IssueOutput out;
-        out.decoded = entry.decoded;
-        out.warp_id = w;
-        out.pc = entry.pc;
+        next_diagnostics_[w] = SchedulerIssueOutcome::READY_NOT_SELECTED;
 
-        // Call functional model to execute
-        out.trace = func_model_.execute(w, entry.pc);
-
-        next_output_ = out;
-        issued = true;
-
-        // Pop from buffer (will take effect at commit)
-        warps_[w].instr_buffer.pop();
-
-        // Set scoreboard pending for destination register
-        if (entry.decoded.has_rd && entry.decoded.rd != 0) {
-            scoreboard_.set_pending(w, entry.decoded.rd);
+        if (!issued) {
+            issued = true;
+            selected_warp = w;
+            selected_entry = entry;
+            has_selected_entry = true;
         }
-
-        stats_.total_instructions_issued++;
-        stats_.warp_instructions[w]++;
-        break;
     }
 
     if (!issued) {
         stats_.scheduler_idle_cycles++;
+    } else if (has_selected_entry) {
+        IssueOutput out;
+        out.decoded = selected_entry.decoded;
+        out.warp_id = selected_warp;
+        out.pc = selected_entry.pc;
+        out.trace = func_model_.execute(selected_warp, selected_entry.pc);
+        next_output_ = out;
+
+        warps_[selected_warp].instr_buffer.pop();
+        if (selected_entry.decoded.has_rd && selected_entry.decoded.rd != 0) {
+            scoreboard_.set_pending(selected_warp, selected_entry.decoded.rd);
+        }
+
+        next_diagnostics_[selected_warp] = SchedulerIssueOutcome::ISSUED;
+        stats_.total_instructions_issued++;
+        stats_.warp_instructions[selected_warp]++;
     }
 
     // RR pointer always advances
@@ -83,6 +107,7 @@ void WarpScheduler::evaluate() {
 
 void WarpScheduler::commit() {
     current_output_ = next_output_;
+    current_diagnostics_ = next_diagnostics_;
 }
 
 void WarpScheduler::reset() {
@@ -90,6 +115,8 @@ void WarpScheduler::reset() {
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
     opcoll_free_ = true;
+    current_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+    next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
 }
 
 } // namespace gpu_sim

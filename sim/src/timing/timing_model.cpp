@@ -1,54 +1,164 @@
 #include "gpu_sim/timing/timing_model.h"
-#include <iostream>
 #include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
 
 namespace gpu_sim {
 
-TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, Stats& stats)
+namespace {
+
+constexpr int kWarpPid = 100;
+constexpr int kHardwarePid = 200;
+constexpr int kCounterPid = 300;
+
+constexpr int kOpcollTid = 1;
+constexpr int kAluTid = 2;
+constexpr int kMulTid = 3;
+constexpr int kDivTid = 4;
+constexpr int kTlookupTid = 5;
+constexpr int kLdstTid = 6;
+constexpr int kCoalescerTid = 7;
+constexpr int kCacheTid = 8;
+constexpr int kWritebackTid = 9;
+constexpr int kPanicTid = 10;
+constexpr size_t kHardwareTrackCount = 10;
+
+const char* exec_unit_name(ExecUnit unit) {
+    switch (unit) {
+        case ExecUnit::ALU:      return "alu";
+        case ExecUnit::MULTIPLY: return "multiply";
+        case ExecUnit::DIVIDE:   return "divide";
+        case ExecUnit::TLOOKUP:  return "tlookup";
+        case ExecUnit::LDST:     return "ldst";
+        case ExecUnit::SYSTEM:   return "system";
+        default:                 return "none";
+    }
+}
+
+WarpRestReason scheduler_rest_reason(SchedulerIssueOutcome outcome) {
+    switch (outcome) {
+        case SchedulerIssueOutcome::BUFFER_EMPTY:      return WarpRestReason::WAIT_FRONTEND;
+        case SchedulerIssueOutcome::SCOREBOARD:        return WarpRestReason::WAIT_SCOREBOARD;
+        case SchedulerIssueOutcome::OPCOLL_BUSY:       return WarpRestReason::WAIT_OPCOLL;
+        case SchedulerIssueOutcome::UNIT_BUSY_ALU:     return WarpRestReason::WAIT_UNIT_ALU;
+        case SchedulerIssueOutcome::UNIT_BUSY_MULTIPLY:return WarpRestReason::WAIT_UNIT_MULTIPLY;
+        case SchedulerIssueOutcome::UNIT_BUSY_DIVIDE:  return WarpRestReason::WAIT_UNIT_DIVIDE;
+        case SchedulerIssueOutcome::UNIT_BUSY_TLOOKUP: return WarpRestReason::WAIT_UNIT_TLOOKUP;
+        case SchedulerIssueOutcome::UNIT_BUSY_LDST:    return WarpRestReason::WAIT_UNIT_LDST;
+        case SchedulerIssueOutcome::READY_NOT_SELECTED:return WarpRestReason::WAIT_ROUND_ROBIN;
+        default:                                       return WarpRestReason::NONE;
+    }
+}
+
+void fill_from_decoded(WarpTraceSnapshot& warp, uint32_t pc,
+                       const DecodedInstruction& decoded) {
+    warp.pc = pc;
+    warp.raw_instruction = decoded.raw;
+    warp.target_unit = decoded.target_unit;
+    warp.dest_reg = decoded.rd;
+}
+
+void fill_from_writeback(WarpTraceSnapshot& warp, const WritebackEntry& wb) {
+    warp.pc = wb.pc;
+    warp.raw_instruction = wb.raw_instruction;
+    warp.target_unit = wb.source_unit;
+    warp.dest_reg = wb.dest_reg;
+}
+
+std::string make_warp_key(const WarpTraceSnapshot& warp) {
+    std::ostringstream out;
+    out << static_cast<int>(warp.state) << ':' << static_cast<int>(warp.rest_reason)
+        << ':' << warp.pc << ':' << warp.raw_instruction << ':'
+        << static_cast<int>(warp.target_unit) << ':' << static_cast<int>(warp.dest_reg)
+        << ':' << warp.branch_taken << ':' << warp.branch_target << ':'
+        << warp.has_memory_address << ':' << warp.first_memory_address << ':'
+        << warp.coalesced_memory;
+    return out.str();
+}
+
+TraceArgs make_warp_args(const WarpTraceSnapshot& warp, uint64_t cycle) {
+    TraceArgs args;
+    args.emplace_back("cycle", static_cast<uint64_t>(cycle));
+    args.emplace_back("state", std::string(to_string(warp.state)));
+    if (warp.rest_reason != WarpRestReason::NONE) {
+        args.emplace_back("rest_reason", std::string(to_string(warp.rest_reason)));
+    }
+    args.emplace_back("pc", static_cast<uint64_t>(warp.pc));
+    args.emplace_back("raw_instruction", static_cast<uint64_t>(warp.raw_instruction));
+    args.emplace_back("target_unit", std::string(exec_unit_name(warp.target_unit)));
+    args.emplace_back("dest_reg", static_cast<uint64_t>(warp.dest_reg));
+    if (warp.branch_taken) {
+        args.emplace_back("branch_target", static_cast<uint64_t>(warp.branch_target));
+    }
+    if (warp.has_memory_address) {
+        args.emplace_back("first_memory_address",
+                          static_cast<uint64_t>(warp.first_memory_address));
+        args.emplace_back("coalesced_memory", warp.coalesced_memory);
+    }
+    return args;
+}
+
+std::string warp_slice_name(const WarpTraceSnapshot& warp) {
+    if (warp.state == WarpTraceState::AT_REST && warp.rest_reason != WarpRestReason::NONE) {
+        return to_string(warp.rest_reason);
+    }
+    return to_string(warp.state);
+}
+
+TraceArgs instruction_args(uint64_t cycle, uint32_t warp_id, uint32_t pc,
+                           uint32_t raw_instruction, ExecUnit unit, uint8_t dest_reg) {
+    TraceArgs args;
+    args.emplace_back("cycle", static_cast<uint64_t>(cycle));
+    args.emplace_back("warp", static_cast<uint64_t>(warp_id));
+    args.emplace_back("pc", static_cast<uint64_t>(pc));
+    args.emplace_back("raw_instruction", static_cast<uint64_t>(raw_instruction));
+    args.emplace_back("target_unit", std::string(exec_unit_name(unit)));
+    args.emplace_back("dest_reg", static_cast<uint64_t>(dest_reg));
+    return args;
+}
+
+} // namespace
+
+TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, Stats& stats,
+                         TimingTraceOptions trace_options)
     : config_(config), func_model_(func_model), stats_(stats),
+      trace_options_(std::move(trace_options)),
       trace_enabled_(config.trace_enabled) {
 
-    // Initialize per-warp state
     for (uint32_t w = 0; w < config.num_warps; ++w) {
         warps_.emplace_back(config.instruction_buffer_depth);
         warps_.back().reset(config.start_pc);
     }
 
-    // Pipeline stages
     fetch_ = std::make_unique<FetchStage>(config.num_warps, warps_.data(),
                                           func_model.instruction_memory(), stats);
     decode_ = std::make_unique<DecodeStage>(warps_.data(), *fetch_);
     scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
-                                                  scoreboard_, func_model, stats);
+                                                 scoreboard_, func_model, stats);
     opcoll_ = std::make_unique<OperandCollector>(stats);
 
-    // Execution units
     alu_ = std::make_unique<ALUUnit>(stats);
     mul_ = std::make_unique<MultiplyUnit>(config.multiply_pipeline_stages, stats);
     div_ = std::make_unique<DivideUnit>(stats);
     tlookup_ = std::make_unique<TLookupUnit>(stats);
     ldst_ = std::make_unique<LdStUnit>(config.num_ldst_units, config.addr_gen_fifo_depth, stats);
 
-    // Memory system
     mem_if_ = std::make_unique<ExternalMemoryInterface>(config.external_memory_latency_cycles, stats);
     cache_ = std::make_unique<L1Cache>(config.l1_cache_size_bytes, config.cache_line_size_bytes,
-                                        config.num_mshrs, config.write_buffer_depth,
-                                        *mem_if_, stats);
-    coalescing_ = std::make_unique<CoalescingUnit>(*ldst_, *cache_, config.cache_line_size_bytes, stats);
+                                       config.num_mshrs, config.write_buffer_depth,
+                                       *mem_if_, stats);
+    coalescing_ = std::make_unique<CoalescingUnit>(*ldst_, *cache_,
+                                                   config.cache_line_size_bytes, stats);
 
-    // Writeback arbiter
     wb_arbiter_ = std::make_unique<WritebackArbiter>(scoreboard_, stats);
     wb_arbiter_->add_source(alu_.get());
     wb_arbiter_->add_source(mul_.get());
     wb_arbiter_->add_source(div_.get());
     wb_arbiter_->add_source(tlookup_.get());
-    // LD/ST results come through fill buffer, not as a direct source
-    // (ldst->has_result() returns false)
 
-    // Panic controller
     panic_ = std::make_unique<PanicController>(config.num_warps, warps_.data(), func_model);
 
-    // Wire scheduler's unit readiness check
     scheduler_->set_unit_ready_fn([this](ExecUnit unit) -> bool {
         switch (unit) {
             case ExecUnit::ALU:      return alu_->is_ready();
@@ -56,10 +166,48 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
             case ExecUnit::DIVIDE:   return div_->is_ready();
             case ExecUnit::TLOOKUP:  return tlookup_->is_ready();
             case ExecUnit::LDST:     return ldst_->is_ready();
-            case ExecUnit::SYSTEM:   return true;  // ECALL handled inline
+            case ExecUnit::SYSTEM:   return true;
             default:                 return false;
         }
     });
+
+    warp_trace_slices_.resize(config.num_warps);
+    hardware_trace_slices_.resize(kHardwareTrackCount);
+    initialize_trace_writer();
+}
+
+TimingModel::~TimingModel() {
+    finalize_trace();
+}
+
+void TimingModel::initialize_trace_writer() {
+    if (!trace_options_.enabled()) {
+        return;
+    }
+
+    structured_trace_ = std::make_unique<ChromeTraceWriter>(trace_options_.output_path);
+    structured_trace_->write_process_metadata(kWarpPid, "Warp States");
+    for (uint32_t w = 0; w < config_.num_warps; ++w) {
+        structured_trace_->write_thread_metadata(kWarpPid, static_cast<int>(w + 1),
+                                                 "Warp " + std::to_string(w),
+                                                 static_cast<int>(w));
+    }
+
+    structured_trace_->write_process_metadata(kHardwarePid, "Hardware Blocks");
+    structured_trace_->write_thread_metadata(kHardwarePid, kOpcollTid, "Operand Collector", 0);
+    structured_trace_->write_thread_metadata(kHardwarePid, kAluTid, "ALU", 1);
+    structured_trace_->write_thread_metadata(kHardwarePid, kMulTid, "Multiply", 2);
+    structured_trace_->write_thread_metadata(kHardwarePid, kDivTid, "Divide", 3);
+    structured_trace_->write_thread_metadata(kHardwarePid, kTlookupTid, "TLookup", 4);
+    structured_trace_->write_thread_metadata(kHardwarePid, kLdstTid, "LD/ST", 5);
+    structured_trace_->write_thread_metadata(kHardwarePid, kCoalescerTid, "Coalescer", 6);
+    structured_trace_->write_thread_metadata(kHardwarePid, kCacheTid, "Cache", 7);
+    structured_trace_->write_thread_metadata(kHardwarePid, kWritebackTid, "Writeback", 8);
+    structured_trace_->write_thread_metadata(kHardwarePid, kPanicTid, "Panic", 9);
+
+    structured_trace_->write_process_metadata(kCounterPid, "Counters");
+    structured_trace_->write_thread_metadata(kCounterPid, 1, "Timing Counters", 0);
+    trace_metadata_written_ = true;
 }
 
 void TimingModel::dispatch_to_unit(const DispatchInput& input) {
@@ -80,15 +228,10 @@ void TimingModel::dispatch_to_unit(const DispatchInput& input) {
             ldst_->accept(input, cycle_);
             break;
         case ExecUnit::SYSTEM:
-            // ECALL/CSR: handled at issue time by the functional model
-            // For ECALL: warp is already marked inactive in functional model
-            // We need to sync the timing model's warp state
             if (input.trace.is_ecall) {
                 warps_[input.warp_id].active = false;
             }
-            // CSR reads produce a result that needs writeback
             if (input.decoded.type == InstructionType::CSR) {
-                // Route CSR results through ALU (1-cycle result)
                 alu_->accept(input, cycle_);
             }
             break;
@@ -97,17 +240,24 @@ void TimingModel::dispatch_to_unit(const DispatchInput& input) {
     }
 }
 
-bool TimingModel::all_units_idle() const {
-    return alu_->is_ready() && !alu_->has_result() &&
+bool TimingModel::pipeline_drained() const {
+    return opcoll_->is_free() &&
+           alu_->is_ready() && !alu_->has_result() &&
            mul_->is_ready() && !mul_->has_result() &&
            div_->is_ready() && !div_->has_result() &&
            tlookup_->is_ready() && !tlookup_->has_result() &&
-           ldst_->is_ready() && ldst_->fifo_empty();
+           ldst_->is_ready() && ldst_->fifo_empty() &&
+           coalescing_->is_idle() &&
+           cache_->is_idle() &&
+           mem_if_->is_idle() &&
+           !wb_arbiter_->has_pending_work();
 }
 
 bool TimingModel::all_warps_done() const {
     for (uint32_t w = 0; w < config_.num_warps; ++w) {
-        if (warps_[w].active) return false;
+        if (warps_[w].active) {
+            return false;
+        }
     }
     return true;
 }
@@ -116,42 +266,50 @@ bool TimingModel::tick() {
     cycle_++;
     stats_.total_cycles = cycle_;
 
-    // Count active warp cycles
     for (uint32_t w = 0; w < config_.num_warps; ++w) {
-        if (warps_[w].active) stats_.warp_cycles_active[w]++;
+        if (warps_[w].active) {
+            stats_.warp_cycles_active[w]++;
+        }
     }
 
-    // If panic controller is active, run it instead of normal pipeline
     if (panic_->is_active()) {
-        panic_->set_units_drained(all_units_idle());
+        cache_->evaluate();
+        panic_->set_units_drained(pipeline_drained());
         panic_->evaluate();
 
-        // Still need to drain execution units
         alu_->evaluate();
         mul_->evaluate();
         div_->evaluate();
         tlookup_->evaluate();
         ldst_->evaluate();
+        WritebackEntry coal_wb;
+        bool coal_wb_valid = false;
+        coalescing_->evaluate(coal_wb, coal_wb_valid);
         mem_if_->evaluate();
 
-        // Handle memory responses and writeback during drain
         WritebackEntry fill_wb;
         bool fill_valid = false;
         cache_->handle_responses(fill_wb, fill_valid);
+        cache_->drain_write_buffer();
         if (fill_valid) {
             wb_arbiter_->submit_fill(fill_wb);
+        } else if (coal_wb_valid) {
+            wb_arbiter_->submit_fill(coal_wb);
         }
         wb_arbiter_->evaluate();
         wb_arbiter_->commit();
 
-        // Commit execution units
         alu_->commit();
         mul_->commit();
         div_->commit();
         tlookup_->commit();
         ldst_->commit();
+        coalescing_->commit();
+        cache_->commit();
         mem_if_->commit();
         scoreboard_.commit();
+
+        record_cycle_trace(false);
 
         if (panic_->is_done()) {
             return false;
@@ -159,43 +317,37 @@ bool TimingModel::tick() {
         return true;
     }
 
-    // Seed scoreboard next from current
     scoreboard_.seed_next();
+    cache_->evaluate();
 
-    // === Forward-order pipeline evaluation ===
-
-    // 1. Fetch
+    fetch_->set_stall(decode_->has_pending());
     fetch_->evaluate();
 
-    // 2. Decode
     decode_->evaluate();
 
-    // Check for EBREAK
     if (decode_->ebreak_detected()) {
         panic_->trigger(decode_->ebreak_warp(), decode_->ebreak_pc());
-        // Don't proceed with normal pipeline this cycle
         fetch_->commit();
         decode_->commit();
+        scheduler_->commit();
+        opcoll_->commit();
+        wb_arbiter_->commit();
         scoreboard_.commit();
+        record_cycle_trace(true);
         return true;
     }
 
-    // 3. Warp Scheduler
     scheduler_->set_opcoll_free(opcoll_->is_free());
     scheduler_->evaluate();
 
-    // 4. Operand Collector
-    // If scheduler issued, feed to operand collector
     if (scheduler_->output()) {
         opcoll_->accept(*scheduler_->output());
     }
     opcoll_->evaluate();
 
-    // 5. Dispatch to execution units
     if (opcoll_->output()) {
         dispatch_to_unit(*opcoll_->output());
 
-        // Handle branch resolution
         const auto& out = *opcoll_->output();
         if (out.trace.is_branch && out.trace.branch_taken) {
             fetch_->redirect_warp(out.warp_id, out.trace.branch_target);
@@ -204,41 +356,32 @@ bool TimingModel::tick() {
         }
     }
 
-    // 6. Execute
     alu_->evaluate();
     mul_->evaluate();
     div_->evaluate();
     tlookup_->evaluate();
     ldst_->evaluate();
 
-    // 7. Coalescing unit
     WritebackEntry coal_wb;
     bool coal_wb_valid = false;
     coalescing_->evaluate(coal_wb, coal_wb_valid);
 
-    // 8. Memory interface
     mem_if_->evaluate();
 
-    // 9. Handle MSHR fills
     WritebackEntry fill_wb;
     bool fill_valid = false;
     cache_->handle_responses(fill_wb, fill_valid);
 
-    // 10. Write buffer drain (reads prioritized, so drain after reads)
     cache_->drain_write_buffer();
 
-    // Submit fill results to writeback arbiter
-    // Priority: MSHR fill > cache hit from coalescing
     if (fill_valid) {
         wb_arbiter_->submit_fill(fill_wb);
     } else if (coal_wb_valid) {
         wb_arbiter_->submit_fill(coal_wb);
     }
 
-    // 11. Writeback arbiter
     wb_arbiter_->evaluate();
 
-    // === Commit all stages ===
     fetch_->commit();
     decode_->commit();
     scheduler_->commit();
@@ -257,9 +400,9 @@ bool TimingModel::tick() {
     if (trace_enabled_) {
         trace_cycle();
     }
+    record_cycle_trace(false);
 
-    // Check termination
-    if (all_warps_done() && all_units_idle()) {
+    if (all_warps_done() && pipeline_drained()) {
         return false;
     }
 
@@ -273,36 +416,522 @@ void TimingModel::run(uint64_t max_cycles) {
             break;
         }
     }
+    finalize_trace();
+}
+
+CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
+    CycleTraceSnapshot snapshot;
+    snapshot.cycle = cycle_;
+    snapshot.num_warps = config_.num_warps;
+    snapshot.opcoll_busy = opcoll_->busy();
+    if (auto warp = opcoll_->resident_warp()) {
+        snapshot.opcoll_warp = *warp;
+    }
+    snapshot.opcoll_cycles_remaining = opcoll_->cycles_remaining();
+    snapshot.alu_busy = alu_->busy();
+    snapshot.mul_busy = mul_->busy();
+    snapshot.mul_pipeline_occupancy = mul_->pipeline_occupancy();
+    snapshot.div_busy = div_->busy();
+    snapshot.tlookup_busy = tlookup_->busy();
+    snapshot.ldst_busy = ldst_->busy();
+    snapshot.ldst_fifo_depth = static_cast<uint32_t>(ldst_->fifo_entries().size());
+    snapshot.active_mshrs = cache_->active_mshr_count();
+    snapshot.write_buffer_depth = static_cast<uint32_t>(cache_->write_buffer_size());
+    snapshot.panic_active = panic_->is_active();
+
+    const auto& scheduler_diag = scheduler_->current_diagnostics();
+
+    for (uint32_t w = 0; w < config_.num_warps; ++w) {
+        auto& warp = snapshot.warps[w];
+        warp.warp_id = w;
+        warp.active = warps_[w].active;
+        warp.pc = warps_[w].pc;
+
+        if (!warps_[w].active) {
+            warp.state = WarpTraceState::RETIRED;
+            continue;
+        }
+
+        snapshot.active_warps++;
+        warp.state = WarpTraceState::AT_REST;
+        warp.rest_reason = scheduler_rest_reason(scheduler_diag[w]);
+        if (warp.rest_reason == WarpRestReason::NONE) {
+            warp.rest_reason = WarpRestReason::WAIT_FRONTEND;
+        }
+        if (!warps_[w].instr_buffer.is_empty()) {
+            fill_from_decoded(warp, warps_[w].instr_buffer.front().pc,
+                              warps_[w].instr_buffer.front().decoded);
+        }
+    }
+
+    auto set_warp = [&](uint32_t warp_id, WarpTraceState state, WarpRestReason reason,
+                        uint32_t pc, uint32_t raw_instruction, ExecUnit unit,
+                        uint8_t dest_reg, bool has_mem = false, uint32_t mem_addr = 0,
+                        bool coalesced = false, bool branch_taken = false,
+                        uint32_t branch_target = 0) {
+        if (warp_id >= config_.num_warps) {
+            return;
+        }
+        auto& warp = snapshot.warps[warp_id];
+        warp.active = warps_[warp_id].active;
+        warp.state = state;
+        warp.rest_reason = reason;
+        warp.pc = pc;
+        warp.raw_instruction = raw_instruction;
+        warp.target_unit = unit;
+        warp.dest_reg = dest_reg;
+        warp.has_memory_address = has_mem;
+        warp.first_memory_address = mem_addr;
+        warp.coalesced_memory = coalesced;
+        warp.branch_taken = branch_taken;
+        warp.branch_target = branch_target;
+    };
+
+    if (fetch_->current_output()) {
+        const auto& fetch = *fetch_->current_output();
+        set_warp(fetch.warp_id, WarpTraceState::FETCH, WarpRestReason::NONE,
+                 fetch.pc, fetch.raw_instruction, ExecUnit::NONE, 0);
+    }
+
+    if (const auto* pending = decode_->pending_entry()) {
+        set_warp(pending->warp_id, WarpTraceState::DECODE_PENDING, WarpRestReason::NONE,
+                 pending->pc, pending->decoded.raw, pending->decoded.target_unit,
+                 pending->decoded.rd);
+    }
+
+    if (const auto* issue = opcoll_->current_instruction()) {
+        set_warp(issue->warp_id, WarpTraceState::OPERAND_COLLECT, WarpRestReason::NONE,
+                 issue->pc, issue->decoded.raw, issue->decoded.target_unit, issue->decoded.rd,
+                 issue->trace.is_load || issue->trace.is_store,
+                 issue->trace.is_load || issue->trace.is_store ? issue->trace.mem_addresses[0] : 0,
+                 false, issue->trace.branch_taken, issue->trace.branch_target);
+    }
+
+    if (const auto* pending = alu_->pending_input()) {
+        set_warp(pending->warp_id, WarpTraceState::EXECUTE_ALU, WarpRestReason::NONE,
+                 pending->pc, pending->decoded.raw, ExecUnit::ALU, pending->decoded.rd,
+                 pending->trace.is_load || pending->trace.is_store,
+                 pending->trace.is_load || pending->trace.is_store ? pending->trace.mem_addresses[0] : 0,
+                 false, pending->trace.branch_taken, pending->trace.branch_target);
+    }
+
+    for (const auto& mul_entry : mul_->pipeline_snapshot()) {
+        set_warp(mul_entry.warp_id, WarpTraceState::EXECUTE_MUL, WarpRestReason::NONE,
+                 mul_entry.pc, mul_entry.raw_instruction, ExecUnit::MULTIPLY,
+                 mul_entry.dest_reg);
+    }
+
+    if (const auto* pending = div_->pending_entry()) {
+        set_warp(pending->warp_id, WarpTraceState::EXECUTE_DIV, WarpRestReason::NONE,
+                 pending->pc, pending->raw_instruction, ExecUnit::DIVIDE, pending->dest_reg);
+    }
+
+    if (const auto* pending = tlookup_->pending_entry()) {
+        set_warp(pending->warp_id, WarpTraceState::EXECUTE_TLOOKUP, WarpRestReason::NONE,
+                 pending->pc, pending->raw_instruction, ExecUnit::TLOOKUP, pending->dest_reg);
+    }
+
+    if (const auto* pending = ldst_->pending_entry()) {
+        set_warp(pending->warp_id, WarpTraceState::ADDR_GEN, WarpRestReason::NONE,
+                 pending->trace.pc, pending->trace.decoded.raw, ExecUnit::LDST,
+                 pending->dest_reg, pending->is_load || pending->is_store,
+                 pending->is_load || pending->is_store ? pending->trace.mem_addresses[0] : 0);
+    }
+
+    for (const auto& entry : ldst_->fifo_entries()) {
+        set_warp(entry.warp_id, WarpTraceState::LDST_FIFO, WarpRestReason::NONE,
+                 entry.trace.pc, entry.trace.decoded.raw, ExecUnit::LDST, entry.dest_reg,
+                 entry.is_load || entry.is_store,
+                 entry.is_load || entry.is_store ? entry.trace.mem_addresses[0] : 0);
+    }
+
+    if (const auto* entry = coalescing_->current_entry()) {
+        WarpTraceState state = WarpTraceState::COALESCING;
+        WarpRestReason reason = WarpRestReason::NONE;
+        if (cache_->stall_reason() == CacheStallReason::MSHR_FULL) {
+            state = WarpTraceState::AT_REST;
+            reason = WarpRestReason::WAIT_L1_MSHR;
+        } else if (cache_->stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+            state = WarpTraceState::AT_REST;
+            reason = WarpRestReason::WAIT_L1_WRITE_BUFFER;
+        }
+        set_warp(entry->warp_id, state, reason, entry->trace.pc, entry->trace.decoded.raw,
+                 ExecUnit::LDST, entry->dest_reg, entry->is_load || entry->is_store,
+                 entry->is_load || entry->is_store ? entry->trace.mem_addresses[0] : 0,
+                 coalescing_->is_coalesced());
+    }
+
+    for (uint32_t i = 0; i < cache_->mshrs().num_entries(); ++i) {
+        const auto& entry = cache_->mshrs().at(i);
+        if (!entry.valid) {
+            continue;
+        }
+        set_warp(entry.warp_id, WarpTraceState::MEMORY_WAIT, WarpRestReason::WAIT_MEMORY_RESPONSE,
+                 entry.pc, entry.raw_instruction, ExecUnit::LDST, entry.dest_reg,
+                 true, entry.cache_line_addr * config_.cache_line_size_bytes, true);
+    }
+
+    if (cache_->pending_fill().valid) {
+        const auto& entry = cache_->mshrs().at(cache_->pending_fill().response.mshr_id);
+        WarpRestReason reason = entry.is_store ? WarpRestReason::WAIT_L1_WRITE_BUFFER
+                                               : WarpRestReason::WAIT_MEMORY_RESPONSE;
+        WarpTraceState state = entry.is_store ? WarpTraceState::AT_REST
+                                              : WarpTraceState::MEMORY_WAIT;
+        set_warp(entry.warp_id, state, reason, entry.pc, entry.raw_instruction,
+                 ExecUnit::LDST, entry.dest_reg, true,
+                 entry.cache_line_addr * config_.cache_line_size_bytes, true);
+    }
+
+    if (const auto* wb = alu_->result_entry()) {
+        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
+    }
+    if (const auto* wb = mul_->result_entry()) {
+        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
+    }
+    if (const auto* wb = div_->result_entry()) {
+        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
+    }
+    if (const auto* wb = tlookup_->result_entry()) {
+        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
+    }
+    if (wb_arbiter_->fill_buffer_entry().valid) {
+        const auto& wb = wb_arbiter_->fill_buffer_entry();
+        set_warp(wb.warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb.pc, wb.raw_instruction, wb.source_unit, wb.dest_reg);
+    }
+
+    if (panic_->is_active() && !panic_->is_done()) {
+        for (uint32_t w = 0; w < config_.num_warps; ++w) {
+            if (snapshot.warps[w].active) {
+                snapshot.warps[w].state = WarpTraceState::PANIC_DRAIN;
+                snapshot.warps[w].rest_reason = WarpRestReason::NONE;
+            }
+        }
+    }
+
+    return snapshot;
+}
+
+void TimingModel::record_cycle_trace(bool panic_triggered) {
+    last_cycle_snapshot_ = build_cycle_snapshot();
+    if (structured_trace_) {
+        emit_cycle_events(*last_cycle_snapshot_, panic_triggered);
+    }
+}
+
+void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool panic_triggered) {
+    for (uint32_t w = 0; w < snapshot.num_warps; ++w) {
+        const auto& warp = snapshot.warps[w];
+        update_track_slice(warp_trace_slices_[w], kWarpPid, static_cast<int>(w + 1),
+                           make_warp_key(warp), warp_slice_name(warp),
+                           make_warp_args(warp, snapshot.cycle), snapshot.cycle);
+    }
+
+    if (snapshot.opcoll_busy) {
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"warp", static_cast<uint64_t>(snapshot.opcoll_warp)},
+                       {"cycles_remaining", static_cast<uint64_t>(snapshot.opcoll_cycles_remaining)}};
+        update_track_slice(hardware_trace_slices_[0], kHardwarePid, kOpcollTid,
+                           "warp:" + std::to_string(snapshot.opcoll_warp),
+                           "busy", args, snapshot.cycle);
+    } else {
+        update_track_slice(hardware_trace_slices_[0], kHardwarePid, kOpcollTid, "", "", {},
+                           snapshot.cycle);
+    }
+
+    auto emit_busy_track = [&](size_t idx, int tid, const char* name, bool busy,
+                               const WritebackEntry* wb, std::optional<uint32_t> active_warp,
+                               uint32_t cycles_remaining = 0) {
+        if (!busy && wb == nullptr) {
+            update_track_slice(hardware_trace_slices_[idx], kHardwarePid, tid, "", "", {},
+                               snapshot.cycle);
+            return;
+        }
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)}};
+        std::string key = std::string(name) + ":";
+        if (active_warp) {
+            args.emplace_back("warp", static_cast<uint64_t>(*active_warp));
+            key += "warp:" + std::to_string(*active_warp);
+        }
+        if (cycles_remaining > 0) {
+            args.emplace_back("cycles_remaining", static_cast<uint64_t>(cycles_remaining));
+            key += ":cr:" + std::to_string(cycles_remaining);
+        }
+        if (wb != nullptr) {
+            args.emplace_back("writeback_warp", static_cast<uint64_t>(wb->warp_id));
+            key += ":wb:" + std::to_string(wb->warp_id);
+        }
+        update_track_slice(hardware_trace_slices_[idx], kHardwarePid, tid, key, "busy", args,
+                           snapshot.cycle);
+    };
+
+    emit_busy_track(1, kAluTid, "alu", snapshot.alu_busy, alu_->result_entry(),
+                    alu_->active_warp(), alu_->busy() ? 1u : 0u);
+
+    if (snapshot.mul_busy || mul_->result_entry() != nullptr) {
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"occupancy", static_cast<uint64_t>(snapshot.mul_pipeline_occupancy)}};
+        if (const auto* wb = mul_->result_entry()) {
+            args.emplace_back("writeback_warp", static_cast<uint64_t>(wb->warp_id));
+        }
+        update_track_slice(hardware_trace_slices_[2], kHardwarePid, kMulTid,
+                           "mul:" + std::to_string(snapshot.mul_pipeline_occupancy) +
+                               ":wb:" + std::to_string(mul_->result_entry()
+                                                        ? mul_->result_entry()->warp_id : 0),
+                           "busy", args, snapshot.cycle);
+    } else {
+        update_track_slice(hardware_trace_slices_[2], kHardwarePid, kMulTid, "", "", {},
+                           snapshot.cycle);
+    }
+
+    emit_busy_track(3, kDivTid, "div", snapshot.div_busy, div_->result_entry(),
+                    div_->active_warp(), div_->cycles_remaining());
+    emit_busy_track(4, kTlookupTid, "tlookup", snapshot.tlookup_busy,
+                    tlookup_->result_entry(), tlookup_->active_warp(),
+                    tlookup_->cycles_remaining());
+    emit_busy_track(5, kLdstTid, "ldst", snapshot.ldst_busy, nullptr, ldst_->active_warp(),
+                    ldst_->cycles_remaining());
+
+    if (const auto* entry = coalescing_->current_entry()) {
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"warp", static_cast<uint64_t>(entry->warp_id)},
+                       {"mode", std::string(coalescing_->is_coalesced()
+                                                ? "coalesced" : "serialized")},
+                       {"serial_index", static_cast<uint64_t>(coalescing_->serial_index())}};
+        if (cache_->stall_reason() == CacheStallReason::MSHR_FULL) {
+            args.emplace_back("stall_reason", std::string("mshr_full"));
+        } else if (cache_->stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+            args.emplace_back("stall_reason", std::string("write_buffer_full"));
+        }
+        update_track_slice(hardware_trace_slices_[6], kHardwarePid, kCoalescerTid,
+                           "coalescer:" + std::to_string(entry->warp_id) + ":" +
+                               std::to_string(coalescing_->serial_index()) + ":" +
+                               std::to_string(static_cast<int>(cache_->stall_reason())),
+                           coalescing_->is_coalesced() ? "coalesced" : "serialized",
+                           args, snapshot.cycle);
+    } else {
+        update_track_slice(hardware_trace_slices_[6], kHardwarePid, kCoalescerTid, "", "", {},
+                           snapshot.cycle);
+    }
+
+    if (snapshot.active_mshrs > 0 || snapshot.write_buffer_depth > 0 || cache_->pending_fill().valid) {
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"active_mshrs", static_cast<uint64_t>(snapshot.active_mshrs)},
+                       {"write_buffer_depth", static_cast<uint64_t>(snapshot.write_buffer_depth)}};
+        if (cache_->pending_fill().valid) {
+            args.emplace_back("pending_fill_mshr",
+                              static_cast<uint64_t>(cache_->pending_fill().response.mshr_id));
+        }
+        update_track_slice(hardware_trace_slices_[7], kHardwarePid, kCacheTid,
+                           "cache:" + std::to_string(snapshot.active_mshrs) + ":" +
+                               std::to_string(snapshot.write_buffer_depth) + ":" +
+                               std::to_string(cache_->pending_fill().valid),
+                           "active", args, snapshot.cycle);
+    } else {
+        update_track_slice(hardware_trace_slices_[7], kHardwarePid, kCacheTid, "", "", {},
+                           snapshot.cycle);
+    }
+
+    if (wb_arbiter_->committed_entry()) {
+        const auto& wb = *wb_arbiter_->committed_entry();
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"warp", static_cast<uint64_t>(wb.warp_id)},
+                       {"dest_reg", static_cast<uint64_t>(wb.dest_reg)}};
+        update_track_slice(hardware_trace_slices_[8], kHardwarePid, kWritebackTid,
+                           "wb:" + std::to_string(wb.warp_id) + ":" +
+                               std::to_string(wb.dest_reg),
+                           "commit", args, snapshot.cycle);
+    } else if (wb_arbiter_->ready_source_count() > 0) {
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"ready_sources", static_cast<uint64_t>(wb_arbiter_->ready_source_count())}};
+        update_track_slice(hardware_trace_slices_[8], kHardwarePid, kWritebackTid,
+                           "pending:" + std::to_string(wb_arbiter_->ready_source_count()),
+                           "pending", args, snapshot.cycle);
+    } else {
+        update_track_slice(hardware_trace_slices_[8], kHardwarePid, kWritebackTid, "", "", {},
+                           snapshot.cycle);
+    }
+
+    if (snapshot.panic_active) {
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"panic_warp", static_cast<uint64_t>(panic_->panic_warp())},
+                       {"step", static_cast<uint64_t>(panic_->step())}};
+        update_track_slice(hardware_trace_slices_[9], kHardwarePid, kPanicTid,
+                           "panic:" + std::to_string(panic_->step()), "panic_drain",
+                           args, snapshot.cycle);
+    } else {
+        update_track_slice(hardware_trace_slices_[9], kHardwarePid, kPanicTid, "", "", {},
+                           snapshot.cycle);
+    }
+
+    structured_trace_->write_counter("active_warps", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.active_warps)}});
+    structured_trace_->write_counter("opcoll_busy", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", snapshot.opcoll_busy ? 1ULL : 0ULL}});
+    structured_trace_->write_counter("alu_busy", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", snapshot.alu_busy ? 1ULL : 0ULL}});
+    structured_trace_->write_counter("mul_occupancy", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.mul_pipeline_occupancy)}});
+    structured_trace_->write_counter("div_busy", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", snapshot.div_busy ? 1ULL : 0ULL}});
+    structured_trace_->write_counter("tlookup_busy", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", snapshot.tlookup_busy ? 1ULL : 0ULL}});
+    structured_trace_->write_counter("ldst_busy", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", snapshot.ldst_busy ? 1ULL : 0ULL}});
+    structured_trace_->write_counter("ldst_fifo_depth", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.ldst_fifo_depth)}});
+    structured_trace_->write_counter("active_mshrs", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.active_mshrs)}});
+    structured_trace_->write_counter("write_buffer_depth", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.write_buffer_depth)}});
+
+    if (scheduler_->current_output()) {
+        const auto& issue = *scheduler_->current_output();
+        structured_trace_->write_instant("issue", snapshot.cycle, kWarpPid,
+                                         static_cast<int>(issue.warp_id + 1),
+                                         instruction_args(snapshot.cycle, issue.warp_id,
+                                                          issue.pc, issue.decoded.raw,
+                                                          issue.decoded.target_unit,
+                                                          issue.decoded.rd));
+    }
+
+    if (opcoll_->current_output() && opcoll_->current_output()->trace.is_branch &&
+        opcoll_->current_output()->trace.branch_taken) {
+        const auto& branch = *opcoll_->current_output();
+        TraceArgs args = instruction_args(snapshot.cycle, branch.warp_id, branch.pc,
+                                          branch.decoded.raw, branch.decoded.target_unit,
+                                          branch.decoded.rd);
+        args.emplace_back("branch_target",
+                          static_cast<uint64_t>(branch.trace.branch_target));
+        structured_trace_->write_instant("branch_redirect", snapshot.cycle, kWarpPid,
+                                         static_cast<int>(branch.warp_id + 1), args);
+    }
+
+    if (wb_arbiter_->committed_entry()) {
+        const auto& wb = *wb_arbiter_->committed_entry();
+        structured_trace_->write_instant("writeback", snapshot.cycle, kWarpPid,
+                                         static_cast<int>(wb.warp_id + 1),
+                                         instruction_args(snapshot.cycle, wb.warp_id, wb.pc,
+                                                          wb.raw_instruction, wb.source_unit,
+                                                          wb.dest_reg));
+    }
+
+    if (panic_triggered) {
+        structured_trace_->write_instant("panic_trigger", snapshot.cycle, kHardwarePid,
+                                         kPanicTid,
+                                         {{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                                          {"panic_warp", static_cast<uint64_t>(panic_->panic_warp())},
+                                          {"panic_pc", static_cast<uint64_t>(panic_->panic_pc())}});
+    }
+
+    if (cache_->last_miss_event().valid) {
+        const auto& miss = cache_->last_miss_event();
+        TraceArgs args = instruction_args(snapshot.cycle, miss.warp_id, miss.pc,
+                                          miss.raw_instruction, ExecUnit::LDST, 0);
+        args.emplace_back("line_addr", static_cast<uint64_t>(miss.line_addr));
+        args.emplace_back("is_store", miss.is_store);
+        structured_trace_->write_instant("cache_miss_alloc", snapshot.cycle, kHardwarePid,
+                                         kCacheTid, args);
+    }
+
+    if (cache_->last_fill_event().valid) {
+        const auto& fill = cache_->last_fill_event();
+        TraceArgs args = instruction_args(snapshot.cycle, fill.warp_id, fill.pc,
+                                          fill.raw_instruction, ExecUnit::LDST, 0);
+        args.emplace_back("line_addr", static_cast<uint64_t>(fill.line_addr));
+        args.emplace_back("is_store", fill.is_store);
+        structured_trace_->write_instant("memory_response_complete", snapshot.cycle,
+                                         kHardwarePid, kCacheTid, args);
+    }
+}
+
+void TimingModel::update_track_slice(ActiveTraceSlice& slice, int pid, int tid,
+                                     const std::string& key, const std::string& name,
+                                     const TraceArgs& args, uint64_t cycle) {
+    if (!structured_trace_) {
+        return;
+    }
+
+    if (key.empty()) {
+        flush_track_slice(slice, pid, tid, cycle);
+        return;
+    }
+
+    if (slice.valid && slice.key == key) {
+        return;
+    }
+
+    flush_track_slice(slice, pid, tid, cycle);
+    slice.valid = true;
+    slice.start_cycle = cycle;
+    slice.key = key;
+    slice.name = name;
+    slice.args = args;
+}
+
+void TimingModel::flush_track_slice(ActiveTraceSlice& slice, int pid, int tid, uint64_t cycle) {
+    if (!structured_trace_ || !slice.valid) {
+        slice.valid = false;
+        return;
+    }
+
+    if (cycle > slice.start_cycle) {
+        structured_trace_->write_complete(slice.name, slice.start_cycle,
+                                          cycle - slice.start_cycle, pid, tid,
+                                          slice.args);
+    }
+
+    slice.valid = false;
+    slice.key.clear();
+    slice.name.clear();
+    slice.args.clear();
+}
+
+void TimingModel::finalize_trace() {
+    if (!structured_trace_) {
+        return;
+    }
+
+    uint64_t end_cycle = cycle_ + 1;
+    for (uint32_t w = 0; w < warp_trace_slices_.size(); ++w) {
+        flush_track_slice(warp_trace_slices_[w], kWarpPid, static_cast<int>(w + 1), end_cycle);
+    }
+    const int tids[kHardwareTrackCount] = {
+        kOpcollTid, kAluTid, kMulTid, kDivTid, kTlookupTid,
+        kLdstTid, kCoalescerTid, kCacheTid, kWritebackTid, kPanicTid
+    };
+    for (size_t i = 0; i < hardware_trace_slices_.size(); ++i) {
+        flush_track_slice(hardware_trace_slices_[i], kHardwarePid, tids[i], end_cycle);
+    }
+    structured_trace_->finalize();
 }
 
 void TimingModel::trace_cycle() const {
     std::cerr << "cycle=" << std::setw(6) << cycle_;
 
-    // Fetch info
     if (fetch_->current_output()) {
         std::cerr << " fetch=W" << fetch_->current_output()->warp_id;
     } else {
         std::cerr << " fetch=--";
     }
 
-    // Scheduler info
     if (scheduler_->current_output()) {
         std::cerr << " issue=W" << scheduler_->current_output()->warp_id;
     } else {
         std::cerr << " issue=--";
     }
 
-    // OpColl
     std::cerr << " opcoll=" << (opcoll_->is_free() ? "free" : "busy");
-
-    // Execution units
     std::cerr << " alu=" << (alu_->is_ready() ? "rdy" : "bsy");
     std::cerr << " mul=" << (mul_->is_ready() ? "rdy" : "bsy");
     std::cerr << " div=" << (div_->is_ready() ? "rdy" : "bsy");
     std::cerr << " tlk=" << (tlookup_->is_ready() ? "rdy" : "bsy");
     std::cerr << " ldst=" << (ldst_->is_ready() ? "rdy" : "bsy");
 
-    // Writeback
     if (wb_arbiter_->committed_entry()) {
         const auto& wb = *wb_arbiter_->committed_entry();
         std::cerr << " wb=W" << wb.warp_id << ":x" << static_cast<int>(wb.dest_reg);

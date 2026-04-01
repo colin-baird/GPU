@@ -48,10 +48,15 @@ void CoalescingUnit::evaluate(WritebackEntry& wb_out, bool& wb_valid) {
                     current_entry_.dest_reg,
                     current_entry_.trace.results,
                     current_entry_.issue_cycle,
+                    current_entry_.trace.pc,
+                    current_entry_.trace.decoded.raw,
                     wb_out);
                 if (accepted && wb_out.valid) wb_valid = true;
             } else {
-                accepted = cache_.process_store(line_addr);
+                accepted = cache_.process_store(line_addr, current_entry_.warp_id,
+                                               current_entry_.issue_cycle,
+                                               current_entry_.trace.pc,
+                                               current_entry_.trace.decoded.raw);
             }
 
             if (accepted) {
@@ -70,10 +75,14 @@ void CoalescingUnit::evaluate(WritebackEntry& wb_out, bool& wb_valid) {
                     accepted = cache_.process_load(
                         addr, current_entry_.warp_id, current_entry_.dest_reg,
                         current_entry_.trace.results, current_entry_.issue_cycle,
+                        current_entry_.trace.pc, current_entry_.trace.decoded.raw,
                         wb_out);
                     if (accepted && wb_out.valid && !wb_valid) wb_valid = true;
                 } else {
-                    accepted = cache_.process_store(line_addr);
+                    accepted = cache_.process_store(line_addr, current_entry_.warp_id,
+                                                   current_entry_.issue_cycle,
+                                                   current_entry_.trace.pc,
+                                                   current_entry_.trace.decoded.raw);
                 }
 
                 if (accepted) {

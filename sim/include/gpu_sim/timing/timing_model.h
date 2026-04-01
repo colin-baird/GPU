@@ -19,13 +19,19 @@
 #include "gpu_sim/timing/cache.h"
 #include "gpu_sim/timing/coalescing_unit.h"
 #include "gpu_sim/timing/panic_controller.h"
+#include "gpu_sim/timing/timing_trace.h"
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace gpu_sim {
 
 class TimingModel {
 public:
-    TimingModel(const SimConfig& config, FunctionalModel& func_model, Stats& stats);
+    TimingModel(const SimConfig& config, FunctionalModel& func_model, Stats& stats,
+                TimingTraceOptions trace_options = {});
+    ~TimingModel();
 
     // Advance one cycle. Returns true if simulation should continue.
     bool tick();
@@ -34,15 +40,36 @@ public:
     void run(uint64_t max_cycles = 0);
 
     uint64_t cycle_count() const { return cycle_; }
+    const std::optional<CycleTraceSnapshot>& last_cycle_snapshot() const {
+        return last_cycle_snapshot_;
+    }
 
 private:
+    struct ActiveTraceSlice {
+        bool valid = false;
+        uint64_t start_cycle = 0;
+        std::string key;
+        std::string name;
+        TraceArgs args;
+    };
+
     void dispatch_to_unit(const DispatchInput& input);
-    bool all_units_idle() const;
+    bool pipeline_drained() const;
     bool all_warps_done() const;
+    void initialize_trace_writer();
+    void record_cycle_trace(bool panic_triggered);
+    CycleTraceSnapshot build_cycle_snapshot() const;
+    void emit_cycle_events(const CycleTraceSnapshot& snapshot, bool panic_triggered);
+    void update_track_slice(ActiveTraceSlice& slice, int pid, int tid,
+                            const std::string& key, const std::string& name,
+                            const TraceArgs& args, uint64_t cycle);
+    void flush_track_slice(ActiveTraceSlice& slice, int pid, int tid, uint64_t cycle);
+    void finalize_trace();
 
     SimConfig config_;
     FunctionalModel& func_model_;
     Stats& stats_;
+    TimingTraceOptions trace_options_;
 
     // Per-warp state
     std::vector<WarpState> warps_;
@@ -71,9 +98,14 @@ private:
 
     // Panic
     std::unique_ptr<PanicController> panic_;
+    std::unique_ptr<ChromeTraceWriter> structured_trace_;
 
     uint64_t cycle_ = 0;
     bool trace_enabled_ = false;
+    bool trace_metadata_written_ = false;
+    std::optional<CycleTraceSnapshot> last_cycle_snapshot_;
+    std::vector<ActiveTraceSlice> warp_trace_slices_;
+    std::vector<ActiveTraceSlice> hardware_trace_slices_;
 
     void trace_cycle() const;
 };

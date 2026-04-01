@@ -7,7 +7,8 @@ DecodeStage::DecodeStage(WarpState* warps, FetchStage& fetch)
 
 void DecodeStage::evaluate() {
     ebreak_detected_ = false;
-    pending_.valid = false;
+
+    if (pending_.valid) return;
 
     const auto& fetch_out = fetch_.current_output();
     if (!fetch_out) return;
@@ -33,7 +34,10 @@ void DecodeStage::evaluate() {
 
 void DecodeStage::commit() {
     if (pending_.valid) {
-        warps_[pending_.target_warp].instr_buffer.push(pending_.entry);
+        if (!warps_[pending_.target_warp].instr_buffer.is_full()) {
+            warps_[pending_.target_warp].instr_buffer.push(pending_.entry);
+            pending_.valid = false;
+        }
     }
 }
 

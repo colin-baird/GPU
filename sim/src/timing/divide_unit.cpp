@@ -10,6 +10,8 @@ void DivideUnit::accept(const DispatchInput& input, uint64_t cycle) {
     pending_result_.dest_reg = input.decoded.rd;
     pending_result_.values = input.trace.results;
     pending_result_.source_unit = ExecUnit::DIVIDE;
+    pending_result_.pc = input.pc;
+    pending_result_.raw_instruction = input.decoded.raw;
     pending_result_.issue_cycle = cycle;
     stats_.div_stats.instructions++;
 }

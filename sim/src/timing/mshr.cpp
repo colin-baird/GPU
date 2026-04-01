@@ -29,6 +29,13 @@ bool MSHRFile::has_free() const {
     return false;
 }
 
+bool MSHRFile::has_active() const {
+    for (uint32_t i = 0; i < num_entries_; ++i) {
+        if (entries_[i].valid) return true;
+    }
+    return false;
+}
+
 void MSHRFile::reset() {
     for (auto& e : entries_) {
         e.valid = false;

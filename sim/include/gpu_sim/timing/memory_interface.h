@@ -32,6 +32,9 @@ public:
 
     bool has_response() const { return !responses_.empty(); }
     MemoryResponse get_response();
+    bool is_idle() const { return in_flight_.empty() && responses_.empty(); }
+    size_t in_flight_count() const { return in_flight_.size(); }
+    size_t response_count() const { return responses_.size(); }
 
 private:
     uint32_t latency_;

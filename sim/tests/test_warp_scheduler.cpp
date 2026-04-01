@@ -24,6 +24,11 @@ static uint32_t encode_ecall() {
     return i_type(0, 0, 0, 0, isa::OP_SYSTEM);
 }
 
+static uint32_t encode_vdot8(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+    return (0x00 << 25) | (rs2 << 20) | (rs1 << 15) | (0x0 << 12) |
+           (rd << 7) | isa::OP_VDOT8;
+}
+
 struct SchedulerFixture {
     SimConfig config;
     FunctionalModel func_model;
@@ -110,6 +115,23 @@ TEST_CASE("WarpScheduler: stalls on scoreboard hazard", "[scheduler]") {
     REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
 }
 
+TEST_CASE("WarpScheduler: VDOT8 checks rd as a source hazard", "[scheduler]") {
+    SchedulerFixture f(1);
+
+    f.scoreboard.seed_next();
+    f.scoreboard.set_pending(0, 7);
+    f.scoreboard.commit();
+
+    f.load_and_push(0, 0, encode_vdot8(7, 5, 6));
+
+    f.scoreboard.seed_next();
+    f.scheduler->set_opcoll_free(true);
+    f.scheduler->evaluate();
+
+    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
+}
+
 TEST_CASE("WarpScheduler: stalls when opcoll busy", "[scheduler]") {
     SchedulerFixture f(1);
     f.load_and_push(0, 0, encode_addi(5, 0, 42));
@@ -166,6 +188,21 @@ TEST_CASE("WarpScheduler: round-robin fairness across warps", "[scheduler]") {
     for (int i = 0; i < 4; ++i) {
         REQUIRE(seen[i]);
     }
+}
+
+TEST_CASE("WarpScheduler: diagnostics mark issued and ready_not_selected warps", "[scheduler]") {
+    SchedulerFixture f(2);
+    f.load_and_push(0, 0, encode_addi(5, 0, 1));
+    f.load_and_push(1, 0, encode_addi(6, 0, 2));
+
+    f.scoreboard.seed_next();
+    f.scheduler->set_opcoll_free(true);
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+
+    const auto& diag = f.scheduler->current_diagnostics();
+    REQUIRE(diag[0] == SchedulerIssueOutcome::ISSUED);
+    REQUIRE(diag[1] == SchedulerIssueOutcome::READY_NOT_SELECTED);
 }
 
 TEST_CASE("WarpScheduler: sets scoreboard pending on issue", "[scheduler]") {

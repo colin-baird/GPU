@@ -4,6 +4,7 @@
 #include "gpu_sim/timing/cache.h"
 #include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/stats.h"
+#include <optional>
 
 namespace gpu_sim {
 
@@ -15,6 +16,16 @@ public:
     void evaluate(WritebackEntry& wb_out, bool& wb_valid);
     void commit();
     void reset();
+    bool is_idle() const { return !processing_; }
+    std::optional<uint32_t> active_warp() const {
+        if (!processing_) return std::nullopt;
+        return current_entry_.warp_id;
+    }
+    bool is_coalesced() const { return is_coalesced_; }
+    uint32_t serial_index() const { return serial_index_; }
+    const AddrGenFIFOEntry* current_entry() const {
+        return processing_ ? &current_entry_ : nullptr;
+    }
 
 private:
     LdStUnit& ldst_;

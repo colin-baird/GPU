@@ -20,6 +20,14 @@ public:
     bool ebreak_detected() const { return ebreak_detected_; }
     uint32_t ebreak_warp() const { return ebreak_warp_id_; }
     uint32_t ebreak_pc() const { return ebreak_pc_; }
+    bool has_pending() const { return pending_.valid; }
+    std::optional<uint32_t> pending_warp() const {
+        if (!pending_.valid) return std::nullopt;
+        return pending_.target_warp;
+    }
+    const BufferEntry* pending_entry() const {
+        return pending_.valid ? &pending_.entry : nullptr;
+    }
 
     // Invalidate any pending decode for a given warp (branch redirect)
     void invalidate_warp(uint32_t warp_id);

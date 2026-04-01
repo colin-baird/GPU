@@ -1,6 +1,7 @@
 #include "runner/backends/perf_sim_backend.h"
 #include "gpu_sim/elf_loader.h"
 #include "gpu_sim/timing/timing_model.h"
+#include "gpu_sim/timing/timing_trace.h"
 #include "gpu_sim/stats.h"
 #include <iostream>
 #include <string>
@@ -89,6 +90,7 @@ int PerfSimBackend::run(const ProgramImage& image, SimConfig& config,
                         int argc, char* argv[]) {
     // Parse backend-specific options from CLI
     std::string lookup_table_path;
+    std::string trace_file_path;
     bool json_output = false;
     uint64_t max_cycles = 0;
 
@@ -96,6 +98,8 @@ int PerfSimBackend::run(const ProgramImage& image, SimConfig& config,
         std::string arg = argv[i];
         if (arg.substr(0, 16) == "--lookup-table=") {
             lookup_table_path = arg.substr(16);
+        } else if (arg.substr(0, 13) == "--trace-file=") {
+            trace_file_path = arg.substr(13);
         } else if (arg == "--json") {
             json_output = true;
         } else if (arg.substr(0, 13) == "--max-cycles=") {
@@ -152,7 +156,9 @@ int PerfSimBackend::run(const ProgramImage& image, SimConfig& config,
 
     // Timing model execution
     Stats stats;
-    TimingModel timing(config, model, stats);
+    TimingTraceOptions trace_options;
+    trace_options.output_path = trace_file_path;
+    TimingModel timing(config, model, stats, trace_options);
     timing.run(max_cycles);
 
     if (json_output) {

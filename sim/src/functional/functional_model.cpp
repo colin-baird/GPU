@@ -43,6 +43,13 @@ void FunctionalModel::reset() {
     }
 }
 
+void FunctionalModel::latch_panic(WarpId warp, uint32_t pc, uint32_t cause) {
+    panicked_ = true;
+    panic_warp_ = warp;
+    panic_cause_ = cause;
+    panic_pc_ = pc;
+}
+
 uint32_t FunctionalModel::execute_load(MemOp op, uint32_t addr) {
     switch (op) {
         case MemOp::LB: {
@@ -203,10 +210,7 @@ TraceEvent FunctionalModel::execute(WarpId warp_id, uint32_t pc) {
             if (lane == 0) {
                 evt.is_ebreak = true;
                 evt.panic_cause = reg_file_.read(warp_id, 0, 31);  // r31 lane 0
-                panicked_ = true;
-                panic_warp_ = warp_id;
-                panic_cause_ = evt.panic_cause;
-                panic_pc_ = pc;
+                latch_panic(warp_id, pc, evt.panic_cause);
             }
             break;
 

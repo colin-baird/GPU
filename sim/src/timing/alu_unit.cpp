@@ -16,6 +16,8 @@ void ALUUnit::evaluate() {
         result_buffer_.dest_reg = pending_input_.decoded.rd;
         result_buffer_.values = pending_input_.trace.results;
         result_buffer_.source_unit = ExecUnit::ALU;
+        result_buffer_.pc = pending_input_.pc;
+        result_buffer_.raw_instruction = pending_input_.decoded.raw;
         result_buffer_.issue_cycle = pending_cycle_;
         has_pending_ = false;
         stats_.alu_stats.busy_cycles++;

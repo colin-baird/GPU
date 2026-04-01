@@ -13,6 +13,7 @@ void PanicController::trigger(uint32_t warp_id, uint32_t pc) {
     drain_cycles_ = 0;
     panic_warp_ = warp_id;
     panic_pc_ = pc;
+    panic_cause_ = 0;
 }
 
 void PanicController::evaluate() {
@@ -20,26 +21,24 @@ void PanicController::evaluate() {
 
     switch (step_) {
     case 0:
-        // Step 0: Assert panic-pending, inhibit scheduler (done externally)
+        // Cycle 1: panic-pending is already inhibiting the scheduler.
         step_ = 1;
         break;
     case 1:
-        // Step 1: Read r31 from panicking warp (functional model already has it)
+        // Cycle 2: read r31 lane 0 and latch host-visible panic diagnostics.
+        panic_cause_ = func_model_.register_file().read(panic_warp_, 0, 31);
+        func_model_.latch_panic(panic_warp_, panic_pc_, panic_cause_);
         step_ = 2;
         break;
     case 2:
-        // Step 2: Latch diagnostics (functional model state already captured)
-        step_ = 3;
-        break;
-    case 3:
-        // Step 3: Drain in-flight instructions
+        // Drain already-dispatched work until the machine is quiescent.
         drain_cycles_++;
         if (units_drained_ || drain_cycles_ >= MAX_DRAIN_CYCLES) {
-            step_ = 4;
+            step_ = 3;
         }
         break;
-    case 4:
-        // Step 4: Mark all warps inactive, set DONE+PANIC
+    case 3:
+        // Halt the full SM once the pipeline has drained.
         for (uint32_t w = 0; w < num_warps_; ++w) {
             warps_[w].active = false;
         }
@@ -53,6 +52,7 @@ void PanicController::reset() {
     done_ = false;
     step_ = 0;
     drain_cycles_ = 0;
+    panic_cause_ = 0;
     units_drained_ = false;
 }
 

@@ -14,6 +14,8 @@ struct MSHREntry {
     bool is_store = false;
     uint32_t warp_id = 0;
     uint8_t dest_reg = 0;
+    uint32_t pc = 0;
+    uint32_t raw_instruction = 0;
     uint64_t issue_cycle = 0;
     // Per-thread data from the trace event
     std::array<uint32_t, WARP_SIZE> mem_addresses{};
@@ -38,6 +40,7 @@ public:
     const MSHREntry& at(uint32_t index) const { return entries_[index]; }
 
     bool has_free() const;
+    bool has_active() const;
     uint32_t num_entries() const { return num_entries_; }
 
     void reset();
