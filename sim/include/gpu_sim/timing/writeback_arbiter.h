@@ -17,25 +17,18 @@ public:
     void commit() override;
     void reset() override;
 
-    // Register writeback sources (execution units + MSHR fill buffer)
+    // Register writeback sources.
     void add_source(ExecutionUnit* unit);
-
-    // Add a direct writeback entry (for cache hits / MSHR fills)
-    void submit_fill(const WritebackEntry& entry);
 
     // The writeback that happened this cycle (for stats/trace)
     const std::optional<WritebackEntry>& committed_entry() const { return committed_; }
     bool has_pending_work() const;
-    const WritebackEntry& fill_buffer_entry() const { return fill_buffer_; }
     uint32_t ready_source_count() const;
 
 private:
     Scoreboard& scoreboard_;
     Stats& stats_;
     std::vector<ExecutionUnit*> sources_;
-
-    // Direct fill buffer for cache/MSHR results
-    WritebackEntry fill_buffer_;
 
     uint32_t rr_pointer_ = 0;
     std::optional<WritebackEntry> committed_;

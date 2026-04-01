@@ -349,3 +349,53 @@ TEST_CASE("WritebackArbiter: round-robin arbitration clears scoreboard in order"
     REQUIRE(arbiter.committed_entry()->dest_reg == 6);
     REQUIRE_FALSE(scoreboard.is_pending(0, 6));
 }
+
+TEST_CASE("WritebackArbiter: queued memory sources preserve simultaneous hit and fill",
+          "[timing]") {
+    Stats stats;
+    Scoreboard scoreboard;
+    WritebackArbiter arbiter(scoreboard, stats);
+    QueuedWritebackSource hit_source(ExecUnit::LDST);
+    QueuedWritebackSource fill_source(ExecUnit::LDST);
+    arbiter.add_source(&hit_source);
+    arbiter.add_source(&fill_source);
+
+    scoreboard.seed_next();
+    scoreboard.set_pending(0, 5);
+    scoreboard.set_pending(0, 6);
+    scoreboard.commit();
+
+    WritebackEntry hit_entry;
+    hit_entry.valid = true;
+    hit_entry.warp_id = 0;
+    hit_entry.dest_reg = 5;
+    hit_entry.source_unit = ExecUnit::LDST;
+    hit_source.enqueue(hit_entry);
+
+    WritebackEntry fill_entry;
+    fill_entry.valid = true;
+    fill_entry.warp_id = 0;
+    fill_entry.dest_reg = 6;
+    fill_entry.source_unit = ExecUnit::LDST;
+    fill_source.enqueue(fill_entry);
+
+    scoreboard.seed_next();
+    arbiter.evaluate();
+    arbiter.commit();
+    scoreboard.commit();
+    REQUIRE(arbiter.committed_entry().has_value());
+    REQUIRE(arbiter.committed_entry()->dest_reg == 5);
+    REQUIRE_FALSE(scoreboard.is_pending(0, 5));
+    REQUIRE(scoreboard.is_pending(0, 6));
+    REQUIRE(fill_source.has_result());
+    REQUIRE(stats.writeback_conflicts == 1);
+
+    scoreboard.seed_next();
+    arbiter.evaluate();
+    arbiter.commit();
+    scoreboard.commit();
+    REQUIRE(arbiter.committed_entry().has_value());
+    REQUIRE(arbiter.committed_entry()->dest_reg == 6);
+    REQUIRE_FALSE(scoreboard.is_pending(0, 6));
+    REQUIRE_FALSE(fill_source.has_result());
+}

@@ -94,6 +94,8 @@ private:
     std::unique_ptr<CoalescingUnit> coalescing_;
 
     // Writeback
+    std::unique_ptr<QueuedWritebackSource> load_hit_wb_;
+    std::unique_ptr<QueuedWritebackSource> load_fill_wb_;
     std::unique_ptr<WritebackArbiter> wb_arbiter_;
 
     // Panic

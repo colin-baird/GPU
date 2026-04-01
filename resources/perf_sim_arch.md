@@ -296,15 +296,16 @@ Address generation unit with output FIFO.
 
 ### `include/gpu_sim/timing/writeback_arbiter.h` -- `src/timing/writeback_arbiter.cpp`
 
-Round-robin writeback arbitration among execution units and MSHR fills.
+Round-robin writeback arbitration among execution units and queued memory-result sources.
 
 - **`WritebackArbiter(scoreboard_ref, stats_ref)`**
-- **`add_source(ExecutionUnit*)`**: Registers ALU, MUL, DIV, TLOOKUP as writeback sources.
-- **`submit_fill(WritebackEntry)`**: Accepts cache hit or MSHR fill results into a dedicated fill buffer.
-- **`evaluate()`**: Round-robin scans sources + fill buffer. First with valid result wins. Calls `scoreboard_.clear_pending(warp, reg)`. Counts conflicts when multiple sources ready.
+- **`add_source(ExecutionUnit*)`**: Registers ALU, MUL, DIV, TLOOKUP, and queued LD/ST hit/fill writeback sources.
+- **`evaluate()`**: Round-robin scans all registered sources. First with valid result wins. Calls `scoreboard_.clear_pending(warp, reg)`. Counts conflicts when multiple sources ready.
 - **`committed_entry()`**: The writeback that happened this cycle (for trace/stats).
-- **`has_pending_work()`**: Reports buffered fill/writeback work so DONE/PANIC waits for the writeback path to drain.
-- **Snapshot helpers**: `fill_buffer_entry()`, `ready_source_count()`.
+- **`has_pending_work()`**: Reports queued writeback work so DONE/PANIC waits for the writeback path to drain.
+- **Snapshot helpers**: `ready_source_count()`.
+
+`include/gpu_sim/timing/execution_unit.h` also defines **`QueuedWritebackSource`**, a tiny FIFO-backed `ExecutionUnit` implementation used to model cache-hit and MSHR-fill writeback queues as first-class arbitration sources.
 
 ### `include/gpu_sim/timing/cache.h` -- `src/timing/cache.cpp`
 
@@ -404,9 +405,9 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_branch.cpp` | 4 | Taken branch redirect+flush, not-taken no penalty, loop iteration counting, taken vs straight-line cycle comparison. |
 | `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
-| `test_timing_components.cpp` | 12 | Fetch/decode backpressure, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration. |
+| `test_timing_components.cpp` | 13 | Fetch/decode backpressure, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
 
-**Totals**: 145 test cases.
+**Totals**: 146 test cases.
 
 ---
 

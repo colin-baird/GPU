@@ -151,11 +151,15 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     coalescing_ = std::make_unique<CoalescingUnit>(*ldst_, *cache_,
                                                    config.cache_line_size_bytes, stats);
 
+    load_hit_wb_ = std::make_unique<QueuedWritebackSource>(ExecUnit::LDST);
+    load_fill_wb_ = std::make_unique<QueuedWritebackSource>(ExecUnit::LDST);
     wb_arbiter_ = std::make_unique<WritebackArbiter>(scoreboard_, stats);
     wb_arbiter_->add_source(alu_.get());
     wb_arbiter_->add_source(mul_.get());
     wb_arbiter_->add_source(div_.get());
     wb_arbiter_->add_source(tlookup_.get());
+    wb_arbiter_->add_source(load_hit_wb_.get());
+    wb_arbiter_->add_source(load_fill_wb_.get());
 
     panic_ = std::make_unique<PanicController>(config.num_warps, warps_.data(), func_model);
 
@@ -292,9 +296,10 @@ bool TimingModel::tick() {
         cache_->handle_responses(fill_wb, fill_valid);
         cache_->drain_write_buffer();
         if (fill_valid) {
-            wb_arbiter_->submit_fill(fill_wb);
-        } else if (coal_wb_valid) {
-            wb_arbiter_->submit_fill(coal_wb);
+            load_fill_wb_->enqueue(fill_wb);
+        }
+        if (coal_wb_valid) {
+            load_hit_wb_->enqueue(coal_wb);
         }
         wb_arbiter_->evaluate();
         wb_arbiter_->commit();
@@ -375,9 +380,10 @@ bool TimingModel::tick() {
     cache_->drain_write_buffer();
 
     if (fill_valid) {
-        wb_arbiter_->submit_fill(fill_wb);
-    } else if (coal_wb_valid) {
-        wb_arbiter_->submit_fill(coal_wb);
+        load_fill_wb_->enqueue(fill_wb);
+    }
+    if (coal_wb_valid) {
+        load_hit_wb_->enqueue(coal_wb);
     }
 
     wb_arbiter_->evaluate();
@@ -598,10 +604,13 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
         set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
                  wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
     }
-    if (wb_arbiter_->fill_buffer_entry().valid) {
-        const auto& wb = wb_arbiter_->fill_buffer_entry();
-        set_warp(wb.warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
-                 wb.pc, wb.raw_instruction, wb.source_unit, wb.dest_reg);
+    if (const auto* wb = load_hit_wb_->front_entry()) {
+        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
+    }
+    if (const auto* wb = load_fill_wb_->front_entry()) {
+        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
     }
 
     if (panic_->is_active() && !panic_->is_done()) {

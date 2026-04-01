@@ -188,6 +188,38 @@ bool all_warps_inactive(const FunctionalModel& model, uint32_t num_warps) {
     return true;
 }
 
+void dump_timeout_snapshot(const TimingModel& timing) {
+    const auto& snapshot_opt = timing.last_cycle_snapshot();
+    if (!snapshot_opt.has_value()) {
+        return;
+    }
+
+    const auto& snapshot = *snapshot_opt;
+    std::cerr << "Last cycle snapshot at cycle " << snapshot.cycle << ":\n";
+    std::cerr << "  opcoll busy=" << snapshot.opcoll_busy
+              << " alu busy=" << snapshot.alu_busy
+              << " mul busy=" << snapshot.mul_busy
+              << " div busy=" << snapshot.div_busy
+              << " tlookup busy=" << snapshot.tlookup_busy
+              << " ldst busy=" << snapshot.ldst_busy
+              << " ldst fifo=" << snapshot.ldst_fifo_depth
+              << " mshrs=" << snapshot.active_mshrs
+              << " write buffer=" << snapshot.write_buffer_depth << "\n";
+
+    for (uint32_t warp = 0; warp < snapshot.num_warps; ++warp) {
+        const auto& warp_state = snapshot.warps[warp];
+        if (!warp_state.active) {
+            continue;
+        }
+
+        std::cerr << "  warp " << warp
+                  << " state=" << to_string(warp_state.state)
+                  << " rest=" << to_string(warp_state.rest_reason)
+                  << " pc=0x" << std::hex << warp_state.pc << std::dec
+                  << " rd=x" << static_cast<int>(warp_state.dest_reg) << "\n";
+    }
+}
+
 bool verify_output(const FunctionalModel& model, const std::vector<int32_t>& reference) {
     uint32_t mismatch_count = 0;
 
@@ -269,10 +301,7 @@ int main(int argc, char* argv[]) {
         if (!all_warps_inactive(model, config.num_warps)) {
             std::cerr << "Kernel did not complete within " << options.max_cycles
                       << " cycles\n";
-            if (options.num_warps > 1 && options.memory_latency > 2) {
-                std::cerr << "Note: the matmul kernel is known-good. This configuration "
-                          << "appears to expose a timing-model forward-progress issue.\n";
-            }
+            dump_timeout_snapshot(timing);
             return 2;
         }
 
