@@ -5,5 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(BUILD_TESTS "Build tests" ON)
+if(BUILD_TESTS)
+    enable_testing()
+endif()
+
 add_subdirectory(sim)
 add_subdirectory(runner)
+
+if(BUILD_TESTS)
+    add_subdirectory(tests/matmul)
+endif()
