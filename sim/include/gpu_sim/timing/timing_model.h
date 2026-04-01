@@ -3,6 +3,7 @@
 #include "gpu_sim/config.h"
 #include "gpu_sim/stats.h"
 #include "gpu_sim/functional/functional_model.h"
+#include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/timing/scoreboard.h"
 #include "gpu_sim/timing/fetch_stage.h"
@@ -54,6 +55,7 @@ private:
     };
 
     void dispatch_to_unit(const DispatchInput& input);
+    bool branch_mispredicted(const DispatchInput& input) const;
     bool pipeline_drained() const;
     bool all_warps_done() const;
     void initialize_trace_writer();
@@ -73,6 +75,7 @@ private:
 
     // Per-warp state
     std::vector<WarpState> warps_;
+    std::unique_ptr<BranchPredictor> branch_predictor_;
 
     // Pipeline components
     Scoreboard scoreboard_;

@@ -5,6 +5,7 @@
 #include "gpu_sim/isa.h"
 #include "gpu_sim/stats.h"
 #include "gpu_sim/timing/alu_unit.h"
+#include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/decode_stage.h"
 #include "gpu_sim/timing/divide_unit.h"
 #include "gpu_sim/timing/fetch_stage.h"
@@ -27,6 +28,16 @@ static uint32_t r_type(uint32_t funct7, uint32_t rs2, uint32_t rs1,
                        uint32_t funct3, uint32_t rd, uint32_t opcode) {
     return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) |
            (funct3 << 12) | (rd << 7) | opcode;
+}
+
+static uint32_t b_type(int32_t imm, uint32_t rs2, uint32_t rs1,
+                       uint32_t funct3, uint32_t opcode) {
+    uint32_t bit12 = (imm >> 12) & 1;
+    uint32_t bit11 = (imm >> 11) & 1;
+    uint32_t bits10_5 = (imm >> 5) & 0x3F;
+    uint32_t bits4_1 = (imm >> 1) & 0xF;
+    return (bit12 << 31) | (bits10_5 << 25) | (rs2 << 20) | (rs1 << 15) |
+           (funct3 << 12) | (bits4_1 << 8) | (bit11 << 7) | opcode;
 }
 
 static IssueOutput make_issue_output(uint32_t raw, uint32_t warp_id = 0, uint32_t pc = 0) {
@@ -72,6 +83,7 @@ private:
 
 TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") {
     Stats stats;
+    StaticDirectionalBranchPredictor predictor;
     InstructionMemory imem(64);
     imem.write(0, i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
@@ -80,7 +92,7 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
     warps[0].reset(0);
     warps[0].instr_buffer.push(BufferEntry{});
 
-    FetchStage fetch(1, warps.data(), imem, stats);
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
     fetch.evaluate();
     fetch.commit();
 
@@ -94,6 +106,7 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
 
 TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
     Stats stats;
+    StaticDirectionalBranchPredictor predictor;
     InstructionMemory imem(64);
     imem.write(0, i_type(1, 0, 0, 0, isa::OP_SYSTEM));
 
@@ -101,7 +114,7 @@ TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
     warps.emplace_back(2);
     warps[0].reset(0);
 
-    FetchStage fetch(1, warps.data(), imem, stats);
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
     fetch.evaluate();
     fetch.commit();
 
@@ -117,6 +130,7 @@ TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
 
 TEST_CASE("DecodeStage: invalidate_warp drops pending decode before commit", "[timing]") {
     Stats stats;
+    StaticDirectionalBranchPredictor predictor;
     InstructionMemory imem(64);
     imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
@@ -124,7 +138,7 @@ TEST_CASE("DecodeStage: invalidate_warp drops pending decode before commit", "[t
     warps.emplace_back(2);
     warps[0].reset(0);
 
-    FetchStage fetch(1, warps.data(), imem, stats);
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
     fetch.evaluate();
     fetch.commit();
 
@@ -138,6 +152,7 @@ TEST_CASE("DecodeStage: invalidate_warp drops pending decode before commit", "[t
 
 TEST_CASE("Fetch and Decode: pending decode stalls fetch until buffer space frees", "[timing]") {
     Stats stats;
+    StaticDirectionalBranchPredictor predictor;
     InstructionMemory imem(64);
     imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
     imem.write(1, i_type(9, 0, isa::FUNCT3_ADD_SUB, 6, isa::OP_ALU_I));
@@ -146,7 +161,7 @@ TEST_CASE("Fetch and Decode: pending decode stalls fetch until buffer space free
     warps.emplace_back(1);
     warps[0].reset(0);
 
-    FetchStage fetch(1, warps.data(), imem, stats);
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
     DecodeStage decode(warps.data(), fetch);
 
     fetch.evaluate();
@@ -167,6 +182,22 @@ TEST_CASE("Fetch and Decode: pending decode stalls fetch until buffer space free
     decode.commit();
     REQUIRE_FALSE(decode.has_pending());
     REQUIRE(warps[0].instr_buffer.size() == 1);
+}
+
+TEST_CASE("BranchPredictor: backward branches taken, forward branches not taken", "[timing]") {
+    StaticDirectionalBranchPredictor predictor;
+
+    const uint32_t forward_branch = b_type(8, 2, 1, isa::FUNCT3_BNE, isa::OP_BRANCH);
+    const auto forward_prediction = predictor.predict(0x100, forward_branch);
+    REQUIRE(forward_prediction.is_control_flow);
+    REQUIRE_FALSE(forward_prediction.predicted_taken);
+    REQUIRE(forward_prediction.predicted_target == 0x108);
+
+    const uint32_t backward_branch = b_type(-8, 2, 1, isa::FUNCT3_BNE, isa::OP_BRANCH);
+    const auto backward_prediction = predictor.predict(0x100, backward_branch);
+    REQUIRE(backward_prediction.is_control_flow);
+    REQUIRE(backward_prediction.predicted_taken);
+    REQUIRE(backward_prediction.predicted_target == 0x0F8);
 }
 
 TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "[timing]") {

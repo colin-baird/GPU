@@ -78,12 +78,20 @@ Statistics collection and reporting.
 - **Struct `Stats`**: All counters default to 0. Categories:
   - Global: `total_cycles`, `total_instructions_issued`
   - Per-warp: `warp_instructions[8]`, `warp_cycles_active[8]`, `warp_stall_scoreboard[8]`, `warp_stall_buffer_empty[8]`, `warp_stall_unit_busy[8]`
-  - Pipeline: `fetch_skip_count`, `scheduler_idle_cycles`, `operand_collector_busy_cycles`, `branch_flushes`
+  - Pipeline: `fetch_skip_count`, `scheduler_idle_cycles`, `operand_collector_busy_cycles`, `branch_predictions`, `branch_mispredictions`, `branch_flushes`
   - Per-unit (`UnitStats`): `busy_cycles`, `instructions` -- for ALU, MUL, DIV, LD/ST, TLOOKUP
   - Memory: `cache_hits/misses`, `load_hits/misses`, `store_hits/misses`, `mshr_stall_cycles`, `write_buffer_stall_cycles`, `coalesced_requests`, `serialized_requests`, `external_memory_reads/writes`, `total_load_latency`, `total_loads_completed`
   - Writeback: `writeback_conflicts`
 - **`report(ostream, num_warps)`**: Human-readable text summary.
 - **`report_json(ostream, num_warps)`**: Machine-parseable JSON.
+
+### `include/gpu_sim/timing/branch_predictor.h` -- `src/timing/branch_predictor.cpp`
+
+Modular branch prediction interface used by fetch.
+
+- **Struct `BranchPrediction`**: `is_control_flow`, `predicted_taken`, `predicted_target`
+- **Class `BranchPredictor`** (abstract): `predict(pc, raw_instruction)` -> `BranchPrediction`, `update(pc, decoded, prediction, actual_taken, actual_target)`
+- **Class `StaticDirectionalBranchPredictor`**: Predicts backward conditional branches taken, forward conditional branches not taken, direct `JAL` taken, and `JALR` not taken because the target is not available at fetch time.
 
 ### `include/gpu_sim/timing/timing_trace.h` -- `src/timing/timing_trace.cpp`
 
@@ -204,12 +212,12 @@ Double-buffered register dependency tracking. Header-only.
 
 Instruction fetch with round-robin warp selection.
 
-- **`FetchStage(num_warps, warps_ptr, imem_ref, stats_ref)`**
+- **`FetchStage(num_warps, warps_ptr, imem_ref, predictor_ref, stats_ref)`**
 - **`set_stall(bool)`**: Lets the top-level model freeze fetch when decode is already holding an uncommitted instruction, preventing frontend instruction loss under backpressure.
-- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, increments warp PC by 4. Pointer advances unconditionally on non-stalled cycles.
-- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp.
+- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, asks the branch predictor for a speculative next PC, and updates the warp PC to either the predicted target or `pc + 4`. Pointer advances unconditionally on non-stalled cycles.
+- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp. Used for branch mispredict recovery.
 - **Snapshot helper**: `stalled()`.
-- **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`.
+- **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/decode_stage.h` -- `src/timing/decode_stage.cpp`
 
@@ -222,6 +230,7 @@ Instruction decode with EBREAK detection.
 - **Snapshot helpers**: `pending_warp()`, `pending_entry()`.
 - **`invalidate_warp(warp_id)`**: Clears any pending decode for that warp (branch redirect).
 - **`ebreak_detected()`**, **`ebreak_warp()`**, **`ebreak_pc()`**: Panic detection interface.
+The staged `BufferEntry` also carries the fetch-time `BranchPrediction`.
 
 ### `include/gpu_sim/timing/warp_scheduler.h` -- `src/timing/warp_scheduler.cpp`
 
@@ -229,10 +238,10 @@ Issue stage with round-robin scheduling and 4-way eligibility check.
 
 - **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
 - **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, func_model_ref, stats_ref)`**
-- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent. Sets scoreboard pending for `rd`. Pointer advances unconditionally. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
+- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, and sets scoreboard pending for `rd`. Pointer advances unconditionally. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
 - **`set_opcoll_free(bool)`**, **`set_unit_ready_fn(fn)`**: External readiness inputs.
 - **`current_diagnostics()`**: Returns the committed per-warp `SchedulerIssueOutcome` array.
-- **Outputs**: `output()` (next), `current_output()` (committed). Struct `IssueOutput`: `decoded`, `trace`, `warp_id`, `pc`.
+- **Outputs**: `output()` (next), `current_output()` (committed). Struct `IssueOutput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/operand_collector.h` -- `src/timing/operand_collector.cpp`
 
@@ -243,7 +252,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 - **`evaluate()`**: Decrements counter. When 0, produces output.
 - **`is_free()`**: True when not busy.
 - **Snapshot helpers**: `busy()`, `cycles_remaining()`, `resident_warp()`, `current_instruction()`.
-- **Outputs**: Struct `DispatchInput`: `decoded`, `trace`, `warp_id`, `pc`.
+- **Outputs**: Struct `DispatchInput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/alu_unit.h` -- `src/timing/alu_unit.cpp`
 
@@ -402,12 +411,12 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_cache.cpp` | 10 | Load miss-then-hit, transient MSHR retry, store hit write buffer, store miss write-allocate, store-fill write-buffer backpressure, replayed multiple fills, direct-mapped eviction, write buffer full, reset. |
 | `test_coalescing.cpp` | 3 | Contiguous addresses coalesce (1 request), scattered addresses serialize (32), boundary case (1 lane different). |
 | `test_warp_scheduler.cpp` | 10 | Issues from buffer, skips empty, scoreboard stall, VDOT8 rd-as-source hazard, opcoll-busy stall, unit-busy stall, RR fairness, committed scheduler diagnostics, scoreboard-pending-on-issue, idle pointer advance. |
-| `test_branch.cpp` | 4 | Taken branch redirect+flush, not-taken no penalty, loop iteration counting, taken vs straight-line cycle comparison. |
+| `test_branch.cpp` | 4 | Forward-taken mispredict redirect, correctly predicted not-taken branch, backward-loop prediction behavior, taken-vs-straight-line penalty comparison. |
 | `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
-| `test_timing_components.cpp` | 13 | Fetch/decode backpressure, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
+| `test_timing_components.cpp` | 14 | Fetch/decode backpressure, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
 
-**Totals**: 146 test cases.
+**Totals**: 147 test cases.
 
 ---
 

@@ -24,6 +24,8 @@ struct Stats {
     uint64_t fetch_skip_count = 0;
     uint64_t scheduler_idle_cycles = 0;
     uint64_t operand_collector_busy_cycles = 0;
+    uint64_t branch_predictions = 0;
+    uint64_t branch_mispredictions = 0;
     uint64_t branch_flushes = 0;
 
     // Per execution unit

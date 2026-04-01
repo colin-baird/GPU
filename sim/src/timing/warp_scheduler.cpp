@@ -89,6 +89,7 @@ void WarpScheduler::evaluate() {
         out.warp_id = selected_warp;
         out.pc = selected_entry.pc;
         out.trace = func_model_.execute(selected_warp, selected_entry.pc);
+        out.prediction = selected_entry.prediction;
         next_output_ = out;
 
         warps_[selected_warp].instr_buffer.pop();

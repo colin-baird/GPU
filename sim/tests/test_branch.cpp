@@ -73,6 +73,8 @@ TEST_CASE("Branch: taken branch redirects fetch and flushes", "[branch]") {
     REQUIRE(model.register_file().read(0, 0, 7) == 42);
 
     REQUIRE(stats.branch_flushes >= 1);
+    REQUIRE(stats.branch_predictions == 1);
+    REQUIRE(stats.branch_mispredictions == 1);
 }
 
 TEST_CASE("Branch: not-taken branch has no flush penalty", "[branch]") {
@@ -100,6 +102,8 @@ TEST_CASE("Branch: not-taken branch has no flush penalty", "[branch]") {
     REQUIRE(model.register_file().read(0, 0, 5) == 1);
     REQUIRE(model.register_file().read(0, 0, 6) == 42);
     REQUIRE(stats.branch_flushes == 0);
+    REQUIRE(stats.branch_predictions == 1);
+    REQUIRE(stats.branch_mispredictions == 0);
 }
 
 TEST_CASE("Branch: loop counts correctly", "[branch]") {
@@ -127,8 +131,10 @@ TEST_CASE("Branch: loop counts correctly", "[branch]") {
     REQUIRE(model.register_file().read(0, 0, 5) == 5);
     REQUIRE(model.register_file().read(0, 0, 6) == 5);
 
-    // Branch taken 4 times (loop 1-4), not taken 1 time (loop 5 falls through)
-    REQUIRE(stats.branch_flushes == 4);
+    // Backward-taken iterations are predicted correctly; the final fall-through misses.
+    REQUIRE(stats.branch_predictions == 5);
+    REQUIRE(stats.branch_mispredictions == 1);
+    REQUIRE(stats.branch_flushes == 1);
 }
 
 TEST_CASE("Branch: taken branch incurs pipeline flush penalty", "[branch]") {

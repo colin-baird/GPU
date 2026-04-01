@@ -23,6 +23,7 @@ void OperandCollector::evaluate() {
         out.trace = current_instr_.trace;
         out.warp_id = current_instr_.warp_id;
         out.pc = current_instr_.pc;
+        out.prediction = current_instr_.prediction;
         next_output_ = out;
         busy_ = false;
     }

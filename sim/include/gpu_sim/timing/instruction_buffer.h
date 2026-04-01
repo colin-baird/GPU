@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/trace_event.h"
 #include <deque>
 
@@ -9,6 +10,7 @@ struct BufferEntry {
     DecodedInstruction decoded;
     uint32_t warp_id;
     uint32_t pc;
+    BranchPrediction prediction;
 };
 
 class InstructionBuffer {

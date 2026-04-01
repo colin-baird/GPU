@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_sim/timing/pipeline_stage.h"
+#include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/functional/memory.h"
 #include "gpu_sim/stats.h"
@@ -12,12 +13,13 @@ struct FetchOutput {
     uint32_t raw_instruction;
     uint32_t warp_id;
     uint32_t pc;
+    BranchPrediction prediction;
 };
 
 class FetchStage : public PipelineStage {
 public:
     FetchStage(uint32_t num_warps, WarpState* warps,
-               const InstructionMemory& imem, Stats& stats);
+               const InstructionMemory& imem, BranchPredictor& predictor, Stats& stats);
 
     void evaluate() override;
     void commit() override;
@@ -35,6 +37,7 @@ private:
     uint32_t num_warps_;
     WarpState* warps_;
     const InstructionMemory& imem_;
+    BranchPredictor& predictor_;
     Stats& stats_;
 
     uint32_t rr_pointer_ = 0;

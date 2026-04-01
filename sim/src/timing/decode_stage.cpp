@@ -26,6 +26,7 @@ void DecodeStage::evaluate() {
     entry.decoded = decoded;
     entry.warp_id = fetch_out->warp_id;
     entry.pc = fetch_out->pc;
+    entry.prediction = fetch_out->prediction;
 
     pending_.entry = entry;
     pending_.target_warp = fetch_out->warp_id;

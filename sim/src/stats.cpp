@@ -29,6 +29,8 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "Fetch skips:               " << fetch_skip_count << "\n";
     out << "Scheduler idle cycles:     " << scheduler_idle_cycles << "\n";
     out << "Operand collector busy:    " << operand_collector_busy_cycles << "\n";
+    out << "Branch predictions:        " << branch_predictions << "\n";
+    out << "Branch mispredictions:     " << branch_mispredictions << "\n";
     out << "Branch flushes:            " << branch_flushes << "\n";
     out << "\n";
 
@@ -90,6 +92,8 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"fetch_skip_count\": " << fetch_skip_count << ",\n";
     out << "  \"scheduler_idle_cycles\": " << scheduler_idle_cycles << ",\n";
     out << "  \"operand_collector_busy_cycles\": " << operand_collector_busy_cycles << ",\n";
+    out << "  \"branch_predictions\": " << branch_predictions << ",\n";
+    out << "  \"branch_mispredictions\": " << branch_mispredictions << ",\n";
     out << "  \"branch_flushes\": " << branch_flushes << ",\n";
 
     // Execution units

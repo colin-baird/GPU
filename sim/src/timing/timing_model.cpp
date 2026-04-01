@@ -131,8 +131,10 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
         warps_.back().reset(config.start_pc);
     }
 
+    branch_predictor_ = std::make_unique<StaticDirectionalBranchPredictor>();
     fetch_ = std::make_unique<FetchStage>(config.num_warps, warps_.data(),
-                                          func_model.instruction_memory(), stats);
+                                          func_model.instruction_memory(),
+                                          *branch_predictor_, stats);
     decode_ = std::make_unique<DecodeStage>(warps_.data(), *fetch_);
     scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
                                                  scoreboard_, func_model, stats);
@@ -266,6 +268,21 @@ bool TimingModel::all_warps_done() const {
     return true;
 }
 
+bool TimingModel::branch_mispredicted(const DispatchInput& input) const {
+    if (!input.trace.is_branch) {
+        return false;
+    }
+
+    const uint32_t predicted_next_pc = input.prediction.predicted_taken
+        ? input.prediction.predicted_target
+        : (input.pc + 4);
+    const uint32_t actual_next_pc = input.trace.branch_taken
+        ? input.trace.branch_target
+        : (input.pc + 4);
+
+    return predicted_next_pc != actual_next_pc;
+}
+
 bool TimingModel::tick() {
     cycle_++;
     stats_.total_cycles = cycle_;
@@ -354,10 +371,19 @@ bool TimingModel::tick() {
         dispatch_to_unit(*opcoll_->output());
 
         const auto& out = *opcoll_->output();
-        if (out.trace.is_branch && out.trace.branch_taken) {
-            fetch_->redirect_warp(out.warp_id, out.trace.branch_target);
-            decode_->invalidate_warp(out.warp_id);
-            stats_.branch_flushes++;
+        if (out.trace.is_branch) {
+            stats_.branch_predictions++;
+            branch_predictor_->update(out.pc, out.decoded, out.prediction,
+                                      out.trace.branch_taken, out.trace.branch_target);
+            if (branch_mispredicted(out)) {
+                const uint32_t actual_target = out.trace.branch_taken
+                    ? out.trace.branch_target
+                    : (out.pc + 4);
+                fetch_->redirect_warp(out.warp_id, actual_target);
+                decode_->invalidate_warp(out.warp_id);
+                stats_.branch_mispredictions++;
+                stats_.branch_flushes++;
+            }
         }
     }
 
@@ -808,8 +834,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                                           issue.decoded.rd));
     }
 
-    if (opcoll_->current_output() && opcoll_->current_output()->trace.is_branch &&
-        opcoll_->current_output()->trace.branch_taken) {
+    if (opcoll_->current_output() &&
+        branch_mispredicted(*opcoll_->current_output())) {
         const auto& branch = *opcoll_->current_output();
         TraceArgs args = instruction_args(snapshot.cycle, branch.warp_id, branch.pc,
                                           branch.decoded.raw, branch.decoded.target_unit,

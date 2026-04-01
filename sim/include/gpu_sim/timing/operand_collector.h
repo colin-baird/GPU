@@ -12,6 +12,7 @@ struct DispatchInput {
     TraceEvent trace;
     uint32_t warp_id;
     uint32_t pc;
+    BranchPrediction prediction;
 };
 
 class OperandCollector : public PipelineStage {

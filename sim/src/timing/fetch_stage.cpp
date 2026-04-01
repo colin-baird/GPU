@@ -3,8 +3,8 @@
 namespace gpu_sim {
 
 FetchStage::FetchStage(uint32_t num_warps, WarpState* warps,
-                       const InstructionMemory& imem, Stats& stats)
-    : num_warps_(num_warps), warps_(warps), imem_(imem), stats_(stats) {}
+                       const InstructionMemory& imem, BranchPredictor& predictor, Stats& stats)
+    : num_warps_(num_warps), warps_(warps), imem_(imem), predictor_(predictor), stats_(stats) {}
 
 void FetchStage::evaluate() {
     next_output_ = std::nullopt;
@@ -21,8 +21,10 @@ void FetchStage::evaluate() {
         out.raw_instruction = imem_.read(pc);
         out.warp_id = w;
         out.pc = pc;
+        out.prediction = predictor_.predict(pc, out.raw_instruction);
         next_output_ = out;
-        warps_[w].pc = pc + 4;
+        warps_[w].pc = out.prediction.predicted_taken ? out.prediction.predicted_target
+                                                      : (pc + 4);
     } else {
         stats_.fetch_skip_count++;
     }

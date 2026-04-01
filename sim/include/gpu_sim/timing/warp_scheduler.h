@@ -17,6 +17,7 @@ struct IssueOutput {
     TraceEvent trace;
     uint32_t warp_id;
     uint32_t pc;
+    BranchPrediction prediction;
 };
 
 enum class SchedulerIssueOutcome {

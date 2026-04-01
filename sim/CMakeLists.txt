@@ -16,6 +16,7 @@ add_library(gpu_sim_lib
     src/stats.cpp
     src/functional/alu.cpp
     src/functional/functional_model.cpp
+    src/timing/branch_predictor.cpp
     src/timing/fetch_stage.cpp
     src/timing/decode_stage.cpp
     src/timing/warp_scheduler.cpp
