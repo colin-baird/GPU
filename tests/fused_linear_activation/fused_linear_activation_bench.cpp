@@ -35,7 +35,7 @@ constexpr uint32_t kWeightsBase = 0x00008000;
 constexpr uint32_t kOutputBase = 0x00014000;
 
 struct Options {
-    uint32_t num_warps = 2;
+    uint32_t num_warps = MAX_WARPS;
     uint32_t memory_latency = 100;
     uint64_t max_cycles = 5000000;
 };
@@ -50,7 +50,7 @@ struct WorkloadCase {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
-    std::cerr << "Defaults: --num-warps=2 --memory-latency=100 --max-cycles=5000000\n";
+    std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
 }
 
 uint32_t parse_u32(const std::string& value, const std::string& name) {

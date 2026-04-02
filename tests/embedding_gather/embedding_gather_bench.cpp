@@ -12,6 +12,7 @@
 #include "gpu_sim/functional/functional_model.h"
 #include "gpu_sim/stats.h"
 #include "gpu_sim/timing/timing_model.h"
+#include "gpu_sim/types.h"
 
 using namespace gpu_sim;
 
@@ -20,14 +21,13 @@ namespace {
 constexpr uint32_t kEmbeddingWords = 16;
 constexpr uint32_t kVocabSize = 256;
 constexpr uint32_t kTokensPerWarp = 32;
-constexpr uint32_t kMaxWarps = 8;
 
 constexpr uint32_t kEmbeddingBase = 0x00002000;
 constexpr uint32_t kTokensBase = 0x00008000;
 constexpr uint32_t kOutputBase = 0x0000C000;
 
 struct Options {
-    uint32_t num_warps = 1;
+    uint32_t num_warps = MAX_WARPS;
     uint32_t memory_latency = 100;
     uint64_t max_cycles = 5000000;
 };
@@ -41,7 +41,7 @@ struct Workload {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
-    std::cerr << "Defaults: --num-warps=1 --memory-latency=100 --max-cycles=5000000\n";
+    std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
 }
 
 uint32_t parse_u32(const std::string& value, const std::string& name) {
@@ -84,7 +84,7 @@ Options parse_options(int argc, char* argv[]) {
         throw std::invalid_argument("unknown argument: " + arg);
     }
 
-    if (options.num_warps == 0 || options.num_warps > kMaxWarps) {
+    if (options.num_warps == 0 || options.num_warps > MAX_WARPS) {
         throw std::invalid_argument("num-warps must be in [1, 8]");
     }
 
