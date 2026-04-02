@@ -112,8 +112,8 @@ The current manifest set covers the highest-risk timing rules:
 | `four_warp_round_robin` | 4-warp fetch/issue fairness baseline |
 | `four_warp_mshr_pressure` | 4-warp MSHR exhaustion backpressure |
 
-## Legacy Analytical Flow
+## Retired Analytical Flow
 
-`/tests/references/` and `/resources/perf_reference_methodology.md` are retained as historical context only.
+The Python analytical reference flow has been removed from the repository.
 
-They remain useful for exploratory comparison, but they are **not** the primary timing oracle and are **not** the release gate for performance-model alignment.
+The active and only supported performance-alignment gate is the manifest-driven validation flow described in this document.

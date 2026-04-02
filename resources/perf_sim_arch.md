@@ -485,4 +485,4 @@ ctest --test-dir build -R test_alignment --output-on-failure
 
 ### Legacy Analytical References
 
-`tests/references/` is retained as a historical comparison flow only. See [`/resources/perf_reference_methodology.md`](/resources/perf_reference_methodology.md).
+There is no longer a repository-supported Python analytical reference flow. Performance-model alignment is validated through `test_alignment.cpp` and `/tests/alignment/manifests/`.

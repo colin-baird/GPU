@@ -23,7 +23,6 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Performance Alignment Validation:** [/resources/perf_alignment_validation.md](/resources/perf_alignment_validation.md) — active spec-first timing validation workflow, manifest schema, and gate usage
 - **Performance Alignment Audit Matrix:** [/resources/perf_alignment_audit_matrix.md](/resources/perf_alignment_audit_matrix.md) — spec-to-model audit table covering performance-affecting rules, owners, observability, and status
 - **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
-- **Performance Reference Methodology:** [/resources/perf_reference_methodology.md](/resources/perf_reference_methodology.md) — retired analytical reference flow kept only for historical comparison and exploratory analysis
 - **Untested Changes Log:** [/UNTESTED.md](/UNTESTED.md) — tracker for changes that passed regression but lack targeted test coverage
 
 ## Project Structure
