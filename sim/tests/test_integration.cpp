@@ -371,7 +371,7 @@ TEST_CASE("Integration: branch loop", "[integration]") {
     REQUIRE(f.reg(0, 0, 6) == 5);
     REQUIRE(f.stats.branch_predictions == 5);
     REQUIRE(f.stats.branch_mispredictions == 1);
-    REQUIRE(f.stats.branch_flushes == 4);
+    REQUIRE(f.stats.branch_flushes == 1);
 }
 
 TEST_CASE("Integration: JAL link register", "[integration]") {
@@ -390,6 +390,9 @@ TEST_CASE("Integration: JAL link register", "[integration]") {
     REQUIRE(f.reg(0, 0, 5) == 1);
     REQUIRE(f.reg(0, 0, 10) == 0x08); // Return address = PC+4 of JAL
     REQUIRE(f.reg(0, 0, 6) == 42);
+    REQUIRE(f.stats.branch_predictions == 1);
+    REQUIRE(f.stats.branch_mispredictions == 0);
+    REQUIRE(f.stats.branch_flushes == 0);
 }
 
 TEST_CASE("Integration: multi-warp independent computation", "[integration]") {

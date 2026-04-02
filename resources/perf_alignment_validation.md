@@ -102,8 +102,8 @@ The current manifest set covers the highest-risk timing rules:
 | `alu_chain` | dependent ALU chain without extra scoreboard stalls |
 | `mul_dependency` | multiply latency and RAW visibility |
 | `div_dependency` | divide latency and scoreboard stall duration |
-| `branch_taken` | execute-stage redirect and buffer flush |
-| `jal_redirect` | unconditional jump redirect |
+| `branch_taken` | forward-taken branch mispredict recovery and buffer flush |
+| `jal_predicted_taken` | direct JAL predicted taken without frontend flush |
 | `load_miss_use` | stall-on-use for a cold load miss |
 | `store_then_load_same_line` | duplicate same-line misses plus write-through drain |
 | `writeback_conflict` | round-robin writeback arbitration delay |

@@ -55,7 +55,6 @@ private:
     };
 
     void dispatch_to_unit(const DispatchInput& input);
-    bool branch_redirect_required(const DispatchInput& input) const;
     bool branch_mispredicted(const DispatchInput& input) const;
     bool pipeline_drained() const;
     bool all_warps_done() const;

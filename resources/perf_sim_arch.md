@@ -87,12 +87,12 @@ Statistics collection and reporting.
 
 ### `include/gpu_sim/timing/branch_predictor.h` -- `src/timing/branch_predictor.cpp`
 
-Branch metadata interface used by fetch and timing diagnostics.
+Branch metadata interface used by speculative fetch steering and timing diagnostics.
 
 - **Struct `BranchPrediction`**: `is_control_flow`, `predicted_taken`, `predicted_target`
 - **Class `BranchPredictor`** (abstract): `predict(pc, raw_instruction)` -> `BranchPrediction`, `update(pc, decoded, prediction, actual_taken, actual_target)`
 - **Class `StaticDirectionalBranchPredictor`**: Predicts backward conditional branches taken, forward conditional branches not taken, direct `JAL` taken, and `JALR` not taken because the target is not available at fetch time.
-- **Important:** the timing model's architectural path is **non-speculative**. Fetch records prediction metadata for diagnostics/counters only; committed PC steering still happens only through execute-stage redirects.
+- **Important:** fetch uses this prediction to choose the warp's speculative next PC. Execute-stage resolution validates the prediction and triggers frontend recovery only on a mismatch.
 
 ### `include/gpu_sim/timing/timing_trace.h` -- `src/timing/timing_trace.cpp`
 
@@ -215,8 +215,8 @@ Instruction fetch with round-robin warp selection.
 
 - **`FetchStage(num_warps, warps_ptr, imem_ref, predictor_ref, stats_ref)`**
 - **`set_stall(bool)`**: Lets the top-level model freeze fetch when decode is already holding an uncommitted instruction, preventing frontend instruction loss under backpressure.
-- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to `pc + 4`. Pointer advances unconditionally on non-stalled cycles.
-- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp. Used for taken branch / jump redirect recovery.
+- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to the predicted target when `predicted_taken` is set, otherwise `pc + 4`. Pointer advances unconditionally on non-stalled cycles.
+- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp. Used for branch mispredict recovery.
 - **Snapshot helper**: `stalled()`.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`, `prediction`.
 
@@ -412,13 +412,13 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_cache.cpp` | 10 | Load miss-then-hit, transient MSHR retry, store hit write buffer, store miss write-allocate, store-fill write-buffer backpressure, replayed multiple fills, direct-mapped eviction, write buffer full, reset. |
 | `test_coalescing.cpp` | 3 | Contiguous addresses coalesce (1 request), scattered addresses serialize (32), boundary case (1 lane different). |
 | `test_warp_scheduler.cpp` | 10 | Issues from buffer, skips empty, scoreboard stall, VDOT8 rd-as-source hazard, opcoll-busy stall, unit-busy stall, RR fairness, committed scheduler diagnostics, scoreboard-pending-on-issue, idle pointer advance. |
-| `test_branch.cpp` | 4 | Execute-stage redirects for taken branches/jumps, non-taken fall-through, backward-loop redirect frequency, taken-vs-straight-line penalty comparison. |
+| `test_branch.cpp` | 4 | Forward-taken mispredict recovery, non-taken fall-through, backward-loop prediction accuracy, taken-vs-straight-line penalty comparison. |
 | `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
-| `test_timing_components.cpp` | 14 | Fetch/decode backpressure, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
-| `test_alignment.cpp` | 1 | Manifest-driven alignment gate over 13 spec-cited scenarios covering pipeline timing, redirects, memory misses, duplicate misses, writeback conflicts, panic drain, and selected 4-warp invariants. |
+| `test_timing_components.cpp` | 15 | Fetch/decode backpressure, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
+| `test_alignment.cpp` | 1 | Manifest-driven alignment gate over 13 spec-cited scenarios covering pipeline timing, predictor recovery, predicted JAL fast path, memory misses, duplicate misses, writeback conflicts, panic drain, and selected 4-warp invariants. |
 
-**Totals**: 147 direct Catch2 cases + 13 manifest-driven alignment scenarios.
+**Totals**: 148 direct Catch2 cases + 13 manifest-driven alignment scenarios.
 
 ---
 

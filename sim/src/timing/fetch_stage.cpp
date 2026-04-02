@@ -23,7 +23,8 @@ void FetchStage::evaluate() {
         out.pc = pc;
         out.prediction = predictor_.predict(pc, out.raw_instruction);
         next_output_ = out;
-        warps_[w].pc = pc + 4;
+        warps_[w].pc = out.prediction.predicted_taken ? out.prediction.predicted_target
+                                                      : (pc + 4);
     } else {
         stats_.fetch_skip_count++;
     }

@@ -40,6 +40,15 @@ static uint32_t b_type(int32_t imm, uint32_t rs2, uint32_t rs1,
            (funct3 << 12) | (bits4_1 << 8) | (bit11 << 7) | opcode;
 }
 
+static uint32_t j_type(int32_t imm, uint32_t rd, uint32_t opcode) {
+    uint32_t bit20 = (imm >> 20) & 0x1;
+    uint32_t bits10_1 = (imm >> 1) & 0x3FF;
+    uint32_t bit11 = (imm >> 11) & 0x1;
+    uint32_t bits19_12 = (imm >> 12) & 0xFF;
+    return (bit20 << 31) | (bits19_12 << 12) | (bit11 << 20) |
+           (bits10_1 << 21) | (rd << 7) | opcode;
+}
+
 static IssueOutput make_issue_output(uint32_t raw, uint32_t warp_id = 0, uint32_t pc = 0) {
     IssueOutput issue;
     issue.decoded = Decoder::decode(raw);
@@ -102,6 +111,26 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
     REQUIRE_FALSE(fetch.current_output().has_value());
     REQUIRE(warps[0].pc == 16);
     REQUIRE(warps[0].instr_buffer.is_empty());
+}
+
+TEST_CASE("FetchStage: backward branch prediction steers the warp PC", "[timing]") {
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(512);
+    imem.write(64, b_type(-8, 2, 1, isa::FUNCT3_BNE, isa::OP_BRANCH));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(2);
+    warps[0].reset(0x100);
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    fetch.evaluate();
+    fetch.commit();
+
+    REQUIRE(fetch.current_output().has_value());
+    REQUIRE(fetch.current_output()->prediction.predicted_taken);
+    REQUIRE(fetch.current_output()->prediction.predicted_target == 0x0F8);
+    REQUIRE(warps[0].pc == 0x0F8);
 }
 
 TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
@@ -198,6 +227,17 @@ TEST_CASE("BranchPredictor: backward branches taken, forward branches not taken"
     REQUIRE(backward_prediction.is_control_flow);
     REQUIRE(backward_prediction.predicted_taken);
     REQUIRE(backward_prediction.predicted_target == 0x0F8);
+
+    const uint32_t jal = j_type(8, 5, isa::OP_JAL);
+    const auto jal_prediction = predictor.predict(0x100, jal);
+    REQUIRE(jal_prediction.is_control_flow);
+    REQUIRE(jal_prediction.predicted_taken);
+    REQUIRE(jal_prediction.predicted_target == 0x108);
+
+    const uint32_t jalr = i_type(0, 1, 0, 5, isa::OP_JALR);
+    const auto jalr_prediction = predictor.predict(0x100, jalr);
+    REQUIRE(jalr_prediction.is_control_flow);
+    REQUIRE_FALSE(jalr_prediction.predicted_taken);
 }
 
 TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "[timing]") {

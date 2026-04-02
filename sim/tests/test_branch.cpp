@@ -131,10 +131,11 @@ TEST_CASE("Branch: loop counts correctly", "[branch]") {
     REQUIRE(model.register_file().read(0, 0, 5) == 5);
     REQUIRE(model.register_file().read(0, 0, 6) == 5);
 
-    // Every taken branch redirects the fetch PC and flushes the warp buffer.
+    // Backward-taken iterations are predicted correctly; only the final
+    // fall-through requires recovery.
     REQUIRE(stats.branch_predictions == 5);
     REQUIRE(stats.branch_mispredictions == 1);
-    REQUIRE(stats.branch_flushes == 4);
+    REQUIRE(stats.branch_flushes == 1);
 }
 
 TEST_CASE("Branch: taken branch incurs pipeline flush penalty", "[branch]") {

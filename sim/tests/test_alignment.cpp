@@ -375,7 +375,7 @@ std::map<std::string, std::function<ScenarioProgram()>> build_programs() {
         return program;
     };
 
-    builders["jal_redirect"] = []() {
+    builders["jal_predicted_taken"] = []() {
         ScenarioProgram program;
         program.instructions = {
             encode_jal(5, 8),

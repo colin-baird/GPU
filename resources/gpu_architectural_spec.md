@@ -143,9 +143,13 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 **Fetch stage:**
 - A **strict round-robin** pointer cycles through warps: W0, W1, W2, W3, W0, ...
 - Each cycle, the fetch unit reads the instruction BRAM at the current warp's PC.
-- **Non-speculative PC advance:** in Phase 1, fetch always advances the warp PC to the next sequential instruction (`PC += 4`) after a successful fetch. Fetch does **not** steer the PC with branch prediction metadata. All visible control-flow redirects occur only after execute-stage resolution.
+- **Static branch prediction:** after each successful fetch, the frontend predicts the warp's next PC using a fixed policy:
+  - backward conditional branches: **taken**
+  - forward conditional branches: **not taken**
+  - `JAL`: **taken** to `PC + imm`
+  - `JALR`: **not taken** (target is not available until execute)
 - **Buffer-full skip:** if the target warp's instruction buffer is full (all slots occupied), the fetch unit skips that warp and advances the round-robin pointer. No stall, no wasted cycle — the BRAM read simply doesn't happen for that warp.
-- Each warp maintains its own **program counter (PC)**, updated by the fetch unit after each successful fetch (PC += 4), or redirected on a branch.
+- Each warp maintains its own **program counter (PC)**, updated by the fetch unit after each successful fetch to either the predicted target or `PC + 4`.
 
 **Decode stage:**
 - Takes the raw instruction word from the fetch stage output register and decodes it (opcode, register indices, immediate, functional unit target, operand count).
@@ -158,11 +162,13 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 - The warp scheduler (§4.3) consumes from the head of this FIFO.
 
 **Branch handling:**
-- Branches, `JAL`, and `JALR` are resolved in the execute stage. When a warp redirects control flow:
+- Branches, `JAL`, and `JALR` are resolved in the execute stage.
+- If the predicted next PC matches the actual next PC, execution continues with no frontend recovery penalty.
+- On a misprediction:
   1. The warp's instruction buffer is **flushed** (all entries invalidated).
-  2. The warp's PC is updated to the **branch target address**.
+  2. The warp's PC is updated to the **actual next PC** (branch target for taken control flow, `PC + 4` for fall-through).
   3. Fetching for that warp resumes at the new PC on the next round-robin slot.
-- The redirect penalty is the refill latency: the warp has an empty buffer until fetch and decode deliver new instructions (minimum 2 cycles for the first instruction, plus round-robin wait). Other warps continue executing during this time, hiding the penalty.
+- The mispredict penalty is the refill latency: the warp has an empty buffer until fetch and decode deliver new instructions (minimum 2 cycles for the first instruction, plus round-robin wait). Other warps continue executing during this time, hiding the penalty.
 
 **Steady-state timing (4 warps):**
 ```
@@ -615,7 +621,7 @@ This appendix defines which timing behaviors are part of the architectural contr
 The following are architecturally contracted and may be used as exact expectations in validation:
 
 - fetch/decode/issue ordering and visibility across cycle boundaries
-- branch, `JAL`, and `JALR` redirect semantics
+- static branch-prediction policy and mispredict recovery semantics
 - scoreboard set/clear timing
 - execution-unit latency parameters
 - duplicate-miss behavior for same-line outstanding misses
