@@ -416,9 +416,9 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
 | `test_timing_components.cpp` | 15 | Fetch/decode backpressure, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
-| `test_alignment.cpp` | 1 | Manifest-driven alignment gate over 13 spec-cited scenarios covering pipeline timing, predictor recovery, predicted JAL fast path, memory misses, duplicate misses, writeback conflicts, panic drain, and selected 4-warp invariants. |
+| `test_alignment.cpp` | 1 | Manifest-driven alignment gate over 18 spec-cited scenarios covering pipeline timing, JAL/JALR control flow, coalesced and serialized memory paths, write-buffer backpressure, writeback conflicts, panic drain, and stronger 4-warp latency-hiding invariants. |
 
-**Totals**: 148 direct Catch2 cases + 13 manifest-driven alignment scenarios.
+**Totals**: 148 direct Catch2 cases + 18 manifest-driven alignment scenarios.
 
 ---
 
@@ -482,6 +482,11 @@ Usage:
 ```
 ctest --test-dir build -R test_alignment --output-on-failure
 ```
+
+Optional debugging helpers:
+
+- `ALIGNMENT_SCENARIO_FILTER=<substring> ./build/sim/tests/test_alignment`
+- `ALIGNMENT_SCENARIO_FILTER=<substring> ALIGNMENT_DUMP=1 ./build/sim/tests/test_alignment`
 
 ### Legacy Analytical References
 

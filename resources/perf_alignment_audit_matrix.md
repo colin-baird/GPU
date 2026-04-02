@@ -18,15 +18,19 @@ Status meanings:
 | Static directional predictor steers fetch PC | §4.2 | `branch_predictor`, `fetch_stage` | fetch-stage state, `branch_predictions` | `test_timing_components.cpp` | aligned |
 | Mispredicted control flow flushes the warp buffer | §4.2 | `timing_model`, `fetch_stage`, `decode_stage` | `branch_flushes`, final registers | `branch_taken` manifest | aligned |
 | Direct JAL uses the predicted-taken fast path | §4.2 | `branch_predictor`, `fetch_stage`, `timing_model` | `branch_flushes`, final registers | `jal_predicted_taken` manifest | aligned |
+| JALR predicted-not-taken path recovers to the computed target | §4.2 | `branch_predictor`, `timing_model`, `fetch_stage` | `branch_flushes`, final registers, cycle snapshots | `jalr_mispredict` manifest | aligned |
 | Stall-on-use for load miss | §5.3, §5.4 | `ldst_unit`, `coalescing_unit`, `cache`, `scoreboard` | `load_misses`, `warp_stall_scoreboard`, cycle snapshots | `load_miss_use` manifest | aligned |
+| Coalesced single-line load collapses to one cache request | §5.2, §5.3 | `coalescing_unit`, `cache` | `coalesced_requests`, `external_memory_reads`, cycle snapshots | `coalesced_load` manifest | aligned |
 | No duplicate miss merging for same cache line | §5.3.1 | `cache`, `mshr`, `coalescing_unit` | `cache_misses`, `external_memory_reads`, `active_mshrs` | `store_then_load_same_line` manifest | aligned |
 | Write-through drain delays completion | §5.3.2, §5.4 | `cache`, `memory_interface`, `timing_model` | `external_memory_writes`, `total_cycles` | `store_then_load_same_line` manifest | aligned |
 | Round-robin writeback arbitration delays scoreboard clear | §4.7, §8 | `writeback_arbiter`, `scoreboard` | `writeback_conflicts`, `total_cycles` | `writeback_conflict` manifest | aligned |
 | Panic sequencing and diagnostic latch | §4.8 | `panic_controller`, `timing_model` | cycle snapshots, `panic.*` fields | `panic_drain` manifest | aligned |
 | All-or-nothing coalescing fallback serializes divergent lanes | §5.2 | `coalescing_unit`, `cache` | `serialized_requests`, `external_memory_reads`, final registers | `serialized_load` manifest | aligned |
 | 4-warp strict round-robin fetch / loose RR issue baseline | §4.2, §4.3 | `fetch_stage`, `warp_scheduler` | `warp_instructions`, `total_cycles` | `four_warp_round_robin` manifest | aligned |
+| 4-warp branch mispredict penalty is hidden while other warps continue issuing | §4.2, §4.3 | `fetch_stage`, `decode_stage`, `warp_scheduler` | `branch_flushes`, `total_cycles`, cycle snapshots | `four_warp_branch_hiding` manifest | aligned |
+| 4-warp load latency is overlapped with sufficient MSHRs | §4, §5.3, §5.4 | `ldst_unit`, `coalescing_unit`, `cache`, `writeback_arbiter` | `total_cycles`, `active_mshrs`, `writeback_conflicts`, final registers | `four_warp_load_hiding` manifest | aligned |
 | MSHR exhaustion backpressures additional misses | §5.3.1 | `cache`, `mshr`, `coalescing_unit` | `mshr_stall_cycles`, `external_memory_reads`, final registers | `four_warp_mshr_pressure` manifest | aligned |
-| Write-buffer-full backpressure | §5.3.2 | `cache`, `coalescing_unit` | `write_buffer_stall_cycles` | `test_cache.cpp`, `test_integration.cpp` | aligned |
+| Write-buffer-full backpressure | §5.3.2 | `cache`, `coalescing_unit` | `write_buffer_stall_cycles`, cycle snapshots | `write_buffer_backpressure` manifest | aligned |
 | DONE waits for memory/writeback drain | §4.8, §5.3.2 | `timing_model`, `cache`, `writeback_arbiter` | `total_cycles`, completion behavior | `store_then_load_same_line` manifest, `test_integration.cpp` | aligned |
 | Branch prediction counters | not architecturally frozen | `branch_predictor`, `timing_model` | `branch_predictions`, `branch_mispredictions` | unit tests only | underspecified |
 | Fetch skip counter | not architecturally frozen | `fetch_stage` | `fetch_skip_count` | unit tests only | underspecified |

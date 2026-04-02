@@ -6,7 +6,6 @@ The validation policy is **spec-first**:
 
 - The architecture spec is authoritative for visible timing behavior.
 - Simulator behavior that affects timing but is not covered by the spec is a defect until the spec is explicitly updated.
-- The retired analytical Python reference flow is no longer a gating oracle.
 
 ## Primary Gate
 
@@ -75,7 +74,7 @@ Supported numeric comparison operators:
 Supported cycle fields:
 
 - snapshot fields: `active_warps`, `opcoll_busy`, `alu_busy`, `mul_busy`, `div_busy`, `ldst_busy`, `active_mshrs`, `write_buffer_depth`, `panic_active`
-- warp fields: `state`, `rest_reason`, `pc`, `dest_reg`, `active`, `branch_taken`
+- warp fields: `state`, `rest_reason`, `pc`, `dest_reg`, `active`, `branch_taken`, `coalesced_memory`, `first_memory_address`
 
 Supported warp stats fields:
 
@@ -104,13 +103,23 @@ The current manifest set covers the highest-risk timing rules:
 | `div_dependency` | divide latency and scoreboard stall duration |
 | `branch_taken` | forward-taken branch mispredict recovery and buffer flush |
 | `jal_predicted_taken` | direct JAL predicted taken without frontend flush |
+| `jalr_mispredict` | JALR predicted-not-taken recovery path |
 | `load_miss_use` | stall-on-use for a cold load miss |
 | `store_then_load_same_line` | duplicate same-line misses plus write-through drain |
 | `writeback_conflict` | round-robin writeback arbitration delay |
 | `panic_drain` | EBREAK panic sequencing and diagnostics |
+| `coalesced_load` | single-line coalesced load fast path |
 | `serialized_load` | all-or-nothing coalescing fallback |
+| `write_buffer_backpressure` | store-side backpressure when the write buffer is full |
 | `four_warp_round_robin` | 4-warp fetch/issue fairness baseline |
+| `four_warp_branch_hiding` | 4-warp branch-mispredict penalty hiding |
+| `four_warp_load_hiding` | 4-warp load-latency hiding with sufficient MSHRs |
 | `four_warp_mshr_pressure` | 4-warp MSHR exhaustion backpressure |
+
+For targeted debugging while authoring new manifests:
+
+- `ALIGNMENT_SCENARIO_FILTER=<substring>` restricts the harness to matching scenario names
+- `ALIGNMENT_DUMP=1` prints the executed stats and per-cycle snapshots for the selected scenario(s)
 
 ## Retired Analytical Flow
 

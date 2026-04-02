@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <cstdlib>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -214,6 +216,7 @@ AlignmentManifest parse_manifest(const std::filesystem::path& path) {
 }
 
 std::vector<AlignmentManifest> load_manifests(const std::filesystem::path& directory) {
+    const char* scenario_filter = std::getenv("ALIGNMENT_SCENARIO_FILTER");
     std::vector<std::filesystem::path> paths;
     for (const auto& entry : std::filesystem::directory_iterator(directory)) {
         if (entry.is_regular_file() && entry.path().extension() == ".manifest") {
@@ -225,7 +228,12 @@ std::vector<AlignmentManifest> load_manifests(const std::filesystem::path& direc
     std::vector<AlignmentManifest> manifests;
     manifests.reserve(paths.size());
     for (const auto& path : paths) {
-        manifests.push_back(parse_manifest(path));
+        AlignmentManifest manifest = parse_manifest(path);
+        if (scenario_filter != nullptr && *scenario_filter != '\0' &&
+            manifest.scenario_name.find(scenario_filter) == std::string::npos) {
+            continue;
+        }
+        manifests.push_back(std::move(manifest));
     }
     return manifests;
 }
@@ -300,6 +308,10 @@ uint32_t encode_beq(uint32_t rs1, uint32_t rs2, int32_t imm) {
 
 uint32_t encode_jal(uint32_t rd, int32_t imm) {
     return j_type(imm, rd, isa::OP_JAL);
+}
+
+uint32_t encode_jalr(uint32_t rd, uint32_t rs1, int32_t imm) {
+    return i_type(imm, rs1, 0, rd, isa::OP_JALR);
 }
 
 uint32_t encode_fence() {
@@ -386,6 +398,19 @@ std::map<std::string, std::function<ScenarioProgram()>> build_programs() {
         return program;
     };
 
+    builders["jalr_mispredict"] = []() {
+        ScenarioProgram program;
+        program.instructions = {
+            encode_addi(5, 0, 16),
+            encode_jalr(6, 5, 0),
+            encode_addi(7, 0, 99),
+            encode_addi(7, 0, 77),
+            encode_addi(8, 0, 42),
+            encode_ecall(),
+        };
+        return program;
+    };
+
     builders["load_miss_use"] = []() {
         ScenarioProgram program;
         program.instructions = {
@@ -449,11 +474,75 @@ std::map<std::string, std::function<ScenarioProgram()>> build_programs() {
         return program;
     };
 
+    builders["coalesced_load"] = []() {
+        ScenarioProgram program;
+        program.instructions = {
+            encode_csrrs(7, isa::CSR_LANE_ID, 0),
+            encode_add(8, 7, 7),
+            encode_add(8, 8, 8),
+            encode_add(8, 1, 8),
+            encode_lw(5, 8, 0),
+            encode_ecall(),
+        };
+        program.initialize = [](const SimConfig&, FunctionalModel& model) {
+            for (LaneId lane = 0; lane < WARP_SIZE; ++lane) {
+                model.memory().write32(0x1000 + lane * 4, 100 + lane);
+            }
+        };
+        return program;
+    };
+
+    builders["write_buffer_backpressure"] = []() {
+        ScenarioProgram program;
+        program.instructions = {
+            encode_lw(5, 1, 0),
+            encode_sw(5, 2, 0),
+            encode_addi(0, 0, 0),
+            encode_sw(5, 1, 0),
+            encode_ecall(),
+        };
+        program.initialize = [](const SimConfig&, FunctionalModel& model) {
+            model.memory().write32(0x1000, 42);
+        };
+        return program;
+    };
+
     builders["four_warp_round_robin"] = []() {
         ScenarioProgram program;
         program.instructions = {
             encode_addi(5, 0, 1),
             encode_ecall(),
+        };
+        return program;
+    };
+
+    builders["four_warp_branch_hiding"] = []() {
+        ScenarioProgram program;
+        program.instructions = {
+            encode_csrrs(5, isa::CSR_WARP_ID, 0),
+            encode_beq(5, 0, 12),
+            encode_addi(6, 0, 1),
+            encode_ecall(),
+            encode_addi(6, 0, 2),
+            encode_ecall(),
+        };
+        return program;
+    };
+
+    builders["four_warp_load_hiding"] = []() {
+        ScenarioProgram program;
+        program.instructions = {
+            encode_csrrs(5, isa::CSR_WARP_ID, 0),
+            encode_slli(5, 5, 7),
+            encode_add(6, 1, 5),
+            encode_lw(7, 6, 0),
+            encode_addi(8, 7, 1),
+            encode_ecall(),
+        };
+        program.initialize = [](const SimConfig& config, FunctionalModel& model) {
+            for (uint32_t warp = 0; warp < config.num_warps; ++warp) {
+                model.memory().write32(0x1000 + warp * 128, 200 + warp);
+            }
         };
         return program;
     };
@@ -728,12 +817,75 @@ void check_expectation(const ExecutedScenario& executed, const ManifestExpectati
                 compare_bool(expectation, warp_snapshot.branch_taken);
                 return;
             }
+            if (parts[3] == "coalesced_memory") {
+                compare_bool(expectation, warp_snapshot.coalesced_memory);
+                return;
+            }
+            if (parts[3] == "first_memory_address") {
+                compare_numeric(expectation, warp_snapshot.first_memory_address);
+                return;
+            }
         }
 
         throw std::runtime_error("unknown cycle field '" + expectation.key + "'");
     }
 
     throw std::runtime_error("unknown expectation key '" + expectation.key + "'");
+}
+
+void dump_executed_scenario(const AlignmentManifest& manifest, const ExecutedScenario& executed) {
+    std::cout << "SCENARIO " << manifest.scenario_name << "\n";
+    std::cout << "  total_cycles=" << executed.stats.total_cycles
+              << " total_instructions_issued=" << executed.stats.total_instructions_issued
+              << " branch_predictions=" << executed.stats.branch_predictions
+              << " branch_mispredictions=" << executed.stats.branch_mispredictions
+              << " branch_flushes=" << executed.stats.branch_flushes
+              << " load_misses=" << executed.stats.load_misses
+              << " store_misses=" << executed.stats.store_misses
+              << " external_memory_reads=" << executed.stats.external_memory_reads
+              << " external_memory_writes=" << executed.stats.external_memory_writes
+              << " write_buffer_stall_cycles=" << executed.stats.write_buffer_stall_cycles
+              << " mshr_stall_cycles=" << executed.stats.mshr_stall_cycles
+              << " coalesced_requests=" << executed.stats.coalesced_requests
+              << " serialized_requests=" << executed.stats.serialized_requests
+              << " writeback_conflicts=" << executed.stats.writeback_conflicts
+              << "\n";
+
+    for (uint32_t warp = 0; warp < executed.config.num_warps; ++warp) {
+        std::cout << "  warp" << warp
+                  << ": instructions=" << executed.stats.warp_instructions[warp]
+                  << " cycles_active=" << executed.stats.warp_cycles_active[warp]
+                  << " stall_scoreboard=" << executed.stats.warp_stall_scoreboard[warp]
+                  << " stall_buffer_empty=" << executed.stats.warp_stall_buffer_empty[warp]
+                  << " stall_unit_busy=" << executed.stats.warp_stall_unit_busy[warp]
+                  << "\n";
+    }
+
+    for (const auto& snapshot : executed.snapshots) {
+        std::cout << "  cycle " << snapshot.cycle
+                  << ": active_warps=" << snapshot.active_warps
+                  << " opcoll_busy=" << snapshot.opcoll_busy
+                  << " alu_busy=" << snapshot.alu_busy
+                  << " mul_busy=" << snapshot.mul_busy
+                  << " div_busy=" << snapshot.div_busy
+                  << " ldst_busy=" << snapshot.ldst_busy
+                  << " active_mshrs=" << snapshot.active_mshrs
+                  << " write_buffer_depth=" << snapshot.write_buffer_depth
+                  << " panic_active=" << snapshot.panic_active
+                  << "\n";
+        for (uint32_t warp = 0; warp < executed.config.num_warps; ++warp) {
+            const auto& warp_snapshot = snapshot.warps[warp];
+            std::cout << "    warp" << warp
+                      << ": active=" << warp_snapshot.active
+                      << " state=" << to_string(warp_snapshot.state)
+                      << " rest_reason=" << to_string(warp_snapshot.rest_reason)
+                      << " pc=" << warp_snapshot.pc
+                      << " dest_reg=" << static_cast<uint32_t>(warp_snapshot.dest_reg)
+                      << " branch_taken=" << warp_snapshot.branch_taken
+                      << " coalesced_memory=" << warp_snapshot.coalesced_memory
+                      << "\n";
+        }
+    }
 }
 
 } // namespace
@@ -751,6 +903,10 @@ TEST_CASE("Alignment manifests hold spec-facing timing contracts", "[alignment]"
             }
 
             const ExecutedScenario executed = run_manifest(manifest);
+            if (const char* dump = std::getenv("ALIGNMENT_DUMP"); dump != nullptr &&
+                *dump != '\0') {
+                dump_executed_scenario(manifest, executed);
+            }
             for (const auto& expectation : manifest.expectations) {
                 check_expectation(executed, expectation);
             }
