@@ -24,14 +24,14 @@ public:
     void evaluate() override;
     void commit() override;
     void reset() override;
-    void set_stall(bool stall) { stalled_ = stall; }
-
     std::optional<FetchOutput>& output() { return next_output_; }
     const std::optional<FetchOutput>& current_output() const { return current_output_; }
-    bool stalled() const { return stalled_; }
 
     // Branch redirect: called by execute stage
     void redirect_warp(uint32_t warp_id, uint32_t target_pc);
+
+    // Decode stage signals it consumed the current output
+    void consume_output() { output_consumed_ = true; }
 
 private:
     uint32_t num_warps_;
@@ -41,7 +41,7 @@ private:
     Stats& stats_;
 
     uint32_t rr_pointer_ = 0;
-    bool stalled_ = false;
+    bool output_consumed_ = true;
     std::optional<FetchOutput> current_output_;
     std::optional<FetchOutput> next_output_;
 };

@@ -138,3 +138,4 @@ These apply to all agents and the orchestrator:
 - Strictly adhere to the coding standard documentation (`/resources/cpp_coding_standard.md`).
 - When creating new sources of build artifacts, update the global `.gitignore` to exclude them from tracking.
 - After a session with major changes, make a new git commit with a message describing the changes.
+- Use `bash ./tests/run_workload_benchmarks.sh --build-dir build` as the canonical workload benchmark entry point. Benchmark automation and validation should consume its `RESULT` and `SUMMARY` lines rather than scraping individual benchmark binaries directly.

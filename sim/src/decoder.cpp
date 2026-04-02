@@ -176,12 +176,9 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
         }
         break;
 
-    // ---- FENCE (pipeline NOP) ----
+    // ---- FENCE (unsupported in Phase 1) ----
     case isa::OP_FENCE:
-        d.type = InstructionType::FENCE;
-        d.target_unit = ExecUnit::SYSTEM;
-        d.has_rd = false;
-        d.num_src_regs = 0;
+        d.type = InstructionType::INVALID;
         break;
 
     // ---- SYSTEM (ECALL, EBREAK, CSR) ----
@@ -201,11 +198,11 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
             } else {
                 d.type = InstructionType::INVALID;
             }
-        } else if (f3 == isa::FUNCT3_CSRRS || f3 == isa::FUNCT3_CSRRW || f3 == isa::FUNCT3_CSRRC) {
+        } else if (f3 == isa::FUNCT3_CSRRS && d.rs1 == 0) {
             d.type = InstructionType::CSR;
             d.target_unit = ExecUnit::ALU;
             d.has_rd = true;
-            d.num_src_regs = 0;  // CSR reads don't use register file source operands for our GPU CSRs
+            d.num_src_regs = 0;  // Only CSRRS rd, csr, x0 is supported for identity CSRs
             d.csr_addr = static_cast<uint16_t>((instruction >> 20) & 0xFFF);
         } else {
             d.type = InstructionType::INVALID;

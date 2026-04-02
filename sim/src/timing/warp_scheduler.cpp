@@ -61,6 +61,7 @@ void WarpScheduler::evaluate() {
         }
 
         if (!opcoll_free_) {
+            stats_.warp_stall_unit_busy[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
             continue;
         }

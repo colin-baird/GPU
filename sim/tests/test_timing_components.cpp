@@ -179,7 +179,7 @@ TEST_CASE("DecodeStage: invalidate_warp drops pending decode before commit", "[t
     REQUIRE(warps[0].instr_buffer.is_empty());
 }
 
-TEST_CASE("Fetch and Decode: pending decode stalls fetch until buffer space frees", "[timing]") {
+TEST_CASE("Fetch skips warp with full buffer", "[timing]") {
     Stats stats;
     StaticDirectionalBranchPredictor predictor;
     InstructionMemory imem(64);
@@ -187,30 +187,68 @@ TEST_CASE("Fetch and Decode: pending decode stalls fetch until buffer space free
     imem.write(1, i_type(9, 0, isa::FUNCT3_ADD_SUB, 6, isa::OP_ALU_I));
 
     std::vector<WarpState> warps;
-    warps.emplace_back(1);
+    warps.emplace_back(1);  // buffer depth 1
     warps[0].reset(0);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
-    DecodeStage decode(warps.data(), fetch);
 
+    // First fetch succeeds
     fetch.evaluate();
     fetch.commit();
-    decode.evaluate();
-    REQUIRE(decode.has_pending());
+    REQUIRE(fetch.current_output().has_value());
 
+    // Simulate decode consuming the output
+    fetch.consume_output();
+
+    // Fill the buffer so the warp becomes ineligible for fetch
     warps[0].instr_buffer.push(BufferEntry{});
-    decode.commit();
-    REQUIRE(decode.has_pending());
+    REQUIRE(warps[0].instr_buffer.is_full());
 
-    fetch.set_stall(decode.has_pending());
+    // Fetch evaluates but skips the warp (buffer full) — no output produced
     fetch.evaluate();
     fetch.commit();
     REQUIRE_FALSE(fetch.current_output().has_value());
 
+    // Free a buffer slot — fetch should succeed again
     warps[0].instr_buffer.pop();
-    decode.commit();
-    REQUIRE_FALSE(decode.has_pending());
-    REQUIRE(warps[0].instr_buffer.size() == 1);
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
+}
+
+TEST_CASE("Fetch stalls when decode has unconsumed output", "[timing]") {
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(64);
+    imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+    imem.write(1, i_type(9, 0, isa::FUNCT3_ADD_SUB, 6, isa::OP_ALU_I));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(2);  // buffer depth 2
+    warps[0].reset(0);
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+
+    // First fetch succeeds — PC advances to 4
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
+    uint32_t pc_after_first = warps[0].pc;
+    REQUIRE(pc_after_first == 4);
+
+    // Do NOT consume — simulate decode being blocked
+    // Second fetch should stall (backpressure) — PC must not advance
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());  // retains first output
+    REQUIRE(warps[0].pc == pc_after_first);       // PC unchanged
+
+    // Now consume — next fetch should proceed
+    fetch.consume_output();
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
+    REQUIRE(warps[0].pc == 8);  // PC advanced to next instruction
 }
 
 TEST_CASE("BranchPredictor: backward branches taken, forward branches not taken", "[timing]") {

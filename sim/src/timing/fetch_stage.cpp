@@ -9,36 +9,53 @@ FetchStage::FetchStage(uint32_t num_warps, WarpState* warps,
 void FetchStage::evaluate() {
     next_output_ = std::nullopt;
 
-    if (stalled_) {
+    // Backpressure: don't produce if decode hasn't consumed previous output
+    if (current_output_.has_value() && !output_consumed_) {
         stats_.fetch_skip_count++;
+        rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
         return;
     }
 
-    uint32_t w = rr_pointer_;
-    if (w < num_warps_ && warps_[w].active && !warps_[w].instr_buffer.is_full()) {
-        uint32_t pc = warps_[w].pc;
-        FetchOutput out;
-        out.raw_instruction = imem_.read(pc);
-        out.warp_id = w;
-        out.pc = pc;
-        out.prediction = predictor_.predict(pc, out.raw_instruction);
-        next_output_ = out;
-        warps_[w].pc = out.prediction.predicted_taken ? out.prediction.predicted_target
-                                                      : (pc + 4);
-    } else {
+    // Scan forward from the RR pointer to find the first eligible warp
+    bool fetched = false;
+    for (uint32_t i = 0; i < num_warps_; ++i) {
+        uint32_t w = (rr_pointer_ + i) % num_warps_;
+        if (warps_[w].active && !warps_[w].instr_buffer.is_full()) {
+            uint32_t pc = warps_[w].pc;
+            FetchOutput out;
+            out.raw_instruction = imem_.read(pc);
+            out.warp_id = w;
+            out.pc = pc;
+            out.prediction = predictor_.predict(pc, out.raw_instruction);
+            next_output_ = out;
+            warps_[w].pc = out.prediction.predicted_taken ? out.prediction.predicted_target
+                                                          : (pc + 4);
+            fetched = true;
+            break;
+        }
+    }
+
+    if (!fetched) {
         stats_.fetch_skip_count++;
     }
 
+    // Pointer always advances to (original + 1), regardless of which warp was fetched
     rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
 }
 
 void FetchStage::commit() {
-    current_output_ = next_output_;
+    if (next_output_.has_value()) {
+        current_output_ = next_output_;
+        output_consumed_ = false;
+    } else if (output_consumed_) {
+        current_output_ = std::nullopt;
+    }
+    // else: retain current_output_ for decode to consume
 }
 
 void FetchStage::reset() {
     rr_pointer_ = 0;
-    stalled_ = false;
+    output_consumed_ = true;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
 }
@@ -49,6 +66,7 @@ void FetchStage::redirect_warp(uint32_t warp_id, uint32_t target_pc) {
     // Invalidate any in-flight fetch for this warp
     if (current_output_ && current_output_->warp_id == warp_id) {
         current_output_ = std::nullopt;
+        output_consumed_ = true;
     }
     if (next_output_ && next_output_->warp_id == warp_id) {
         next_output_ = std::nullopt;

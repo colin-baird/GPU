@@ -19,6 +19,7 @@ void DecodeStage::evaluate() {
         ebreak_detected_ = true;
         ebreak_warp_id_ = fetch_out->warp_id;
         ebreak_pc_ = fetch_out->pc;
+        fetch_.consume_output();
         return;
     }
 
@@ -31,6 +32,7 @@ void DecodeStage::evaluate() {
     pending_.entry = entry;
     pending_.target_warp = fetch_out->warp_id;
     pending_.valid = true;
+    fetch_.consume_output();
 }
 
 void DecodeStage::commit() {

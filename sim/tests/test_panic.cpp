@@ -101,9 +101,7 @@ TEST_CASE("PanicController: state machine progression", "[panic]") {
     REQUIRE(panic.is_active());
     REQUIRE_FALSE(panic.is_done());
 
-    // Two cycles to latch panic diagnostics, then drain.
-    panic.evaluate(); // step 0 -> 1
-    REQUIRE_FALSE(panic.is_done());
+    // Decode already consumed cycle 1; the first panic-controller tick latches diagnostics.
     panic.evaluate(); // step 1 -> 2
     REQUIRE_FALSE(panic.is_done());
     REQUIRE(model.is_panicked());
@@ -125,6 +123,36 @@ TEST_CASE("PanicController: state machine progression", "[panic]") {
     // Both warps should be inactive
     REQUIRE_FALSE(warps[0].active);
     REQUIRE_FALSE(warps[1].active);
+}
+
+TEST_CASE("Panic: committed writeback stays frozen once panic is active", "[panic]") {
+    SimConfig config;
+    config.num_warps = 1;
+    config.start_pc = 0;
+    config.multiply_pipeline_stages = 3;
+
+    FunctionalModel model(config);
+    model.instruction_memory().write(0, encode_addi(1, 0, 2));
+    model.instruction_memory().write(1, encode_addi(2, 0, 3));
+    model.instruction_memory().write(
+        2, (isa::FUNCT7_MULDIV << 25) | (2 << 20) | (1 << 15) |
+               (isa::FUNCT3_MUL << 12) | (5 << 7) | isa::OP_ALU_R);
+    model.instruction_memory().write(3, encode_ebreak());
+    model.init_kernel(config);
+
+    Stats stats;
+    TimingModel timing(config, model, stats);
+
+    bool saw_panic = false;
+    for (int i = 0; i < 32 && timing.tick(); ++i) {
+        const auto& snapshot = timing.last_cycle_snapshot();
+        if (snapshot && snapshot->panic_active) {
+            saw_panic = true;
+            REQUIRE_FALSE(timing.last_committed_writeback().has_value());
+        }
+    }
+
+    REQUIRE(saw_panic);
 }
 
 TEST_CASE("PanicController: reset clears state", "[panic]") {

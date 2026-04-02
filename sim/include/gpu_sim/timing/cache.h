@@ -55,7 +55,7 @@ public:
     bool process_load(uint32_t addr, uint32_t warp_id, uint8_t dest_reg,
                       const std::array<uint32_t, WARP_SIZE>& results,
                       uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction,
-                      WritebackEntry& wb_out);
+                      WritebackEntry& wb_out, bool suppress_writeback = false);
     bool process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue_cycle,
                        uint32_t pc, uint32_t raw_instruction);
 

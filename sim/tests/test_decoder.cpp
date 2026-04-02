@@ -238,6 +238,24 @@ TEST_CASE("Decode CSRRS (warp_id)", "[decoder]") {
     REQUIRE(d.has_rd == true);
 }
 
+TEST_CASE("Decode CSRRS with nonzero rs1 is invalid", "[decoder]") {
+    uint32_t instr = i_type(0xC00, 1, isa::FUNCT3_CSRRS, 5, isa::OP_SYSTEM);
+    auto d = Decoder::decode(instr);
+    REQUIRE(d.type == InstructionType::INVALID);
+}
+
+TEST_CASE("Decode CSRRW is invalid for identity CSRs", "[decoder]") {
+    uint32_t instr = i_type(0xC00, 0, isa::FUNCT3_CSRRW, 5, isa::OP_SYSTEM);
+    auto d = Decoder::decode(instr);
+    REQUIRE(d.type == InstructionType::INVALID);
+}
+
+TEST_CASE("Decode FENCE is invalid", "[decoder]") {
+    uint32_t instr = i_type(0, 0, 0, 0, isa::OP_FENCE);
+    auto d = Decoder::decode(instr);
+    REQUIRE(d.type == InstructionType::INVALID);
+}
+
 TEST_CASE("Decode VDOT8", "[decoder]") {
     // VDOT8 x5, x1, x2: R-type, opcode=0001011, funct7=0, funct3=0
     uint32_t instr = r_type(0x00, 2, 1, 0, 5, isa::OP_VDOT8);

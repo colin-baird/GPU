@@ -24,6 +24,7 @@ This is an FPGA GPU simulator targeting RISC-V RV32IM with custom extensions (VD
 - Implement the change across functional model, timing model, decoder, and any other affected components.
 - Update `gpu_architectural_spec.md` to reflect the change.
 - Update `perf_sim_arch.md` if any files were added or changed.
+- Remove any dead code paths created by the change (unreachable branches, unused functions, orphaned conditions). Do not leave dead code for later cleanup.
 - Verify the build compiles: `cmake -B build && cmake --build build -j8`
 
 ## What you do NOT do

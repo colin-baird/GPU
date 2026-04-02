@@ -21,6 +21,7 @@ A single streaming multiprocessor (SM) executing SIMT warps of 32 threads, using
 
 - **RISC-V RV32IM** (32-bit integer base + multiply/divide extension)
 - **Divide-by-zero** follows standard RV32M behavior: `DIV` by zero returns `−1`, `REM` by zero returns the dividend. No exception or panic is triggered. Software that needs to trap on zero divisors should check explicitly before dividing.
+- **Unsupported instruction note:** `FENCE` is not supported in Phase 1. Software must not rely on it for ordering or synchronization in this machine model.
 
 ### 2.2 Custom Extension: Packed INT8 Dot-Product Accumulate
 
@@ -84,7 +85,7 @@ rd ← lookup_table_bram[table_addr]
 **Hardware mapping:**
 - `TLOOKUP` has a **dedicated functional unit** with its own local dispatch controller, independent from ALU, multiply, and LD/ST paths.
 - The TLOOKUP unit contains a read port into the lookup table BRAM. It does not use the data cache or coalescing unit.
-- **Latency:** 2 cycles per thread lane (cycle 1: BRAM address presented; cycle 2: data out). The dispatch controller drains 32 threads through the BRAM read port over multiple cycles.
+- **Latency:** 2 cycles per thread lane (cycle 1: BRAM address presented; cycle 2: data out), with lanes drained serially through the single BRAM read port. Total warp latency: **64 cycles** (2 cycles/lane × 32 lanes). The TLOOKUP unit asserts busy for the full drain duration.
 - The TLOOKUP unit asserts a **busy signal** back to the global scheduler, like all other functional units.
 
 **Lookup table BRAM:**
@@ -141,14 +142,14 @@ ADD      r3, r3, r5        # r3 = interpolated result
 Fetch and decode are **two separate pipelined stages**. In steady state, the pipeline delivers one decoded instruction per cycle (fetch of warp N overlaps with decode of warp N−1).
 
 **Fetch stage:**
-- A **strict round-robin** pointer cycles through warps: W0, W1, W2, W3, W0, ...
-- Each cycle, the fetch unit reads the instruction BRAM at the current warp's PC.
+- A **round-robin pointer** cycles through warps: W0, W1, W2, W3, W0, ...
+- Each cycle, the fetch unit starts at the current pointer position and **scans forward** through warps (in round-robin order) to find the first eligible warp — one that is active and whose instruction buffer is not full. If found, the fetch unit reads the instruction BRAM at that warp's PC. If no eligible warp is found in the scan, no fetch occurs that cycle.
+- The round-robin pointer always advances to `(original_position + 1) % num_warps` regardless of which warp (if any) was fetched. This ensures fairness: the scan starting point rotates uniformly even when some warps are skipped.
 - **Static branch prediction:** after each successful fetch, the frontend predicts the warp's next PC using a fixed policy:
   - backward conditional branches: **taken**
   - forward conditional branches: **not taken**
   - `JAL`: **taken** to `PC + imm`
-  - `JALR`: **not taken** (target is not available until execute)
-- **Buffer-full skip:** if the target warp's instruction buffer is full (all slots occupied), the fetch unit skips that warp and advances the round-robin pointer. No stall, no wasted cycle — the BRAM read simply doesn't happen for that warp.
+  - `JALR`: **predicted as fall-through to `PC + 4`** (register-indirect target is unknown at fetch time; always mispredicted, resolved at execute with full refill penalty)
 - Each warp maintains its own **program counter (PC)**, updated by the fetch unit after each successful fetch to either the predicted target or `PC + 4`.
 
 **Decode stage:**
@@ -160,6 +161,10 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 - **Depth:** Parameterizable (default: 2 entries). Implemented as a small FIFO per warp.
 - With 4 warps and strict round-robin, each warp receives a new decoded instruction every 4 cycles (assuming no skips). A depth of 2 ensures a warp that was stalled has an instruction ready when it becomes eligible.
 - The warp scheduler (§4.3) consumes from the head of this FIFO.
+
+**Decode backpressure:** If the decode stage holds a decoded instruction that cannot be pushed to its target warp's instruction buffer (buffer full), the fetch stage is **stalled** — no new instruction is fetched and no warp PC is updated until the decode stage commits the pending instruction. This prevents instruction loss from unconsumed fetch outputs being overwritten. During a decode stall, the fetch round-robin pointer still advances per the standard rule. Backpressure stalls count toward `fetch_skip_count` statistics.
+
+**EBREAK and decode backpressure:** When the decode stage has a pending instruction stalled on a full warp buffer, EBREAK detection is deferred until the pending instruction commits and frees the decode stage. The stalled instruction takes priority because it was fetched first and must not be lost. The EBREAK instruction remains in the fetch output register and will be decoded once the stall clears.
 
 **Branch handling:**
 - Branches, `JAL`, and `JALR` are resolved in the execute stage.
@@ -180,12 +185,12 @@ Buffer:        W0←   W1←   W2←   W3←   W0←   W1←   W2←   W3←
 
 ### 4.3 Warp Scheduler (Issue Stage)
 
-- **Policy:** Loose round-robin.
-- A round-robin pointer increments by 1 each cycle. The scheduler scans from that position through the warp vector to find the first eligible warp.
+- **Policy:** Loose round-robin (scan-from-pointer).
+- A round-robin pointer increments by 1 each cycle. The scheduler scans from the pointer position through the warp vector to find the **first eligible** warp. The issued warp may differ from the pointer position — this is the "loose" aspect.
 - **Eligibility:** `buffer_not_empty AND scoreboard_clear AND operand_collector_free AND target_unit_ready`
 - **Scoreboard check at issue includes all source operands.** For standard 2-operand instructions, rs1 and rs2 must not be pending. For 3-operand instructions like `VDOT8`, rs1, rs2, and rd must all not be pending.
 - If no warp is eligible, no instruction issues that cycle.
-- The RR pointer always advances to one past its original position regardless of which warp (if any) actually issued. This prevents starvation.
+- The RR pointer always advances to `(original_position + 1) % num_warps` regardless of which warp (if any) actually issued. This ensures fairness: the scan starting point rotates uniformly. Both fetch and scheduler use the same pointer-advance rule.
 - **Implementation:** Combinational priority scan over 4–8 eligible bits with rotating base. Trivial at this width.
 
 ### 4.4 Operand Collection Stage
@@ -193,11 +198,12 @@ Buffer:        W0←   W1←   W2←   W3←   W0←   W1←   W2←   W3←
 A pipeline stage between issue and functional unit dispatch. It reads source operands from the register file and assembles a complete operand set before handing off to the target dispatch controller.
 
 - **Single slot:** the operand collector holds one warp's instruction at a time. While occupied, the warp scheduler cannot issue another instruction (the `operand_collector_free` signal in the eligibility check gates this).
-- **Variable latency by instruction type:**
+- **Variable latency by operand count:**
   - **2-operand instructions** (ALU, MUL, DIV, loads, stores, branches): reads rs1 and rs2 simultaneously using the register file's two read ports. Completes in **1 cycle**.
-  - **3-operand instructions** (`VDOT8`): reads rs1 and rs2 in cycle 1, reads rd (accumulator) in cycle 2. Completes in **2 cycles**.
+  - **3-operand instructions** (currently `VDOT8`): reads rs1 and rs2 in cycle 1, reads rd (accumulator) in cycle 2. Completes in **2 cycles**. The rule is operand-count-driven: any future 3-operand instruction would also take 2 cycles.
 - After collection completes, the full operand set (warp tag + decoded instruction + operand values) is handed to the target functional unit's dispatch controller, and the operand collector becomes free.
 - **Stores** read rs1 (base address) and rs2 (store data) — 2 register reads, 1 cycle. The offset is an immediate from the instruction word, not a register read.
+- **0- and 1-operand instructions** (ECALL, EBREAK, CSR reads, LUI, AUIPC): complete operand collection in **1 cycle**. The 2-cycle path applies only to 3-operand instructions; all others use the 1-cycle path regardless of actual operand count.
 
 ### 4.5 Functional Unit Dispatch
 
@@ -213,8 +219,8 @@ All units use a **valid-in / valid-out interface**. Warp tag and destination reg
 | Unit            | Behavior                                                        | Latency                     |
 |-----------------|-----------------------------------------------------------------|-----------------------------|
 | ALU             | Add, subtract, shift, bitwise logic                             | 1 cycle                     |
-| Multiply/VDOT8  | Pipelined; accepts new op every cycle; VDOT8 uses same DSP slices with packed INT8 routing | Parameterizable (`STAGES`)  |
-| Divide          | Iterative (radix-2); busy until complete; follows stock RV32M div-by-zero behavior (DIV/0 → −1, REM/0 → dividend) | ~32 cycles for 32-bit       |
+| Multiply/VDOT8  | Pipelined; accepts new op every cycle; VDOT8 uses same DSP slices with packed INT8 routing | Parameterizable (`STAGES`, default: 3) |
+| Divide          | Iterative (radix-2); busy until complete; follows stock RV32M div-by-zero behavior (DIV/0 → −1, REM/0 → dividend) | 32 cycles (all operand values, including div-by-zero) |
 | LD/ST           | Address generation only; decoupled from cache via FIFO          | Variable (see §5)           |
 | TLOOKUP         | Dedicated BRAM read; bypasses data cache                        | 2 cycles per thread lane    |
 
@@ -231,9 +237,9 @@ All units use a **valid-in / valid-out interface**. Warp tag and destination reg
 - The round-robin pointer advances past the selected unit, ensuring fairness.
 - **Conflict frequency is low:** conflicts only occur when two or more units finish their last thread lane in the same cycle. With different pipeline depths (1-cycle ALU, multi-cycle multiply, ~32-cycle divide, variable MSHR fill), simultaneous completions are infrequent.
 
-**Scoreboard interaction:** The scoreboard clears the pending flag for the destination register when the arbiter selects a unit and the write commits. Not when the unit's buffer becomes valid — only when the write actually happens. This ensures no reader sees stale data.
+**Scoreboard interaction:** The scoreboard uses **double-buffered state**. When the writeback arbiter selects a unit, the scoreboard's pending flag for the destination register is cleared in the "next" buffer. At the end of the cycle, the next buffer is committed to the current buffer. This means scoreboard clears are visible to the scheduler at the **next cycle boundary**, not in the same cycle as the writeback. The clear is triggered by the arbiter's selection, not by the unit's buffer becoming valid.
 
-**No forwarding:** There is no bypass path from writeback to the operand collector. The scoreboard prevents a warp from issuing an instruction that reads a pending register. Once the write commits and the scoreboard clears, the warp becomes eligible on the next scheduler scan. There is a minimum 1-cycle gap between a write committing and the dependent warp reading the result (scoreboard clear → next scheduler cycle → operand collect reads committed value). This gap is acceptable; warp-switching hides it.
+**No forwarding:** There is no bypass path from writeback to the operand collector. The scoreboard prevents a warp from issuing an instruction that reads a pending register. Once the write commits and the scoreboard clears (visible next cycle), the warp becomes eligible on the next scheduler scan. There is a minimum **1-cycle gap** between a write committing and the dependent warp reading the result (scoreboard clear → next scheduler cycle → operand collect reads committed value). This gap is acceptable; warp-switching hides it.
 
 ### 4.8 Panic Mechanism
 
@@ -255,9 +261,9 @@ When the decode stage identifies an EBREAK instruction, the SM performs the foll
 6. **Mark all warps inactive.** After drain completes, all warps (not just the panicking warp) are marked inactive.
 7. **Signal host.** `STATUS.PANIC` (bit 2) and `STATUS.DONE` (bit 1) are both set. The SM is now idle.
 
-**Timing:** Steps 1–4 take 2 cycles (1 cycle for decode + panic-pending assertion, 1 cycle for r31 read + latch + panic assertion). Step 5 takes a variable number of cycles (bounded by the longest pipeline depth, ~32 cycles for divide). Steps 6–7 occur once drain is complete. The host sees `STATUS.DONE` and `STATUS.PANIC` set simultaneously.
+**Timing:** Steps 1–4 take 2 cycles (1 cycle for decode + panic-pending assertion, 1 cycle for r31 read + latch + panic assertion). Step 5 takes a variable number of cycles, bounded by `MAX_DRAIN_CYCLES = 32`. The drain covers **execution units and writeback only** — in-flight external memory requests (MSHR fills, write buffer drains) are abandoned for architectural purposes and are not part of the drain-completion criterion. Cache, coalescer, and memory submodels may continue advancing internal timing state for observability, but they must not produce any new architecturally committed effects after panic is active. Steps 6–7 occur once drain completes or the drain timeout is reached. The host sees `STATUS.DONE` and `STATUS.PANIC` set simultaneously.
 
-**Priority:** If two warps execute EBREAK in the same cycle (possible if two decoded EBREAKs arrive at the scheduler simultaneously), the **lowest-numbered warp** wins the diagnostic latch. This is an arbitrary but deterministic tie-breaking rule implemented by a fixed-priority mux on the panic latch inputs.
+**Priority:** EBREAK is detected at the decode stage, which processes one instruction per cycle. With single-issue decode, two warps cannot have EBREAK detected in the same cycle. If future hardware panic sources (§4.8.2) can assert simultaneously from multiple warps, the **lowest-numbered warp** wins the diagnostic latch via a fixed-priority mux.
 
 #### 4.8.2 Panic Signal Microarchitecture
 
@@ -296,8 +302,8 @@ If software does not write `r31` before EBREAK, `PANIC_CAUSE` will contain whate
 
 ### 5.1 Load/Store Address Generation
 
-- 8–16 LD/ST units compute effective addresses (base + offset) for a warp's 32 threads over multiple cycles.
-- Results are written into a **decoupling FIFO** (4–8 entries). Each entry holds: 32 addresses, warp ID, destination register info, operation type (load/store).
+- 8 LD/ST units (parameterizable) compute effective addresses (base + offset) for a warp's 32 threads over multiple cycles.
+- Results are written into a **decoupling FIFO** (4 entries, parameterizable). Each entry holds: 32 addresses, warp ID, destination register info, operation type (load/store).
 - The address generation side fills an entry and moves on; the cache side consumes entries asynchronously.
 
 ### 5.2 Coalescing Unit
@@ -308,12 +314,14 @@ If software does not write `r31` before EBREAK, `PANIC_CAUSE` will contain whate
 - **Phase 1 strategy (all-or-nothing):** checks if all 32 thread addresses fall within a single 128-byte cache line. If yes → single cache line request. If no → falls back to 32 serialized individual requests.
 - **Future optimization (Phase 2+):** proper cache-line grouping — sort addresses by cache line, issue one request per unique line touched. This requires comparator/sorting logic but dramatically reduces requests for strided access patterns.
 - Badly uncoalesced accesses naturally slow down, matching real GPU performance characteristics.
+- **Serialized load writeback:** When a load is serialized into 32 individual cache requests, a **single writeback** is produced for the entire warp. The first lane's cache interaction is designated as the writeback source: a cache hit on the first lane produces an immediate writeback carrying all 32 lanes' results; a cache miss on the first lane produces a writeback when the corresponding MSHR fill completes. Subsequent lanes' cache interactions install cache lines and update hit/miss statistics but suppress duplicate writebacks. This ensures one scoreboard clear and one register file write per serialized load instruction.
+- **Writeback suppression mechanism:** Each MSHR entry carries a `suppress_writeback` flag. The coalescing unit sets this flag to `false` for the first lane and `true` for all subsequent lanes. On a cache hit, the flag controls whether a writeback entry is generated. On a cache miss, the flag is stored in the allocated MSHR entry and checked when the fill completes: fills with `suppress_writeback = true` install the cache line but skip writeback generation and scoreboard clear. This ensures that even when fills complete out of order (e.g., the first lane's MSHR fills last), exactly one writeback is produced and the scoreboard remains pending until the designated first-lane fill arrives.
 
 ### 5.3 L1 Data Cache
 
 | Parameter         | Value                              |
 |-------------------|------------------------------------|
-| Size              | 4–8 KB (parameterizable)           |
+| Size              | 4 KB (parameterizable)             |
 | Associativity     | Direct-mapped                      |
 | Line size         | 128 bytes                          |
 | Write policy      | Write-through + write-allocate     |
@@ -360,7 +368,7 @@ Each MSHR entry tracks one outstanding cache line fetch from external memory (fo
 **Store miss fill path (write-allocate):** When external memory returns a cache line for a store miss:
 1. The line is installed in L1.
 2. The store data (`store_data`, `store_byte_en`) is written into the cache line at the appropriate byte positions.
-3. The full updated cache line is pushed to the write buffer for write-through to external memory.
+3. The full updated cache line is pushed to the write buffer for write-through to external memory. **If the write buffer is full, the fill stalls until space is available.** While stalled, no other MSHR fills (including load-miss fills) can be processed — this creates potential cascading stalls under heavy store-miss traffic with a full write buffer.
 4. The MSHR entry is freed.
 5. No register writeback or scoreboard update is needed (stores don't write to the register file).
 
@@ -375,7 +383,7 @@ A FIFO buffer between the L1 cache and the external memory interface, absorbing 
 | Drain     | FIFO order (oldest first)      |
 
 - On a store (hit or after write-allocate fill completes), the full updated cache line is pushed to the back of the write buffer. If the buffer is full, the store (and the coalescing unit) **stalls** until an entry drains.
-- The write buffer drains to external memory via the same memory interface (§5.6) as cache miss reads. Reads take priority over write buffer drains to minimize load latency.
+- The write buffer drains to external memory via the same memory interface (§5.6) as cache miss reads. Within a cycle, cache miss read submissions are processed before write buffer drain submissions. The external memory interface processes requests in FIFO order with no read/write priority distinction.
 - **No write coalescing:** each store generates its own buffer entry. Multiple stores to the same cache line are not merged. (Phase 2 optimization candidate.)
 
 ### 5.4 Memory Ordering
@@ -410,6 +418,8 @@ The SM connects to external memory (DDR3/DDR4 on the FPGA board) to serve L1 dat
 - Transactions are **cache-line granularity** (128 bytes). The wrapper handles burst conversion to match the external memory controller's native burst size.
 - Valid/ready handshake: the SM asserts `req_valid` with address and data; it holds until `req_ready` is asserted. Responses return asynchronously via `resp_valid`.
 - The wrapper module translates this simple interface to the target bus protocol (Avalon burst transactions, AXI4 AR/AW/R/W/B channels, etc.).
+
+**Simulation defaults:** External memory latency is parameterizable (default: **100 cycles**). External memory size is parameterizable (default: **64 MB**). These defaults model a representative DDR3/DDR4 access pattern for FPGA prototyping.
 
 ---
 
@@ -466,9 +476,13 @@ Threads discover their position via **read-only CSRs** using the standard RISC-V
 
 A thread computes its global thread ID as: `global_id = warp_id × 32 + lane_id`.
 
+**Supported encoding restriction:** Phase 1 supports only `CSRRS rd, csr, x0` for these identity CSRs. `CSRRW`, `CSRRC`, and any `CSRRS` with nonzero `rs1` are unsupported encodings.
+
+**Pipeline routing:** CSR read instructions are routed through the **ALU** execution unit with **1-cycle latency**, consistent with their simple register-read semantics. No dedicated CSR unit exists in the pipeline.
+
 ### 6.5 Warp Completion and Panic
 
-- A warp signals **normal completion** by executing the **ECALL** instruction (standard RV32I, opcode `1110011`). On ECALL, the hardware marks the warp as **inactive**. An inactive warp is excluded from fetch round-robin and warp scheduler eligibility. When **all active warps** are inactive, the SM sets `STATUS.DONE` and halts.
+- A warp signals **normal completion** by executing the **ECALL** instruction (standard RV32I, opcode `1110011`). ECALL flows through the full pipeline: it is decoded and buffered normally, issued by the warp scheduler (which triggers functional execution), passes through operand collection (1 cycle, no source operands), and reaches the dispatch stage. At dispatch, the hardware marks the warp **inactive**. ECALL has no destination register and produces no writeback. An inactive warp is excluded from fetch round-robin and warp scheduler eligibility. When **all active warps** are inactive, the SM sets `STATUS.DONE` and halts.
 - A warp signals a **panic** by executing the **EBREAK** instruction (standard RV32I, opcode `1110011`). On EBREAK, the hardware halts the **entire SM** — all warps, not just the executing warp — and latches diagnostic state into the panic registers (§6.1). See §4.8 for the full panic sequence. When a panic occurs, `STATUS.DONE` and `STATUS.PANIC` are both set.
 - ECALL and EBREAK are the only supported environment calls. No trap handler or exception vector.
 

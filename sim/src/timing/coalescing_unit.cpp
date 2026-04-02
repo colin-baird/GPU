@@ -34,6 +34,7 @@ void CoalescingUnit::evaluate(WritebackEntry& wb_out, bool& wb_valid) {
         }
 
         serial_index_ = 0;
+        wb_already_produced_ = false;
     }
 
     if (processing_) {
@@ -70,14 +71,21 @@ void CoalescingUnit::evaluate(WritebackEntry& wb_out, bool& wb_valid) {
 
                 bool accepted;
                 if (current_entry_.is_load) {
-                    // For serialized loads, we still send the full result array
-                    // (the cache/MSHR will produce a single writeback for the whole warp)
+                    // For serialized loads, pass the full result array. Only the first
+                    // lane's cache interaction produces a writeback; subsequent lanes
+                    // suppress writebacks via the suppress_writeback flag.
                     accepted = cache_.process_load(
                         addr, current_entry_.warp_id, current_entry_.dest_reg,
                         current_entry_.trace.results, current_entry_.issue_cycle,
                         current_entry_.trace.pc, current_entry_.trace.decoded.raw,
-                        wb_out);
-                    if (accepted && wb_out.valid && !wb_valid) wb_valid = true;
+                        wb_out, wb_already_produced_);
+                    if (accepted && wb_out.valid && !wb_already_produced_) {
+                        wb_valid = true;
+                        wb_already_produced_ = true;
+                    } else if (accepted && !wb_out.valid && !wb_already_produced_) {
+                        // First lane missed — MSHR fill will produce the writeback
+                        wb_already_produced_ = true;
+                    }
                 } else {
                     accepted = cache_.process_store(line_addr, current_entry_.warp_id,
                                                    current_entry_.issue_cycle,

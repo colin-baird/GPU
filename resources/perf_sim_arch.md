@@ -57,7 +57,7 @@ The interface contract between the functional and timing models. Header-only.
 
 Instruction decoder shared by functional and timing models.
 
-- **`Decoder::decode(uint32_t instruction)`** (static): Returns `DecodedInstruction`. Large switch on opcode bits [6:0], sub-switched on funct3/funct7. Sets `target_unit`, `num_src_regs`, `has_rd`, `reads_rd` (true only for VDOT8).
+- **`Decoder::decode(uint32_t instruction)`** (static): Returns `DecodedInstruction`. Large switch on opcode bits [6:0], sub-switched on funct3/funct7. Sets `target_unit`, `num_src_regs`, `has_rd`, `reads_rd` (true only for VDOT8). Only `CSRRS rd, csr, x0` is accepted for the identity CSRs; `FENCE` is treated as unsupported and decodes to `INVALID`.
 
 ### `include/gpu_sim/elf_loader.h` -- `src/elf_loader.cpp`
 
@@ -214,10 +214,9 @@ Double-buffered register dependency tracking. Header-only.
 Instruction fetch with round-robin warp selection.
 
 - **`FetchStage(num_warps, warps_ptr, imem_ref, predictor_ref, stats_ref)`**
-- **`set_stall(bool)`**: Lets the top-level model freeze fetch when decode is already holding an uncommitted instruction, preventing frontend instruction loss under backpressure.
-- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to the predicted target when `predicted_taken` is set, otherwise `pc + 4`. Pointer advances unconditionally on non-stalled cycles.
-- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp. Used for branch mispredict recovery.
-- **Snapshot helper**: `stalled()`.
+- **`evaluate()`**: Scans forward from `rr_pointer` through all warps to find the first eligible warp (active and buffer not full). Stalls (produces no output) if the previous output has not been consumed by decode (backpressure); increments `fetch_skip_count` during backpressure stalls. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to the predicted target when `predicted_taken` is set, otherwise `pc + 4`. The RR pointer always advances to `(original + 1) % num_warps` regardless of which warp was fetched.
+- **`consume_output()`**: Called by decode stage to signal it has consumed `current_output()`. Enables fetch to produce the next instruction.
+- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp, resets consumption flag. Used for branch mispredict recovery.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/decode_stage.h` -- `src/timing/decode_stage.cpp`
@@ -225,9 +224,9 @@ Instruction fetch with round-robin warp selection.
 Instruction decode with EBREAK detection.
 
 - **`DecodeStage(warps_ptr, fetch_ref)`**
-- **`evaluate()`**: Reads `fetch_.current_output()`. Decodes via `Decoder::decode()`. If EBREAK, signals panic and returns. Otherwise stages one decoded instruction for commit. If a prior decode is still pending because the target warp buffer is full, evaluate holds that instruction and does not overwrite it.
+- **`evaluate()`**: Reads `fetch_.current_output()`. Decodes via `Decoder::decode()`. If EBREAK, signals panic and returns. Otherwise stages one decoded instruction for commit. If a prior decode is still pending because the target warp buffer is full, evaluate holds that instruction and does not decode the fetch output — EBREAK detection is deferred until the pending instruction clears.
 - **`commit()`**: Pushes the staged instruction to the target warp's instruction buffer once space is available; otherwise the staged decode remains pending.
-- **`has_pending()`**: Reports whether decode is holding an uncommitted instruction so fetch can be stalled.
+- **`has_pending()`**: Reports whether decode is holding an uncommitted instruction.
 - **Snapshot helpers**: `pending_warp()`, `pending_entry()`.
 - **`invalidate_warp(warp_id)`**: Clears any pending decode for that warp (branch redirect).
 - **`ebreak_detected()`**, **`ebreak_warp()`**, **`ebreak_pc()`**: Panic detection interface.
@@ -239,7 +238,7 @@ Issue stage with round-robin scheduling and 4-way eligibility check.
 
 - **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
 - **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, func_model_ref, stats_ref)`**
-- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, and sets scoreboard pending for `rd`. Pointer advances unconditionally. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
+- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, and sets scoreboard pending for `rd`. Pointer advances unconditionally. Stall counters: scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
 - **`set_opcoll_free(bool)`**, **`set_unit_ready_fn(fn)`**: External readiness inputs.
 - **`current_diagnostics()`**: Returns the committed per-warp `SchedulerIssueOutcome` array.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `IssueOutput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
@@ -321,9 +320,11 @@ Round-robin writeback arbitration among execution units and queued memory-result
 
 Direct-mapped L1 data cache with MSHRs and write buffer.
 
+This timing model intentionally tracks cache residency, misses, backpressure, and writeback-source timing without storing full cache-line payloads. Load values are replayed from the functional-model trace; the cache exists here to model performance behavior, not data correctness.
+
 - **Enum `CacheStallReason`**: `NONE`, `MSHR_FULL`, `WRITE_BUFFER_FULL`.
 - **`L1Cache(cache_size, line_size, num_mshrs, write_buffer_depth, mem_if_ref, stats_ref)`**
-- **`process_load(addr, warp_id, dest_reg, results, issue_cycle, pc, raw_instruction, wb_out)`**: Hit -> fills `wb_out` immediately. Miss -> allocates MSHR, submits read to external memory, and records a one-cycle miss-allocation trace event. Returns false if MSHR full (stall).
+- **`process_load(addr, warp_id, dest_reg, results, issue_cycle, pc, raw_instruction, wb_out, suppress_writeback=false)`**: Hit -> fills `wb_out` immediately (unless `suppress_writeback`). Miss -> allocates MSHR (with `suppress_writeback` flag propagated), submits read to external memory, and records a one-cycle miss-allocation trace event. Returns false if MSHR full (stall). The `suppress_writeback` flag is used by the coalescing unit to prevent redundant writebacks from serialized load lanes after the first.
 - **`process_store(line_addr, warp_id, issue_cycle, pc, raw_instruction)`**: Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate) with trace metadata. Returns false if MSHR or write buffer full.
 - **`handle_responses(wb_out, wb_valid)`**: Processes at most one readable cache-line fill per cycle. Responses are buffered internally if a store fill is blocked by the write buffer, so MSHRs are not freed early and multiple fills are replayed across cycles instead of being dropped.
 - **`drain_write_buffer()`**: Submits one write-buffer entry per cycle to external memory.
@@ -336,7 +337,7 @@ Direct-mapped L1 data cache with MSHRs and write buffer.
 
 Miss Status Holding Registers.
 
-- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`).
+- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`), `suppress_writeback` (when true, MSHR fill skips writeback generation — used for serialized load writeback suppression).
 - **Class `MSHRFile`**: Vector of entries. `allocate(entry)` -> index or -1. `free(index)`. `has_free()`. `has_active()`. `at(index)`.
 
 ### `include/gpu_sim/timing/coalescing_unit.h` -- `src/timing/coalescing_unit.cpp`
@@ -344,7 +345,7 @@ Miss Status Holding Registers.
 All-or-nothing address coalescing.
 
 - **`CoalescingUnit(ldst_ref, cache_ref, line_size, stats_ref)`**
-- **`evaluate(wb_out, wb_valid)`**: Pulls entry from LD/ST FIFO. Checks if all 32 thread addresses fall in the same cache line. If yes: 1 cache request. If no: serializes to 32 individual requests (1 per cycle). Stalls if cache cannot accept.
+- **`evaluate(wb_out, wb_valid)`**: Pulls entry from LD/ST FIFO. Checks if all 32 thread addresses fall in the same cache line. If yes: 1 cache request. If no: serializes to 32 individual requests (1 per cycle). For serialized loads, only the first lane's cache interaction produces a writeback (tracked by `wb_already_produced_`); subsequent lanes pass `suppress_writeback=true` to the cache. Stalls if cache cannot accept.
 - **`is_idle()`**: Reports whether the unit is currently holding a warp entry mid-coalescing/serialization.
 - **Snapshot helpers**: `active_warp()`, `current_entry()`, `is_coalesced()`, `serial_index()`.
 
@@ -367,8 +368,8 @@ EBREAK state machine.
 
 - **`PanicController(num_warps, warps_ptr, func_model_ref)`**
 - **`trigger(warp_id, pc)`**: Activates the decode-detected panic sequence.
-- **`evaluate()`**: Cycle 1 asserts panic-pending. Cycle 2 reads `r31` lane 0 and latches panic diagnostics into `FunctionalModel`. Later cycles drain the full execute/memory pipeline (bounded by `MAX_DRAIN_CYCLES = 64`) before marking all warps inactive and setting `done_`.
-- **`set_units_drained(bool)`**: Called by timing model each cycle with `pipeline_drained()`.
+- **`evaluate()`**: After decode triggers panic, the first controller tick reads `r31` lane 0 and latches panic diagnostics into `FunctionalModel`. Later cycles drain execution units and writeback (bounded by `MAX_DRAIN_CYCLES = 32`) before marking all warps inactive and setting `done_`. In-flight memory requests are abandoned for architectural purposes and are not part of the drain criterion.
+- **`set_units_drained(bool)`**: Called by timing model each cycle with `execution_units_drained()`.
 - **`is_active()`**, **`is_done()`**: State queries.
 - **Snapshot helpers**: `step()`, `panic_warp()`, `panic_pc()`, `panic_cause()`.
 
@@ -383,8 +384,10 @@ Top-level cycle stepper wiring everything together.
   3. All `.commit()`
   4. Termination check: `all_warps_done() && pipeline_drained()`
 - **`run(max_cycles)`**: Calls `tick()` in a loop.
-- **`dispatch_to_unit(DispatchInput)`**: Routes to appropriate execution unit. ECALL marks warp inactive. CSR reads routed through ALU.
-- **`pipeline_drained()`**: Includes operand collector, execution units, coalescer, cache, memory interface, and buffered writeback state so DONE/PANIC waits for the whole timing pipeline rather than only the arithmetic units.
+- **`dispatch_to_unit(DispatchInput)`**: Routes to appropriate execution unit. ECALL (via SYSTEM case) marks warp inactive. CSR reads are routed to ALU by the decoder (`target_unit = ExecUnit::ALU`), so they match the ALU case directly.
+- **`pipeline_drained()`**: Includes operand collector, execution units, coalescer, cache, memory interface, and buffered writeback state. Used for normal DONE detection to ensure all stores reach memory.
+- **`execution_units_drained()`**: Narrower check covering only operand collector, execution units, LD/ST FIFO, and writeback. Used for panic drain where in-flight memory requests are abandoned.
+- **Panic behavior detail:** once panic is active, cache/memory submodels may continue advancing internal timing state, but the timing model discards any would-be committed writebacks from those paths.
 - **`build_cycle_snapshot()`**: Classifies each warp after commit into one `WarpTraceState` plus optional `WarpRestReason`, preferring explicit ownership (`fetch`, `decode_pending`, `operand_collect`, `execute_*`, `addr_gen`, `ldst_fifo`, `coalescing`, `memory_wait`, `writeback_wait`, `panic_drain`) and falling back to committed scheduler diagnostics for active rest reasons.
 - **`record_cycle_trace()` / `emit_cycle_events()`**: Coalesce adjacent identical warp/hardware states into complete trace slices, emit per-cycle counters, and publish instant events (`issue`, `branch_redirect`, `writeback`, `panic_trigger`, `cache_miss_alloc`, `memory_response_complete`).
 - **`last_cycle_snapshot()`**: Returns the most recent committed `CycleTraceSnapshot` for tests.
@@ -405,7 +408,7 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 
 | File | Cases | Focus |
 |------|-------|-------|
-| `test_decoder.cpp` | 24 | Every RV32IM + VDOT8 + TLOOKUP + ECALL/EBREAK/CSR encoding. |
+| `test_decoder.cpp` | 27 | Every RV32IM + VDOT8 + TLOOKUP + ECALL/EBREAK/CSR encoding, including unsupported CSR/FENCE forms. |
 | `test_alu.cpp` | 30 | All ALU ops, MUL/DIV edge cases (overflow, div-by-zero), VDOT8 byte patterns, branch conditions. |
 | `test_functional.cpp` | 16 | End-to-end functional model: ADDI chains, x0 discard, load/store, branches, ECALL/EBREAK, CSR, VDOT8, TLOOKUP, kernel args, multi-warp independence. |
 | `test_scoreboard.cpp` | 9 | r0 never pending, set/clear, double-buffer isolation, same-cycle set+clear, multi-warp independence, seed_next, all-registers, reset. |
@@ -413,11 +416,11 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_coalescing.cpp` | 3 | Contiguous addresses coalesce (1 request), scattered addresses serialize (32), boundary case (1 lane different). |
 | `test_warp_scheduler.cpp` | 10 | Issues from buffer, skips empty, scoreboard stall, VDOT8 rd-as-source hazard, opcoll-busy stall, unit-busy stall, RR fairness, committed scheduler diagnostics, scoreboard-pending-on-issue, idle pointer advance. |
 | `test_branch.cpp` | 4 | Forward-taken mispredict recovery, non-taken fall-through, backward-loop prediction accuracy, taken-vs-straight-line penalty comparison. |
-| `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
+| `test_panic.cpp` | 5 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, panic writeback freeze, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
-| `test_timing_components.cpp` | 15 | Fetch/decode backpressure, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
+| `test_timing_components.cpp` | 16 | Fetch skips full-buffer warps, fetch-decode backpressure stall, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
 
-**Totals**: 148 direct Catch2 cases.
+**Totals**: 153 direct Catch2 cases.
 
 ---
 

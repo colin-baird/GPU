@@ -26,7 +26,7 @@ uint32_t L1Cache::get_line_addr(uint32_t addr) const {
 bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint8_t dest_reg,
                            const std::array<uint32_t, WARP_SIZE>& results,
                            uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction,
-                           WritebackEntry& wb_out) {
+                           WritebackEntry& wb_out, bool suppress_writeback) {
     uint32_t set = get_set(addr);
     uint32_t tag = get_tag(addr);
     uint32_t line_addr = get_line_addr(addr);
@@ -35,14 +35,16 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint8_t dest_reg,
         // Cache hit
         stats_.cache_hits++;
         stats_.load_hits++;
-        wb_out.valid = true;
-        wb_out.warp_id = warp_id;
-        wb_out.dest_reg = dest_reg;
-        wb_out.values = results;
-        wb_out.source_unit = ExecUnit::LDST;
-        wb_out.pc = pc;
-        wb_out.raw_instruction = raw_instruction;
-        wb_out.issue_cycle = issue_cycle;
+        if (!suppress_writeback) {
+            wb_out.valid = true;
+            wb_out.warp_id = warp_id;
+            wb_out.dest_reg = dest_reg;
+            wb_out.values = results;
+            wb_out.source_unit = ExecUnit::LDST;
+            wb_out.pc = pc;
+            wb_out.raw_instruction = raw_instruction;
+            wb_out.issue_cycle = issue_cycle;
+        }
         return true;
     }
 
@@ -66,6 +68,7 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint8_t dest_reg,
     entry.raw_instruction = raw_instruction;
     entry.issue_cycle = issue_cycle;
     entry.results = results;
+    entry.suppress_writeback = suppress_writeback;
 
     int mshr_idx = mshrs_.allocate(entry);
     mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
@@ -86,7 +89,7 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     uint32_t tag = get_tag(addr);
 
     if (tags_[set].valid && tags_[set].tag == tag) {
-        // Store hit: update cache line and push to write buffer
+        // Store hit: write-through to write buffer (timing model tracks tags only, not data)
         stats_.cache_hits++;
         stats_.store_hits++;
 
@@ -150,7 +153,7 @@ bool L1Cache::complete_fill(const MemoryResponse& resp, WritebackEntry& wb_out, 
         }
 
         write_buffer_.push_back(mshr.cache_line_addr);
-    } else {
+    } else if (!mshr.suppress_writeback) {
         wb_out.valid = true;
         wb_out.warp_id = mshr.warp_id;
         wb_out.dest_reg = mshr.dest_reg;

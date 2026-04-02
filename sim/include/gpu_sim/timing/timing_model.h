@@ -44,6 +44,9 @@ public:
     const std::optional<CycleTraceSnapshot>& last_cycle_snapshot() const {
         return last_cycle_snapshot_;
     }
+    const std::optional<WritebackEntry>& last_committed_writeback() const {
+        return wb_arbiter_->committed_entry();
+    }
 
 private:
     struct ActiveTraceSlice {
@@ -57,6 +60,8 @@ private:
     void dispatch_to_unit(const DispatchInput& input);
     bool branch_mispredicted(const DispatchInput& input) const;
     bool pipeline_drained() const;
+    bool execution_units_drained() const;
+    void discard_writeback_results();
     bool all_warps_done() const;
     void initialize_trace_writer();
     void record_cycle_trace(bool panic_triggered);

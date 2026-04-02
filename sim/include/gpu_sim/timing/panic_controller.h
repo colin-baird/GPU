@@ -38,7 +38,7 @@ private:
     uint32_t panic_cause_ = 0;
     bool units_drained_ = false;
 
-    static constexpr uint32_t MAX_DRAIN_CYCLES = 64;
+    static constexpr uint32_t MAX_DRAIN_CYCLES = 32;
 };
 
 } // namespace gpu_sim

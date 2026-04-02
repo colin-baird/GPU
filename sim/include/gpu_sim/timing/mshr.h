@@ -23,6 +23,8 @@ struct MSHREntry {
     std::array<uint8_t, WARP_SIZE> mem_size{};
     // Loaded data result (filled by functional model already in trace)
     std::array<uint32_t, WARP_SIZE> results{};
+    // Serialized load writeback suppression: when true, MSHR fill skips writeback
+    bool suppress_writeback = false;
 };
 
 class MSHRFile {

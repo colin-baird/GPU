@@ -9,7 +9,9 @@ PanicController::PanicController(uint32_t num_warps, WarpState* warps,
 void PanicController::trigger(uint32_t warp_id, uint32_t pc) {
     active_ = true;
     done_ = false;
-    step_ = 0;
+    // Decode already consumed cycle 1 by asserting panic-pending.
+    // The first panic-controller tick performs the cycle-2 latch work.
+    step_ = 1;
     drain_cycles_ = 0;
     panic_warp_ = warp_id;
     panic_pc_ = pc;
@@ -20,10 +22,6 @@ void PanicController::evaluate() {
     if (!active_ || done_) return;
 
     switch (step_) {
-    case 0:
-        // Cycle 1: panic-pending is already inhibiting the scheduler.
-        step_ = 1;
-        break;
     case 1:
         // Cycle 2: read r31 lane 0 and latch host-visible panic diagnostics.
         panic_cause_ = func_model_.register_file().read(panic_warp_, 0, 31);

@@ -38,6 +38,7 @@ private:
     AddrGenFIFOEntry current_entry_;
     bool is_coalesced_ = false;
     uint32_t serial_index_ = 0;  // For serialized requests
+    bool wb_already_produced_ = false;  // Serialized load writeback suppression
 };
 
 } // namespace gpu_sim

@@ -237,9 +237,6 @@ void TimingModel::dispatch_to_unit(const DispatchInput& input) {
             if (input.trace.is_ecall) {
                 warps_[input.warp_id].active = false;
             }
-            if (input.decoded.type == InstructionType::CSR) {
-                alu_->accept(input, cycle_);
-            }
             break;
         default:
             break;
@@ -257,6 +254,31 @@ bool TimingModel::pipeline_drained() const {
            cache_->is_idle() &&
            mem_if_->is_idle() &&
            !wb_arbiter_->has_pending_work();
+}
+
+bool TimingModel::execution_units_drained() const {
+    return opcoll_->is_free() &&
+           alu_->is_ready() && !alu_->has_result() &&
+           mul_->is_ready() && !mul_->has_result() &&
+           div_->is_ready() && !div_->has_result() &&
+           tlookup_->is_ready() && !tlookup_->has_result() &&
+           ldst_->is_ready() && ldst_->fifo_empty() &&
+           !wb_arbiter_->has_pending_work();
+}
+
+void TimingModel::discard_writeback_results() {
+    auto discard = [](ExecutionUnit& unit) {
+        if (unit.has_result()) {
+            unit.consume_result();
+        }
+    };
+
+    discard(*alu_);
+    discard(*mul_);
+    discard(*div_);
+    discard(*tlookup_);
+    discard(*load_hit_wb_);
+    discard(*load_fill_wb_);
 }
 
 bool TimingModel::all_warps_done() const {
@@ -295,7 +317,7 @@ bool TimingModel::tick() {
 
     if (panic_->is_active()) {
         cache_->evaluate();
-        panic_->set_units_drained(pipeline_drained());
+        panic_->set_units_drained(execution_units_drained());
         panic_->evaluate();
 
         alu_->evaluate();
@@ -312,14 +334,10 @@ bool TimingModel::tick() {
         bool fill_valid = false;
         cache_->handle_responses(fill_wb, fill_valid);
         cache_->drain_write_buffer();
-        if (fill_valid) {
-            load_fill_wb_->enqueue(fill_wb);
-        }
-        if (coal_wb_valid) {
-            load_hit_wb_->enqueue(coal_wb);
-        }
-        wb_arbiter_->evaluate();
-        wb_arbiter_->commit();
+        (void)fill_valid;
+        (void)coal_wb_valid;
+
+        discard_writeback_results();
 
         alu_->commit();
         mul_->commit();
@@ -329,7 +347,6 @@ bool TimingModel::tick() {
         coalescing_->commit();
         cache_->commit();
         mem_if_->commit();
-        scoreboard_.commit();
 
         record_cycle_trace(false);
 
@@ -342,7 +359,6 @@ bool TimingModel::tick() {
     scoreboard_.seed_next();
     cache_->evaluate();
 
-    fetch_->set_stall(decode_->has_pending());
     fetch_->evaluate();
 
     decode_->evaluate();
@@ -351,10 +367,11 @@ bool TimingModel::tick() {
         panic_->trigger(decode_->ebreak_warp(), decode_->ebreak_pc());
         fetch_->commit();
         decode_->commit();
-        scheduler_->commit();
-        opcoll_->commit();
-        wb_arbiter_->commit();
-        scoreboard_.commit();
+        scheduler_->reset();
+        opcoll_->reset();
+        load_hit_wb_->reset();
+        load_fill_wb_->reset();
+        wb_arbiter_->reset();
         record_cycle_trace(true);
         return true;
     }
