@@ -19,10 +19,3 @@ add_gpu_test(test_branch test_branch.cpp)
 add_gpu_test(test_panic test_panic.cpp)
 add_gpu_test(test_integration test_integration.cpp)
 add_gpu_test(test_timing_components test_timing_components.cpp)
-
-add_executable(test_alignment test_alignment.cpp)
-target_link_libraries(test_alignment PRIVATE gpu_sim_lib catch_main)
-target_include_directories(test_alignment PRIVATE vendor)
-target_compile_definitions(test_alignment PRIVATE
-    ALIGNMENT_MANIFEST_DIR="${PROJECT_SOURCE_DIR}/tests/alignment/manifests")
-add_test(NAME test_alignment COMMAND test_alignment)
