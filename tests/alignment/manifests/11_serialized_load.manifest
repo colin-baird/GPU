@@ -1,0 +1,16 @@
+scenario = serialized_load
+builder = serialized_load
+citation = spec §5.2 all-or-nothing coalescing fallback
+citation = spec §5.3.1 no duplicate miss merging
+config.num_warps = 1
+config.num_ldst_units = 32
+config.num_mshrs = 32
+config.external_memory_latency_cycles = 2
+stat.total_instructions_issued = 2
+stat.coalesced_requests = 0
+stat.serialized_requests = 1
+stat.load_misses = 32
+stat.external_memory_reads = 32
+stat.total_cycles = >= 32
+reg.0.0.5 = 100
+reg.0.31.5 = 131

@@ -1,0 +1,14 @@
+scenario = mul_dependency
+builder = mul_dependency
+citation = spec §4.6 multiply latency
+citation = spec §4.7 scoreboard clears on writeback commit
+config.num_warps = 1
+config.arg0 = 6
+config.arg1 = 7
+stat.total_cycles = 7
+stat.total_instructions_issued = 3
+stat.mul_instructions = 1
+warp.0.instructions = 3
+warp.0.stall_scoreboard = 2
+cycle.4.warp0.state = execute_mul
+reg.0.0.6 = 43

@@ -1,0 +1,14 @@
+scenario = jal_redirect
+builder = jal_redirect
+citation = spec §4.2 jump redirect
+citation = spec §4.2 refill penalty
+config.num_warps = 1
+stat.total_cycles = 7
+stat.total_instructions_issued = 3
+stat.branch_predictions = 1
+stat.branch_mispredictions = 0
+stat.branch_flushes = 1
+warp.0.instructions = 3
+reg.0.0.5 = 4
+reg.0.0.6 = 0
+reg.0.0.7 = 42

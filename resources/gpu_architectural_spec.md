@@ -143,6 +143,7 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 **Fetch stage:**
 - A **strict round-robin** pointer cycles through warps: W0, W1, W2, W3, W0, ...
 - Each cycle, the fetch unit reads the instruction BRAM at the current warp's PC.
+- **Non-speculative PC advance:** in Phase 1, fetch always advances the warp PC to the next sequential instruction (`PC += 4`) after a successful fetch. Fetch does **not** steer the PC with branch prediction metadata. All visible control-flow redirects occur only after execute-stage resolution.
 - **Buffer-full skip:** if the target warp's instruction buffer is full (all slots occupied), the fetch unit skips that warp and advances the round-robin pointer. No stall, no wasted cycle — the BRAM read simply doesn't happen for that warp.
 - Each warp maintains its own **program counter (PC)**, updated by the fetch unit after each successful fetch (PC += 4), or redirected on a branch.
 
@@ -157,11 +158,11 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 - The warp scheduler (§4.3) consumes from the head of this FIFO.
 
 **Branch handling:**
-- Branches are resolved in the execute stage. When a warp takes a branch:
+- Branches, `JAL`, and `JALR` are resolved in the execute stage. When a warp redirects control flow:
   1. The warp's instruction buffer is **flushed** (all entries invalidated).
   2. The warp's PC is updated to the **branch target address**.
   3. Fetching for that warp resumes at the new PC on the next round-robin slot.
-- The branch penalty is the refill latency: the warp has an empty buffer until fetch and decode deliver new instructions (minimum 2 cycles for the first instruction, plus round-robin wait). Other warps continue executing during this time, hiding the penalty.
+- The redirect penalty is the refill latency: the warp has an empty buffer until fetch and decode deliver new instructions (minimum 2 cycles for the first instruction, plus round-robin wait). Other warps continue executing during this time, hiding the penalty.
 
 **Steady-state timing (4 warps):**
 ```
@@ -602,3 +603,47 @@ All architectural questions have been resolved. This appendix records the resolu
 - ~~DMA engine details~~ → Resolved: simple state machine, 32-byte fixed bursts, no FIFO, exclusive memory access before kernel launch (§6.7).
 - ~~Read-after-write across cache misses~~ → Resolved: changed to write-allocate policy; store misses fetch the line via MSHR, update L1, then write through. RAW hazard eliminated (§5.3, §5.4).
 - ~~EBREAK / panic behavior~~ → Resolved: EBREAK triggers whole-SM panic with diagnostic latch (warp, lane, PC, cause). Software convention: r31 holds cause code. Divide-by-zero follows stock RV32M (no panic). Panic wire extensible for future hardware sources (§4.8).
+
+---
+
+## Appendix B: Performance Validation Contract
+
+This appendix defines which timing behaviors are part of the architectural contract for validation purposes.
+
+### B.1 Exact Contracted Behavior
+
+The following are architecturally contracted and may be used as exact expectations in validation:
+
+- fetch/decode/issue ordering and visibility across cycle boundaries
+- branch, `JAL`, and `JALR` redirect semantics
+- scoreboard set/clear timing
+- execution-unit latency parameters
+- duplicate-miss behavior for same-line outstanding misses
+- write-through drain before completion
+- writeback arbitration conflicts delaying scoreboard clear
+- DONE/PANIC waiting for full pipeline drain
+
+### B.2 Contracted Validation Surfaces
+
+The following simulator outputs are part of the validation surface:
+
+- `total_cycles`
+- `total_instructions_issued`
+- `branch_flushes`
+- per-unit instruction counts
+- cache hit/miss and external-memory traffic counters
+- `writeback_conflicts`
+- per-warp stall counters when a scenario cites them
+- committed `CycleTraceSnapshot` state classifications
+- final architected register state
+- panic diagnostics (`warp`, `pc`, `cause`)
+
+### B.3 Informational Counters
+
+The following counters are useful diagnostics but are not frozen architectural metrics by default:
+
+- `branch_predictions`
+- `branch_mispredictions`
+- `fetch_skip_count`
+
+They may be checked by tests when explicitly called out, but they are not the core performance contract.

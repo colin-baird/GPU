@@ -72,7 +72,7 @@ TEST_CASE("Branch: taken branch redirects fetch and flushes", "[branch]") {
     // x7 should be 42 (branch target)
     REQUIRE(model.register_file().read(0, 0, 7) == 42);
 
-    REQUIRE(stats.branch_flushes >= 1);
+    REQUIRE(stats.branch_flushes == 1);
     REQUIRE(stats.branch_predictions == 1);
     REQUIRE(stats.branch_mispredictions == 1);
 }
@@ -131,10 +131,10 @@ TEST_CASE("Branch: loop counts correctly", "[branch]") {
     REQUIRE(model.register_file().read(0, 0, 5) == 5);
     REQUIRE(model.register_file().read(0, 0, 6) == 5);
 
-    // Backward-taken iterations are predicted correctly; the final fall-through misses.
+    // Every taken branch redirects the fetch PC and flushes the warp buffer.
     REQUIRE(stats.branch_predictions == 5);
     REQUIRE(stats.branch_mispredictions == 1);
-    REQUIRE(stats.branch_flushes == 1);
+    REQUIRE(stats.branch_flushes == 4);
 }
 
 TEST_CASE("Branch: taken branch incurs pipeline flush penalty", "[branch]") {

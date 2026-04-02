@@ -1,0 +1,14 @@
+scenario = div_dependency
+builder = div_dependency
+citation = spec §4.6 divide latency
+citation = spec §4.7 scoreboard clears on writeback commit
+config.num_warps = 1
+config.arg0 = 126
+config.arg1 = 7
+stat.total_cycles = 36
+stat.total_instructions_issued = 3
+stat.div_instructions = 1
+warp.0.instructions = 3
+warp.0.stall_scoreboard = 31
+cycle.4.warp0.state = execute_div
+reg.0.0.6 = 19

@@ -20,8 +20,10 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Architectural specification:** [/resources/gpu_architectural_spec.md](/resources/gpu_architectural_spec.md) — the fully specified architectural spec covering ISA, pipeline, memory system, host interface, register file, scoreboard, and all design decisions.
 - **RISC-V ISA reference:** [/resources/riscv_card.md](/resources/riscv_card.md) — reference card for the RISC-V instruction set. The base ISA for this project is RV32IM (integer base + multiply/divide extension).
 - **Performance Sim Documentation:** [/resources/perf_sim_arch.md](/resources/perf_sim_arch.md) —  a single reference sheet covering every file in the simulator
+- **Performance Alignment Validation:** [/resources/perf_alignment_validation.md](/resources/perf_alignment_validation.md) — active spec-first timing validation workflow, manifest schema, and gate usage
+- **Performance Alignment Audit Matrix:** [/resources/perf_alignment_audit_matrix.md](/resources/perf_alignment_audit_matrix.md) — spec-to-model audit table covering performance-affecting rules, owners, observability, and status
 - **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
-- **Performance Reference Methodology:** [/resources/perf_reference_methodology.md](/resources/perf_reference_methodology.md) — analytical methodology for deriving reference performance statistics from the architectural spec, including worked examples and timing derivations
+- **Performance Reference Methodology:** [/resources/perf_reference_methodology.md](/resources/perf_reference_methodology.md) — retired analytical reference flow kept only for historical comparison and exploratory analysis
 
 ## Project Structure
 

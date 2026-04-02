@@ -268,6 +268,15 @@ bool TimingModel::all_warps_done() const {
     return true;
 }
 
+bool TimingModel::branch_redirect_required(const DispatchInput& input) const {
+    if (!input.trace.is_branch) {
+        return false;
+    }
+
+    return input.trace.branch_taken || input.decoded.type == InstructionType::JAL ||
+           input.decoded.type == InstructionType::JALR;
+}
+
 bool TimingModel::branch_mispredicted(const DispatchInput& input) const {
     if (!input.trace.is_branch) {
         return false;
@@ -376,12 +385,14 @@ bool TimingModel::tick() {
             branch_predictor_->update(out.pc, out.decoded, out.prediction,
                                       out.trace.branch_taken, out.trace.branch_target);
             if (branch_mispredicted(out)) {
+                stats_.branch_mispredictions++;
+            }
+            if (branch_redirect_required(out)) {
                 const uint32_t actual_target = out.trace.branch_taken
                     ? out.trace.branch_target
                     : (out.pc + 4);
                 fetch_->redirect_warp(out.warp_id, actual_target);
                 decode_->invalidate_warp(out.warp_id);
-                stats_.branch_mispredictions++;
                 stats_.branch_flushes++;
             }
         }
@@ -835,7 +846,7 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
     }
 
     if (opcoll_->current_output() &&
-        branch_mispredicted(*opcoll_->current_output())) {
+        branch_redirect_required(*opcoll_->current_output())) {
         const auto& branch = *opcoll_->current_output();
         TraceArgs args = instruction_args(snapshot.cycle, branch.warp_id, branch.pc,
                                           branch.decoded.raw, branch.decoded.target_unit,

@@ -87,11 +87,12 @@ Statistics collection and reporting.
 
 ### `include/gpu_sim/timing/branch_predictor.h` -- `src/timing/branch_predictor.cpp`
 
-Modular branch prediction interface used by fetch.
+Branch metadata interface used by fetch and timing diagnostics.
 
 - **Struct `BranchPrediction`**: `is_control_flow`, `predicted_taken`, `predicted_target`
 - **Class `BranchPredictor`** (abstract): `predict(pc, raw_instruction)` -> `BranchPrediction`, `update(pc, decoded, prediction, actual_taken, actual_target)`
 - **Class `StaticDirectionalBranchPredictor`**: Predicts backward conditional branches taken, forward conditional branches not taken, direct `JAL` taken, and `JALR` not taken because the target is not available at fetch time.
+- **Important:** the timing model's architectural path is **non-speculative**. Fetch records prediction metadata for diagnostics/counters only; committed PC steering still happens only through execute-stage redirects.
 
 ### `include/gpu_sim/timing/timing_trace.h` -- `src/timing/timing_trace.cpp`
 
@@ -214,8 +215,8 @@ Instruction fetch with round-robin warp selection.
 
 - **`FetchStage(num_warps, warps_ptr, imem_ref, predictor_ref, stats_ref)`**
 - **`set_stall(bool)`**: Lets the top-level model freeze fetch when decode is already holding an uncommitted instruction, preventing frontend instruction loss under backpressure.
-- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, asks the branch predictor for a speculative next PC, and updates the warp PC to either the predicted target or `pc + 4`. Pointer advances unconditionally on non-stalled cycles.
-- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp. Used for branch mispredict recovery.
+- **`evaluate()`**: Selects warp via `rr_pointer`, skips if globally stalled, inactive, or buffer full. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to `pc + 4`. Pointer advances unconditionally on non-stalled cycles.
+- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp. Used for taken branch / jump redirect recovery.
 - **Snapshot helper**: `stalled()`.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`, `prediction`.
 
@@ -411,12 +412,13 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_cache.cpp` | 10 | Load miss-then-hit, transient MSHR retry, store hit write buffer, store miss write-allocate, store-fill write-buffer backpressure, replayed multiple fills, direct-mapped eviction, write buffer full, reset. |
 | `test_coalescing.cpp` | 3 | Contiguous addresses coalesce (1 request), scattered addresses serialize (32), boundary case (1 lane different). |
 | `test_warp_scheduler.cpp` | 10 | Issues from buffer, skips empty, scoreboard stall, VDOT8 rd-as-source hazard, opcoll-busy stall, unit-busy stall, RR fairness, committed scheduler diagnostics, scoreboard-pending-on-issue, idle pointer advance. |
-| `test_branch.cpp` | 4 | Forward-taken mispredict redirect, correctly predicted not-taken branch, backward-loop prediction behavior, taken-vs-straight-line penalty comparison. |
+| `test_branch.cpp` | 4 | Execute-stage redirects for taken branches/jumps, non-taken fall-through, backward-loop redirect frequency, taken-vs-straight-line penalty comparison. |
 | `test_panic.cpp` | 4 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
 | `test_timing_components.cpp` | 14 | Fetch/decode backpressure, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
+| `test_alignment.cpp` | 1 | Manifest-driven alignment gate over 13 spec-cited scenarios covering pipeline timing, redirects, memory misses, duplicate misses, writeback conflicts, panic drain, and selected 4-warp invariants. |
 
-**Totals**: 147 test cases.
+**Totals**: 147 direct Catch2 cases + 13 manifest-driven alignment scenarios.
 
 ---
 
@@ -452,45 +454,35 @@ Fetch --> Decode --> Scheduler --> OpColl --> Dispatch --> Exec Units
 
 ---
 
-## Performance Reference Testing
+## Performance Alignment Gate
 
-Analytical reference statistics derived from the architectural spec (not the timing model) serve as ground truth for validating the timing model. See [`/resources/perf_reference_methodology.md`](/resources/perf_reference_methodology.md) for the full derivation methodology.
+The primary validation gate is manifest-driven and spec-cited. See [`/resources/perf_alignment_validation.md`](/resources/perf_alignment_validation.md) for the workflow and [`/resources/perf_alignment_audit_matrix.md`](/resources/perf_alignment_audit_matrix.md) for the current audit status.
 
 ### Directory Layout
 
 ```
-tests/references/
-  isa/                          # Reference JSON files (one per ISA test)
-    rv32ui-p-add.json           # ... 46 total
-  tools/
-    analyze_elf.py              # Analytical reference generator
-    validate.py                 # Validation runner
-  validate.sh                   # Shell entry point for validation
+tests/alignment/manifests/
+  01_simple_pipeline.manifest
+  ...
+sim/tests/test_alignment.cpp
 ```
 
-### `tests/references/tools/analyze_elf.py`
+### `sim/tests/test_alignment.cpp`
 
-Generates reference performance statistics by disassembling an ELF, tracing the dynamic execution path with a minimal RV32IM interpreter, and applying the spec's timing rules.
+Loads manifest files, applies scenario-local config overrides, runs named microbench builders, and validates:
 
-- **`disassemble(elf_path)`**: Calls `riscv64-unknown-elf-objdump -d`, parses output into `Instruction` objects with mnemonic classification via `MNEMONIC_TABLE`.
-- **`trace_isa_test(instructions, elf_path)`**: Full RV32IM interpreter. Decodes raw instruction words, simulates all register operations and memory accesses, resolves all branch conditions from actual register values. Loads `.data` section from ELF for load/store tests.
-- **`compute_timing(trace, config)`**: Applies spec timing rules to the traced instruction sequence: pipeline fill (2 cycles), scoreboard stalls (ALU: 0, MUL: 2, DIV: 31, LOAD hit: 3, LOAD miss: 103), branch penalties (2 cycles per taken branch/JAL/JALR), direct-mapped cache simulation with actual effective addresses.
-- **`generate_reference(elf_path, config)`**: Produces complete JSON reference including config, instruction mix, and all expected stats fields.
+- timing counters
+- per-warp stall counters
+- committed cycle snapshots
+- final register contents
+- panic diagnostics
 
 Usage:
+
 ```
-python3 analyze_elf.py <elf>                              # Single test
-python3 analyze_elf.py --batch <dir> --output-dir <dir>   # All tests
-python3 analyze_elf.py <elf> --trace                      # Print execution trace
+ctest --test-dir build -R test_alignment --output-on-failure
 ```
 
-### `tests/references/tools/validate.py`
+### Legacy Analytical References
 
-Runs the simulator on each test ELF with `--json`, compares 17 key fields against the reference JSON. Reports PASS/FAIL/SKIP (timeout).
-
-Usage:
-```
-./tests/references/validate.sh                    # Run all
-./tests/references/validate.sh --filter add       # Filter by pattern
-./tests/references/validate.sh --timeout 30       # Custom timeout
-```
+`tests/references/` is retained as a historical comparison flow only. See [`/resources/perf_reference_methodology.md`](/resources/perf_reference_methodology.md).

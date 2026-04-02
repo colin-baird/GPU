@@ -371,7 +371,7 @@ TEST_CASE("Integration: branch loop", "[integration]") {
     REQUIRE(f.reg(0, 0, 6) == 5);
     REQUIRE(f.stats.branch_predictions == 5);
     REQUIRE(f.stats.branch_mispredictions == 1);
-    REQUIRE(f.stats.branch_flushes == 1);
+    REQUIRE(f.stats.branch_flushes == 4);
 }
 
 TEST_CASE("Integration: JAL link register", "[integration]") {

@@ -33,6 +33,8 @@ tests/                      Backend-agnostic test suites
 resources/                  Documentation
   gpu_architectural_spec.md   Full architectural specification (source of truth)
   perf_sim_arch.md            Simulator file reference
+  perf_alignment_validation.md Performance alignment gate and manifest schema
+  perf_alignment_audit_matrix.md Spec-to-model audit matrix
   cpp_coding_standard.md      C++ coding conventions
   riscv_card.md               RISC-V ISA reference card
 ```
@@ -75,6 +77,12 @@ cd build/sim
 ctest --output-on-failure
 ```
 
+### Run the performance alignment gate
+
+```bash
+ctest --test-dir build -R test_alignment --output-on-failure
+```
+
 ### Run RISC-V ISA compliance tests
 
 Requires a RISC-V cross-compiler (`riscv64-unknown-elf-gcc`).
@@ -109,5 +117,7 @@ Quantized LLM inference: INT8 weights x INT8 activations with INT32 accumulation
 
 - [Architectural Specification](resources/gpu_architectural_spec.md) -- full design spec covering ISA, pipeline, memory, host interface, and all design decisions
 - [Simulator File Reference](resources/perf_sim_arch.md) -- guide to every file in the simulator
+- [Performance Alignment Validation](resources/perf_alignment_validation.md) -- manifest schema and active timing-validation workflow
+- [Performance Alignment Audit Matrix](resources/perf_alignment_audit_matrix.md) -- current spec-to-model alignment status by rule
 - [C++ Coding Standard](resources/cpp_coding_standard.md) -- naming, formatting, and structural conventions
 - [RISC-V ISA Reference](resources/riscv_card.md) -- instruction set reference card
