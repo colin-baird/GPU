@@ -12,7 +12,10 @@ using Address = uint32_t;
 using Word = uint32_t;
 
 static constexpr uint32_t WARP_SIZE = 32;
-static constexpr uint32_t MAX_WARPS = 8;
+#ifndef GPU_MAX_WARPS
+#define GPU_MAX_WARPS 8
+#endif
+static constexpr uint32_t MAX_WARPS = GPU_MAX_WARPS;
 static constexpr uint32_t NUM_REGS = 32;
 
 using WarpData = std::array<Word, WARP_SIZE>;

@@ -20,8 +20,6 @@ constexpr uint32_t kCols = 256;
 constexpr uint32_t kPackedCols = kCols / 4;
 
 constexpr uint32_t kMatrixBase = 0x00002000;
-constexpr uint32_t kVectorBase = 0x00012000;
-constexpr uint32_t kOutputBase = 0x00014000;
 
 struct Options {
     uint32_t num_warps = MAX_WARPS;
@@ -37,7 +35,7 @@ struct GemvCase {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
+              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=2000000\n";
 }
 
@@ -130,20 +128,34 @@ GemvCase build_case(uint32_t rows) {
 }
 
 void load_matrix(const std::vector<int8_t>& matrix, uint32_t rows, FlatMemory& memory) {
-    for (uint32_t row = 0; row < rows; ++row) {
-        for (uint32_t packed_col = 0; packed_col < kPackedCols; ++packed_col) {
-            const uint32_t col = packed_col * 4;
-            const uint32_t packed = pack_int8x4(
-                matrix[row * kCols + col + 0],
-                matrix[row * kCols + col + 1],
-                matrix[row * kCols + col + 2],
-                matrix[row * kCols + col + 3]);
-            memory.write32(kMatrixBase + row * kCols + col, packed);
+    // Lane-major tile layout: within each warp's tile, packed words for all 32
+    // lanes are stored contiguously per column chunk so that adjacent lanes are
+    // 4 bytes apart and all 32 addresses fall within one 128-byte cache line.
+    const uint32_t num_warps = rows / kRowsPerWarp;
+    const uint32_t tile_stride = kPackedCols * kRowsPerWarp * sizeof(uint32_t);
+    const uint32_t chunk_stride = kRowsPerWarp * sizeof(uint32_t);
+
+    for (uint32_t warp = 0; warp < num_warps; ++warp) {
+        for (uint32_t chunk = 0; chunk < kPackedCols; ++chunk) {
+            for (uint32_t lane = 0; lane < kRowsPerWarp; ++lane) {
+                const uint32_t row = warp * kRowsPerWarp + lane;
+                const uint32_t col = chunk * 4;
+                const uint32_t packed = pack_int8x4(
+                    matrix[row * kCols + col + 0],
+                    matrix[row * kCols + col + 1],
+                    matrix[row * kCols + col + 2],
+                    matrix[row * kCols + col + 3]);
+                const uint32_t addr = kMatrixBase +
+                                      warp * tile_stride +
+                                      chunk * chunk_stride +
+                                      lane * sizeof(uint32_t);
+                memory.write32(addr, packed);
+            }
         }
     }
 }
 
-void load_vector(const std::vector<int8_t>& vector, FlatMemory& memory) {
+void load_vector(const std::vector<int8_t>& vector, uint32_t vector_base, FlatMemory& memory) {
     for (uint32_t packed_col = 0; packed_col < kPackedCols; ++packed_col) {
         const uint32_t col = packed_col * 4;
         const uint32_t packed = pack_int8x4(
@@ -151,13 +163,13 @@ void load_vector(const std::vector<int8_t>& vector, FlatMemory& memory) {
             vector[col + 1],
             vector[col + 2],
             vector[col + 3]);
-        memory.write32(kVectorBase + col, packed);
+        memory.write32(vector_base + col, packed);
     }
 }
 
-void clear_output(uint32_t rows, FlatMemory& memory) {
+void clear_output(uint32_t rows, uint32_t output_base, FlatMemory& memory) {
     for (uint32_t row = 0; row < rows; ++row) {
-        memory.write32(kOutputBase + row * sizeof(uint32_t), 0);
+        memory.write32(output_base + row * sizeof(uint32_t), 0);
     }
 }
 
@@ -202,11 +214,12 @@ void dump_timeout_snapshot(const TimingModel& timing) {
     }
 }
 
-bool verify_output(const FunctionalModel& model, uint32_t rows, const std::vector<int32_t>& reference) {
+bool verify_output(const FunctionalModel& model, uint32_t rows, uint32_t output_base,
+                   const std::vector<int32_t>& reference) {
     uint32_t mismatch_count = 0;
 
     for (uint32_t row = 0; row < rows; ++row) {
-        const uint32_t addr = kOutputBase + row * sizeof(uint32_t);
+        const uint32_t addr = output_base + row * sizeof(uint32_t);
         const int32_t observed = static_cast<int32_t>(model.memory().read32(addr));
         const int32_t expected = reference[row];
         if (observed == expected) {
@@ -258,12 +271,16 @@ int main(int argc, char* argv[]) {
         const Options options = parse_options(argc, argv);
         const uint32_t rows = options.num_warps * kRowsPerWarp;
 
+        const uint32_t matrix_bytes = rows * kCols;
+        const uint32_t vector_base = (kMatrixBase + matrix_bytes + 0xFFFu) & ~0xFFFu;
+        const uint32_t output_base = (vector_base + kCols + 0xFFFu) & ~0xFFFu;
+
         SimConfig config;
         config.num_warps = options.num_warps;
         config.external_memory_latency_cycles = options.memory_latency;
         config.kernel_args[0] = kMatrixBase;
-        config.kernel_args[1] = kVectorBase;
-        config.kernel_args[2] = kOutputBase;
+        config.kernel_args[1] = vector_base;
+        config.kernel_args[2] = output_base;
         config.kernel_args[3] = rows;
         config.validate();
 
@@ -272,8 +289,8 @@ int main(int argc, char* argv[]) {
 
         const GemvCase test_case = build_case(rows);
         load_matrix(test_case.matrix, rows, model.memory());
-        load_vector(test_case.vector, model.memory());
-        clear_output(rows, model.memory());
+        load_vector(test_case.vector, vector_base, model.memory());
+        clear_output(rows, output_base, model.memory());
         model.init_kernel(config);
 
         Stats stats;
@@ -293,7 +310,7 @@ int main(int argc, char* argv[]) {
             return 3;
         }
 
-        if (!verify_output(model, rows, test_case.reference)) {
+        if (!verify_output(model, rows, output_base, test_case.reference)) {
             return 4;
         }
 

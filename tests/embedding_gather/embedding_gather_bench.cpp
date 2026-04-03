@@ -40,7 +40,7 @@ struct Workload {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
+              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
 }
 
@@ -85,7 +85,7 @@ Options parse_options(int argc, char* argv[]) {
     }
 
     if (options.num_warps == 0 || options.num_warps > MAX_WARPS) {
-        throw std::invalid_argument("num-warps must be in [1, 8]");
+        throw std::invalid_argument("num-warps must be in [1, " + std::to_string(MAX_WARPS) + "]");
     }
 
     return options;

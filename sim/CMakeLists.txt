@@ -37,6 +37,7 @@ add_library(gpu_sim_lib
 )
 
 target_include_directories(gpu_sim_lib PUBLIC include)
+target_compile_definitions(gpu_sim_lib PUBLIC GPU_MAX_WARPS=${GPU_MAX_WARPS})
 
 # Tests
 option(BUILD_TESTS "Build tests" ON)

@@ -40,7 +40,7 @@ struct MatmulCase {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
+              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
 }
 

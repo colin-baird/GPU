@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu_sim/types.h"
 #include <cstdint>
 #include <string>
 #include <stdexcept>

@@ -11,8 +11,8 @@ static bool is_power_of_two(uint32_t n) {
 }
 
 void SimConfig::validate() const {
-    if (num_warps < 1 || num_warps > 8) {
-        throw std::invalid_argument("num_warps must be in [1, 8]");
+    if (num_warps < 1 || num_warps > MAX_WARPS) {
+        throw std::invalid_argument("num_warps must be in [1, 32]");
     }
     if (instruction_mem_size_bytes == 0 || instruction_mem_size_bytes % 4 != 0) {
         throw std::invalid_argument("instruction_mem_size_bytes must be a positive multiple of 4");

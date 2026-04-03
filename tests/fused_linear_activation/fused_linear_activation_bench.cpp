@@ -31,8 +31,6 @@ constexpr int32_t kIndexBias = 128;
 constexpr int32_t kIndexShift = 5;
 
 constexpr uint32_t kInputBase = 0x00002000;
-constexpr uint32_t kWeightsBase = 0x00008000;
-constexpr uint32_t kOutputBase = 0x00014000;
 
 struct Options {
     uint32_t num_warps = MAX_WARPS;
@@ -49,7 +47,7 @@ struct WorkloadCase {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
+              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
 }
 
@@ -168,7 +166,8 @@ void load_input_vector(const std::vector<int8_t>& input, FlatMemory& memory) {
     }
 }
 
-void load_weight_tiles(const std::vector<int8_t>& weights, uint32_t output_count, FlatMemory& memory) {
+void load_weight_tiles(const std::vector<int8_t>& weights, uint32_t output_count,
+                       uint32_t weights_base, FlatMemory& memory) {
     const uint32_t tile_count = output_count / kTileOutputs;
 
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
@@ -176,7 +175,7 @@ void load_weight_tiles(const std::vector<int8_t>& weights, uint32_t output_count
             for (uint32_t lane = 0; lane < kTileOutputs; ++lane) {
                 const uint32_t output_index = tile * kTileOutputs + lane;
                 const uint32_t input_base = chunk * 16;
-                const uint32_t chunk_base = kWeightsBase +
+                const uint32_t chunk_base = weights_base +
                                             tile * kTileStrideBytes +
                                             chunk * 4 * kTileOutputs * sizeof(uint32_t) +
                                             lane * sizeof(uint32_t);
@@ -197,9 +196,9 @@ void load_weight_tiles(const std::vector<int8_t>& weights, uint32_t output_count
     }
 }
 
-void clear_output(const uint32_t output_count, FlatMemory& memory) {
+void clear_output(const uint32_t output_count, uint32_t output_base, FlatMemory& memory) {
     for (uint32_t out = 0; out < output_count; ++out) {
-        memory.write32(kOutputBase + out * sizeof(uint32_t), 0);
+        memory.write32(output_base + out * sizeof(uint32_t), 0);
     }
 }
 
@@ -244,11 +243,12 @@ void dump_timeout_snapshot(const TimingModel& timing) {
     }
 }
 
-bool verify_output(const FunctionalModel& model, const std::vector<int32_t>& reference) {
+bool verify_output(const FunctionalModel& model, uint32_t output_base,
+                   const std::vector<int32_t>& reference) {
     uint32_t mismatch_count = 0;
 
     for (uint32_t out = 0; out < reference.size(); ++out) {
-        const uint32_t addr = kOutputBase + out * sizeof(uint32_t);
+        const uint32_t addr = output_base + out * sizeof(uint32_t);
         const int32_t observed = static_cast<int32_t>(model.memory().read32(addr));
         const int32_t expected = reference[out];
         if (observed == expected) {
@@ -300,18 +300,20 @@ void print_summary(const Options& options, const TimingModel& timing, const Stat
 int main(int argc, char* argv[]) {
     try {
         const Options options = parse_options(argc, argv);
-        if (options.num_warps < 1 || options.num_warps > MAX_WARPS) {
-            throw std::invalid_argument("num-warps must be in [1, 8]");
-        }
-
         const uint32_t output_count = options.num_warps * kTileOutputs;
+
+        const uint32_t input_bytes = kInputWords * sizeof(uint32_t);
+        const uint32_t weights_base = (kInputBase + input_bytes + 0xFFFu) & ~0xFFFu;
+        const uint32_t tile_count = output_count / kTileOutputs;
+        const uint32_t weights_bytes = tile_count * kTileStrideBytes;
+        const uint32_t output_base = (weights_base + weights_bytes + 0xFFFu) & ~0xFFFu;
 
         SimConfig config;
         config.num_warps = options.num_warps;
         config.external_memory_latency_cycles = options.memory_latency;
         config.kernel_args[0] = kInputBase;
-        config.kernel_args[1] = kWeightsBase;
-        config.kernel_args[2] = kOutputBase;
+        config.kernel_args[1] = weights_base;
+        config.kernel_args[2] = output_base;
         config.kernel_args[3] = output_count;
         config.validate();
 
@@ -320,8 +322,8 @@ int main(int argc, char* argv[]) {
 
         const WorkloadCase test_case = build_case(output_count);
         load_input_vector(test_case.input, model.memory());
-        load_weight_tiles(test_case.weights, output_count, model.memory());
-        clear_output(output_count, model.memory());
+        load_weight_tiles(test_case.weights, output_count, weights_base, model.memory());
+        clear_output(output_count, output_base, model.memory());
         model.init_kernel(config);
         for (uint32_t i = 0; i < test_case.lookup_table.size(); ++i) {
             model.lookup_table().write(i, static_cast<uint32_t>(test_case.lookup_table[i]));
@@ -344,7 +346,7 @@ int main(int argc, char* argv[]) {
             return 3;
         }
 
-        if (!verify_output(model, test_case.reference)) {
+        if (!verify_output(model, output_base, test_case.reference)) {
             return 4;
         }
 

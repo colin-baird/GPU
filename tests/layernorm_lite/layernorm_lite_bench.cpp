@@ -25,7 +25,6 @@ namespace {
 
 constexpr uint32_t kVectorLen = 64;
 constexpr uint32_t kInputBase = 0x00002000;
-constexpr uint32_t kOutputBase = 0x00008000;
 constexpr uint32_t kLookupBase = 768;
 
 struct Options {
@@ -41,7 +40,7 @@ struct LayernormLiteCase {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--num-warps=<1-8>] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
+              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
 }
 
@@ -150,10 +149,10 @@ void load_transposed_input(const std::vector<int8_t>& input, uint32_t rows, Flat
     }
 }
 
-void clear_transposed_output(uint32_t rows, FlatMemory& memory) {
+void clear_transposed_output(uint32_t rows, uint32_t output_base, FlatMemory& memory) {
     for (uint32_t row = 0; row < rows; ++row) {
         for (uint32_t col = 0; col < kVectorLen; ++col) {
-            const uint32_t addr = kOutputBase + col * rows + row;
+            const uint32_t addr = output_base + col * rows + row;
             memory.write8(addr, 0);
         }
     }
@@ -207,12 +206,13 @@ void dump_timeout_snapshot(const TimingModel& timing) {
     }
 }
 
-bool verify_output(const FunctionalModel& model, uint32_t rows, const std::vector<int8_t>& reference) {
+bool verify_output(const FunctionalModel& model, uint32_t rows, uint32_t output_base,
+                   const std::vector<int8_t>& reference) {
     uint32_t mismatch_count = 0;
 
     for (uint32_t row = 0; row < rows; ++row) {
         for (uint32_t col = 0; col < kVectorLen; ++col) {
-            const uint32_t addr = kOutputBase + col * rows + row;
+            const uint32_t addr = output_base + col * rows + row;
             const int8_t observed = static_cast<int8_t>(model.memory().read8(addr));
             const int8_t expected = reference[row * kVectorLen + col];
             if (observed == expected) {
@@ -266,11 +266,14 @@ int main(int argc, char* argv[]) {
         const Options options = parse_options(argc, argv);
         const uint32_t rows = options.num_warps * WARP_SIZE;
 
+        const uint32_t input_bytes = kVectorLen * rows;
+        const uint32_t output_base = (kInputBase + input_bytes + 0xFFFu) & ~0xFFFu;
+
         SimConfig config;
         config.num_warps = options.num_warps;
         config.external_memory_latency_cycles = options.memory_latency;
         config.kernel_args[0] = kInputBase;
-        config.kernel_args[1] = kOutputBase;
+        config.kernel_args[1] = output_base;
         config.kernel_args[2] = rows;
         config.kernel_args[3] = 0;
         config.validate();
@@ -280,7 +283,7 @@ int main(int argc, char* argv[]) {
 
         const LayernormLiteCase test_case = build_case(rows);
         load_transposed_input(test_case.input, rows, model.memory());
-        clear_transposed_output(rows, model.memory());
+        clear_transposed_output(rows, output_base, model.memory());
         load_rsqrt_table(model.lookup_table());
         model.init_kernel(config);
 
@@ -307,7 +310,7 @@ int main(int argc, char* argv[]) {
             return 4;
         }
 
-        if (!verify_output(model, rows, test_case.reference)) {
+        if (!verify_output(model, rows, output_base, test_case.reference)) {
             return 5;
         }
 

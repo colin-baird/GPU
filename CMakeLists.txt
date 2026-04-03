@@ -10,6 +10,8 @@ if(BUILD_TESTS)
     enable_testing()
 endif()
 
+set(GPU_MAX_WARPS "8" CACHE STRING "Maximum resident warps per SM (compile-time array bound)")
+
 add_subdirectory(sim)
 add_subdirectory(runner)
 
