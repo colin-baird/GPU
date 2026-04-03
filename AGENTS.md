@@ -22,6 +22,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Performance Sim Documentation:** [/resources/perf_sim_arch.md](/resources/perf_sim_arch.md) — a single reference sheet covering every file in the simulator
 - **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
 - **Untested Changes Log:** [/UNTESTED.md](/UNTESTED.md) — tracker for changes that passed regression but lack targeted test coverage
+- **Onboarding Guide:** [/resources/onboarding.md](/resources/onboarding.md) — introduction to the project, codebase map, build/test/run instructions, and workflow overview for new contributors
 
 ## Project Structure
 

@@ -1,5 +1,6 @@
 # CMake/Ninja/CTest build output directories
 /build/
+/build-review/
 /sim/build/
 /runner/build/
 /tests/riscv-isa/build/
@@ -22,3 +23,6 @@
 # Python
 __pycache__/
 *.pyc
+
+# Office temp/lock files
+~$*
