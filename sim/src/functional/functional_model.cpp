@@ -218,6 +218,9 @@ TraceEvent FunctionalModel::execute(WarpId warp_id, uint32_t pc) {
             break;
 
         case InstructionType::INVALID:
+            if (lane == 0) {
+                latch_panic(warp_id, pc, 0x2);  // Cause 2: illegal instruction
+            }
             break;
         }
 

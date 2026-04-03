@@ -55,7 +55,7 @@ public:
 
 private:
     void check_bounds(Address addr, uint32_t size) const {
-        if (addr + size > data_.size()) {
+        if (addr >= data_.size() || size > data_.size() - addr) {
             throw std::out_of_range("Memory access out of bounds: addr=" +
                 std::to_string(addr) + " size=" + std::to_string(size));
         }

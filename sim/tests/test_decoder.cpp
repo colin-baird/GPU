@@ -250,10 +250,13 @@ TEST_CASE("Decode CSRRW is invalid for identity CSRs", "[decoder]") {
     REQUIRE(d.type == InstructionType::INVALID);
 }
 
-TEST_CASE("Decode FENCE is invalid", "[decoder]") {
+TEST_CASE("Decode FENCE is NOP", "[decoder]") {
     uint32_t instr = i_type(0, 0, 0, 0, isa::OP_FENCE);
     auto d = Decoder::decode(instr);
-    REQUIRE(d.type == InstructionType::INVALID);
+    REQUIRE(d.type == InstructionType::FENCE);
+    REQUIRE(d.target_unit == ExecUnit::ALU);
+    REQUIRE(d.has_rd == false);
+    REQUIRE(d.num_src_regs == 0);
 }
 
 TEST_CASE("Decode VDOT8", "[decoder]") {

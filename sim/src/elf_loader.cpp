@@ -98,6 +98,16 @@ ProgramImage load_program_image(const std::string& path) {
             if (phdr.p_type != PT_LOAD) continue;
             if (phdr.p_filesz == 0) continue;
 
+            // Validate segment bounds within ELF file
+            if (phdr.p_offset > data.size() ||
+                phdr.p_filesz > data.size() - phdr.p_offset) {
+                throw std::runtime_error(
+                    "ELF: PT_LOAD segment out of bounds (offset=" +
+                    std::to_string(phdr.p_offset) + " filesz=" +
+                    std::to_string(phdr.p_filesz) + " file_size=" +
+                    std::to_string(data.size()) + ")");
+            }
+
             ProgramSegment seg;
             seg.vaddr = phdr.p_vaddr;
             seg.data.resize(phdr.p_filesz);
@@ -163,9 +173,16 @@ void load_lookup_table(FunctionalModel& model, const std::string& path) {
 
 void load_data(FunctionalModel& model, const std::string& path, uint32_t base_addr) {
     auto data = read_file(path);
+    uint32_t mem_size = model.memory().size();
+    if (base_addr >= mem_size) {
+        throw std::runtime_error("load_data: base_addr (" +
+            std::to_string(base_addr) + ") >= memory size (" +
+            std::to_string(mem_size) + ")");
+    }
     uint32_t copy_size = static_cast<uint32_t>(data.size());
-    if (base_addr + copy_size > model.memory().size()) {
-        copy_size = model.memory().size() - base_addr;
+    uint32_t available = mem_size - base_addr;
+    if (copy_size > available) {
+        copy_size = available;
     }
     std::memcpy(model.memory().data() + base_addr, data.data(), copy_size);
 }

@@ -124,17 +124,20 @@ for spec in "${benchmark_specs[@]}"; do
         issued="$(parse_metric "$output" "issued instructions")"
         if [[ -n "$cycles" && -n "$issued" ]]; then
             ipc="$(awk -v issued="$issued" -v cycles="$cycles" 'BEGIN { if (cycles > 0) printf "%.6f", issued / cycles; else print "na" }')"
+            print_result "$name" "pass" "$cycles" "$issued" "$ipc"
+            echo "BEGIN_RAW name=${name}"
+            printf '%s\n' "$output"
+            echo "END_RAW name=${name}"
+            passed=$((passed + 1))
         else
-            cycles="na"
-            issued="na"
-            ipc="na"
+            # Exit code 0 but no performance metrics — treat as failure
+            print_result "$name" "fail" "na" "na" "na"
+            echo "BEGIN_RAW name=${name}"
+            printf '%s\n' "$output"
+            echo "  (benchmark exited 0 but produced no performance metrics)"
+            echo "END_RAW name=${name}"
+            failed=$((failed + 1))
         fi
-
-        print_result "$name" "pass" "$cycles" "$issued" "$ipc"
-        echo "BEGIN_RAW name=${name}"
-        printf '%s\n' "$output"
-        echo "END_RAW name=${name}"
-        passed=$((passed + 1))
         continue
     fi
 

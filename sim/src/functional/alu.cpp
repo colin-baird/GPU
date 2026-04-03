@@ -28,8 +28,8 @@ uint32_t execute_mul(MulDivOp op, uint32_t a, uint32_t b) {
 
     switch (op) {
         case MulDivOp::MUL: {
-            // Lower 32 bits of signed multiply
-            return static_cast<uint32_t>(sa * sb);
+            // Lower 32 bits of multiply — use unsigned to avoid signed-overflow UB
+            return a * b;
         }
         case MulDivOp::MULH: {
             // Upper 32 bits of signed x signed
@@ -81,15 +81,18 @@ uint32_t execute_div(MulDivOp op, uint32_t a, uint32_t b) {
 }
 
 uint32_t execute_vdot8(uint32_t rs1, uint32_t rs2, uint32_t rd_accum) {
-    int32_t accum = static_cast<int32_t>(rd_accum);
+    // Accumulate in uint32_t to avoid signed-overflow UB.
+    // Two's-complement wraparound is defined for unsigned types.
+    uint32_t accum = rd_accum;
 
     for (int i = 0; i < 4; ++i) {
         int8_t a = static_cast<int8_t>((rs1 >> (i * 8)) & 0xFF);
         int8_t b = static_cast<int8_t>((rs2 >> (i * 8)) & 0xFF);
-        accum += static_cast<int32_t>(a) * static_cast<int32_t>(b);
+        // Product fits in int32_t (max: 127*127 = 16129), convert to uint32_t for addition
+        accum += static_cast<uint32_t>(static_cast<int32_t>(a) * static_cast<int32_t>(b));
     }
 
-    return static_cast<uint32_t>(accum);
+    return accum;
 }
 
 bool evaluate_branch(BranchOp op, uint32_t a, uint32_t b) {

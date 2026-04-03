@@ -481,6 +481,102 @@ TEST_CASE("Integration: memory coalescing vs serialization cycle count", "[integ
     }
 }
 
+TEST_CASE("Integration: serialized load blocks dependent issue until all lanes complete",
+          "[integration][coalescing]") {
+    // Regression test for premature scoreboard clear on non-coalesced loads.
+    // A scattered load (each lane in a different cache line) must keep the
+    // destination register pending on the scoreboard until ALL 32 serialized
+    // lane requests have been processed and the writeback is produced.
+    //
+    // Program:
+    //   x7 = lane_id
+    //   x8 = lane_id * 4
+    //   x8 = x8 * 512        (spread lanes across 512-byte strides → different cache lines)
+    //   x8 = x1 + x8         (x1 = base address from kernel arg)
+    //   x5 = mem[x8]         (scattered load → serialized, 32 cycles of lane requests)
+    //   x6 = x5 + 1          (dependent on x5 — must stall until load writeback)
+    //   ecall
+
+    // --- Run with scattered addresses (serialized) ---
+    SimConfig config;
+    config.num_warps = 1;
+    config.start_pc = 0;
+    config.external_memory_latency_cycles = 10;
+    config.kernel_args[0] = 0x1000;
+
+    FunctionalModel model_scattered(config);
+    // Pre-fill memory at scattered locations
+    for (uint32_t i = 0; i < 32; ++i) {
+        model_scattered.memory().write32(0x1000 + i * 512, 1000 + i);
+    }
+
+    // CSRRS x7, CSR_LANE_ID, x0
+    uint32_t csrrs_lane = (isa::CSR_LANE_ID << 20) | (0 << 15) |
+                           (isa::FUNCT3_CSRRS << 12) | (7 << 7) | isa::OP_SYSTEM;
+
+    // Build address: base + lane_id * 512
+    // lane_id * 512 = lane_id << 9 = (lane_id * 4) * 128
+    // Use: x8 = lane_id, shift left by 9 via repeated add
+    // Simpler: LUI x9, (512 << 12) then MUL. But 512 fits in 12-bit imm.
+    // Actually: ADDI x9, x0, 512; MUL x8, x7, x9; ADD x8, x1, x8
+    model_scattered.instruction_memory().write(0, csrrs_lane);           // x7 = lane_id
+    model_scattered.instruction_memory().write(1, ADDI(9, 0, 512));     // x9 = 512
+    model_scattered.instruction_memory().write(2, MUL(8, 7, 9));        // x8 = lane_id * 512
+    model_scattered.instruction_memory().write(3, ADD(8, 1, 8));        // x8 = base + offset
+    model_scattered.instruction_memory().write(4, LW(5, 8, 0));        // x5 = mem[x8] (SCATTERED)
+    model_scattered.instruction_memory().write(5, ADDI(6, 5, 1));      // x6 = x5 + 1 (DEPENDENT)
+    model_scattered.instruction_memory().write(6, ECALL());
+    model_scattered.init_kernel(config);
+
+    Stats stats_scattered;
+    TimingModel timing_scattered(config, model_scattered, stats_scattered);
+    timing_scattered.run(50000);
+    uint64_t cycles_scattered = timing_scattered.cycle_count();
+
+    // Verify correctness: the dependent ADDI must see the loaded value
+    REQUIRE(model_scattered.register_file().read(0, 0, 5) == 1000);
+    REQUIRE(model_scattered.register_file().read(0, 0, 6) == 1001);
+    REQUIRE(model_scattered.register_file().read(0, 1, 5) == 1001);
+    REQUIRE(model_scattered.register_file().read(0, 1, 6) == 1002);
+    REQUIRE(model_scattered.register_file().read(0, 31, 5) == 1031);
+    REQUIRE(model_scattered.register_file().read(0, 31, 6) == 1032);
+
+    // Must have been serialized
+    REQUIRE(stats_scattered.serialized_requests >= 1);
+
+    // --- Run with coalesced addresses for comparison ---
+    FunctionalModel model_coalesced(config);
+    for (uint32_t i = 0; i < 32; ++i) {
+        model_coalesced.memory().write32(0x1000 + i * 4, 1000 + i);
+    }
+
+    // Same program but stride = 4 (all in one 128B cache line)
+    model_coalesced.instruction_memory().write(0, csrrs_lane);
+    model_coalesced.instruction_memory().write(1, ADDI(9, 0, 4));       // x9 = 4
+    model_coalesced.instruction_memory().write(2, MUL(8, 7, 9));        // x8 = lane_id * 4
+    model_coalesced.instruction_memory().write(3, ADD(8, 1, 8));        // x8 = base + offset
+    model_coalesced.instruction_memory().write(4, LW(5, 8, 0));        // x5 = mem[x8] (COALESCED)
+    model_coalesced.instruction_memory().write(5, ADDI(6, 5, 1));      // x6 = x5 + 1 (DEPENDENT)
+    model_coalesced.instruction_memory().write(6, ECALL());
+    model_coalesced.init_kernel(config);
+
+    Stats stats_coalesced;
+    TimingModel timing_coalesced(config, model_coalesced, stats_coalesced);
+    timing_coalesced.run(50000);
+    uint64_t cycles_coalesced = timing_coalesced.cycle_count();
+
+    // Verify coalesced correctness
+    REQUIRE(model_coalesced.register_file().read(0, 0, 5) == 1000);
+    REQUIRE(model_coalesced.register_file().read(0, 0, 6) == 1001);
+    REQUIRE(stats_coalesced.coalesced_requests >= 1);
+
+    // The scattered case must take significantly more cycles due to serialization.
+    // With 32 lanes serialized at 1 per cycle, plus memory latency, the gap should
+    // be at least ~30 cycles.  If the scoreboard were cleared prematurely (old bug),
+    // the ADDI would issue immediately after the first lane and cycles would be similar.
+    REQUIRE(cycles_scattered > cycles_coalesced + 20);
+}
+
 TEST_CASE("Integration: LUI + ADDI pattern", "[integration]") {
     IntegrationFixture f;
     // Build a 32-bit constant: 0x12345678

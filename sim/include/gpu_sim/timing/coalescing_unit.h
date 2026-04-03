@@ -39,6 +39,10 @@ private:
     bool is_coalesced_ = false;
     uint32_t serial_index_ = 0;  // For serialized requests
     bool wb_already_produced_ = false;  // Serialized load writeback suppression
+
+    // Deferred writeback for serialized loads: held until all lanes finish
+    bool deferred_wb_valid_ = false;
+    WritebackEntry deferred_wb_;
 };
 
 } // namespace gpu_sim

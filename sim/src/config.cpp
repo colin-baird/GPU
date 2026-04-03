@@ -92,34 +92,37 @@ SimConfig SimConfig::from_json(const std::string& path) {
             val = val.substr(1, val.size() - 2);
         }
 
-        // Remove "true"/"false" handling
-        bool bool_val = (val == "true");
+        // Boolean fields
+        if (key == "trace_enabled") { config.trace_enabled = (val == "true"); continue; }
+        if (key == "functional_only") { config.functional_only = (val == "true"); continue; }
 
+        // Numeric fields
+        uint32_t num;
         try {
-            uint32_t num = static_cast<uint32_t>(std::stoul(val));
-            if (key == "num_warps") config.num_warps = num;
-            else if (key == "instruction_mem_size_bytes") config.instruction_mem_size_bytes = num;
-            else if (key == "instruction_buffer_depth") config.instruction_buffer_depth = num;
-            else if (key == "multiply_pipeline_stages") config.multiply_pipeline_stages = num;
-            else if (key == "num_ldst_units") config.num_ldst_units = num;
-            else if (key == "addr_gen_fifo_depth") config.addr_gen_fifo_depth = num;
-            else if (key == "l1_cache_size_bytes") config.l1_cache_size_bytes = num;
-            else if (key == "cache_line_size_bytes") config.cache_line_size_bytes = num;
-            else if (key == "num_mshrs") config.num_mshrs = num;
-            else if (key == "write_buffer_depth") config.write_buffer_depth = num;
-            else if (key == "lookup_table_entries") config.lookup_table_entries = num;
-            else if (key == "external_memory_latency_cycles") config.external_memory_latency_cycles = num;
-            else if (key == "external_memory_size_bytes") config.external_memory_size_bytes = num;
-            else if (key == "start_pc") config.start_pc = num;
-            else if (key == "arg0") config.kernel_args[0] = num;
-            else if (key == "arg1") config.kernel_args[1] = num;
-            else if (key == "arg2") config.kernel_args[2] = num;
-            else if (key == "arg3") config.kernel_args[3] = num;
-        } catch (...) {
-            // Try boolean fields
-            if (key == "trace_enabled") config.trace_enabled = bool_val;
-            else if (key == "functional_only") config.functional_only = bool_val;
+            num = static_cast<uint32_t>(std::stoul(val));
+        } catch (const std::exception&) {
+            throw std::invalid_argument(
+                "Invalid numeric value for \"" + key + "\": " + val);
         }
+
+        if (key == "num_warps") config.num_warps = num;
+        else if (key == "instruction_mem_size_bytes") config.instruction_mem_size_bytes = num;
+        else if (key == "instruction_buffer_depth") config.instruction_buffer_depth = num;
+        else if (key == "multiply_pipeline_stages") config.multiply_pipeline_stages = num;
+        else if (key == "num_ldst_units") config.num_ldst_units = num;
+        else if (key == "addr_gen_fifo_depth") config.addr_gen_fifo_depth = num;
+        else if (key == "l1_cache_size_bytes") config.l1_cache_size_bytes = num;
+        else if (key == "cache_line_size_bytes") config.cache_line_size_bytes = num;
+        else if (key == "num_mshrs") config.num_mshrs = num;
+        else if (key == "write_buffer_depth") config.write_buffer_depth = num;
+        else if (key == "lookup_table_entries") config.lookup_table_entries = num;
+        else if (key == "external_memory_latency_cycles") config.external_memory_latency_cycles = num;
+        else if (key == "external_memory_size_bytes") config.external_memory_size_bytes = num;
+        else if (key == "start_pc") config.start_pc = num;
+        else if (key == "arg0") config.kernel_args[0] = num;
+        else if (key == "arg1") config.kernel_args[1] = num;
+        else if (key == "arg2") config.kernel_args[2] = num;
+        else if (key == "arg3") config.kernel_args[3] = num;
     }
 
     return config;
@@ -145,28 +148,36 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         // Replace hyphens with underscores for matching
         std::replace(key.begin(), key.end(), '-', '_');
 
+        // Boolean flags handled separately
+        if (key == "trace_enabled") { trace_enabled = (val == "true" || val == "1"); continue; }
+        if (key == "functional_only") { functional_only = (val == "true" || val == "1"); continue; }
+
+        // Numeric fields — reject bad values
+        uint32_t num;
         try {
-            uint32_t num = static_cast<uint32_t>(std::stoul(val));
-            if (key == "num_warps") num_warps = num;
-            else if (key == "instruction_mem_size_bytes") instruction_mem_size_bytes = num;
-            else if (key == "instruction_buffer_depth") instruction_buffer_depth = num;
-            else if (key == "multiply_pipeline_stages") multiply_pipeline_stages = num;
-            else if (key == "num_ldst_units") num_ldst_units = num;
-            else if (key == "addr_gen_fifo_depth") addr_gen_fifo_depth = num;
-            else if (key == "l1_cache_size_bytes") l1_cache_size_bytes = num;
-            else if (key == "num_mshrs") num_mshrs = num;
-            else if (key == "write_buffer_depth") write_buffer_depth = num;
-            else if (key == "lookup_table_entries") lookup_table_entries = num;
-            else if (key == "external_memory_latency_cycles") external_memory_latency_cycles = num;
-            else if (key == "external_memory_size_bytes") external_memory_size_bytes = num;
-            else if (key == "start_pc") start_pc = num;
-            else if (key == "arg0") kernel_args[0] = num;
-            else if (key == "arg1") kernel_args[1] = num;
-            else if (key == "arg2") kernel_args[2] = num;
-            else if (key == "arg3") kernel_args[3] = num;
-        } catch (...) {
-            // Ignore invalid values
+            num = static_cast<uint32_t>(std::stoul(val));
+        } catch (const std::exception&) {
+            throw std::invalid_argument(
+                "Invalid numeric value for --" + key + ": " + val);
         }
+
+        if (key == "num_warps") num_warps = num;
+        else if (key == "instruction_mem_size_bytes") instruction_mem_size_bytes = num;
+        else if (key == "instruction_buffer_depth") instruction_buffer_depth = num;
+        else if (key == "multiply_pipeline_stages") multiply_pipeline_stages = num;
+        else if (key == "num_ldst_units") num_ldst_units = num;
+        else if (key == "addr_gen_fifo_depth") addr_gen_fifo_depth = num;
+        else if (key == "l1_cache_size_bytes") l1_cache_size_bytes = num;
+        else if (key == "num_mshrs") num_mshrs = num;
+        else if (key == "write_buffer_depth") write_buffer_depth = num;
+        else if (key == "lookup_table_entries") lookup_table_entries = num;
+        else if (key == "external_memory_latency_cycles") external_memory_latency_cycles = num;
+        else if (key == "external_memory_size_bytes") external_memory_size_bytes = num;
+        else if (key == "start_pc") start_pc = num;
+        else if (key == "arg0") kernel_args[0] = num;
+        else if (key == "arg1") kernel_args[1] = num;
+        else if (key == "arg2") kernel_args[2] = num;
+        else if (key == "arg3") kernel_args[3] = num;
     }
 }
 

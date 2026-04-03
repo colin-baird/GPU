@@ -41,24 +41,46 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
                 case isa::FUNCT3_REMU:   d.muldiv_op = MulDivOp::REMU;   break;
             }
         } else {
-            // Base ALU R-type
+            // Base ALU R-type — validate funct7
             d.type = InstructionType::ALU_R;
             d.target_unit = ExecUnit::ALU;
             d.has_rd = true;
             d.num_src_regs = 2;
             switch (f3) {
                 case isa::FUNCT3_ADD_SUB:
-                    d.alu_op = (f7 == isa::FUNCT7_ALT) ? AluOp::SUB : AluOp::ADD;
+                    if (f7 == isa::FUNCT7_BASE) d.alu_op = AluOp::ADD;
+                    else if (f7 == isa::FUNCT7_ALT) d.alu_op = AluOp::SUB;
+                    else d.type = InstructionType::INVALID;
                     break;
-                case isa::FUNCT3_SLL:     d.alu_op = AluOp::SLL;  break;
-                case isa::FUNCT3_SLT:     d.alu_op = AluOp::SLT;  break;
-                case isa::FUNCT3_SLTU:    d.alu_op = AluOp::SLTU; break;
-                case isa::FUNCT3_XOR:     d.alu_op = AluOp::XOR;  break;
+                case isa::FUNCT3_SLL:
+                    if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
+                    d.alu_op = AluOp::SLL;
+                    break;
+                case isa::FUNCT3_SLT:
+                    if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
+                    d.alu_op = AluOp::SLT;
+                    break;
+                case isa::FUNCT3_SLTU:
+                    if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
+                    d.alu_op = AluOp::SLTU;
+                    break;
+                case isa::FUNCT3_XOR:
+                    if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
+                    d.alu_op = AluOp::XOR;
+                    break;
                 case isa::FUNCT3_SRL_SRA:
-                    d.alu_op = (f7 == isa::FUNCT7_ALT) ? AluOp::SRA : AluOp::SRL;
+                    if (f7 == isa::FUNCT7_BASE) d.alu_op = AluOp::SRL;
+                    else if (f7 == isa::FUNCT7_ALT) d.alu_op = AluOp::SRA;
+                    else d.type = InstructionType::INVALID;
                     break;
-                case isa::FUNCT3_OR:      d.alu_op = AluOp::OR;   break;
-                case isa::FUNCT3_AND:     d.alu_op = AluOp::AND;  break;
+                case isa::FUNCT3_OR:
+                    if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
+                    d.alu_op = AluOp::OR;
+                    break;
+                case isa::FUNCT3_AND:
+                    if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
+                    d.alu_op = AluOp::AND;
+                    break;
             }
         }
         break;
@@ -79,11 +101,14 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
             case isa::FUNCT3_OR:      d.alu_op = AluOp::OR;   break;  // ORI
             case isa::FUNCT3_AND:     d.alu_op = AluOp::AND;  break;  // ANDI
             case isa::FUNCT3_SLL:
+                if (f7 != isa::FUNCT7_BASE) { d.type = InstructionType::INVALID; break; }
                 d.alu_op = AluOp::SLL;
                 d.imm = d.imm & 0x1F;  // shamt
                 break;
             case isa::FUNCT3_SRL_SRA:
-                d.alu_op = (f7 == isa::FUNCT7_ALT) ? AluOp::SRA : AluOp::SRL;
+                if (f7 == isa::FUNCT7_BASE) d.alu_op = AluOp::SRL;
+                else if (f7 == isa::FUNCT7_ALT) d.alu_op = AluOp::SRA;
+                else { d.type = InstructionType::INVALID; break; }
                 d.imm = d.imm & 0x1F;  // shamt
                 break;
         }
@@ -119,6 +144,10 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
 
     // ---- JALR ----
     case isa::OP_JALR:
+        if (f3 != 0) {
+            d.type = InstructionType::INVALID;
+            break;
+        }
         d.type = InstructionType::JALR;
         d.target_unit = ExecUnit::ALU;
         d.has_rd = true;
@@ -176,9 +205,12 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
         }
         break;
 
-    // ---- FENCE (unsupported in Phase 1) ----
+    // ---- FENCE (treated as NOP per RV32I base spec for single-hart) ----
     case isa::OP_FENCE:
-        d.type = InstructionType::INVALID;
+        d.type = InstructionType::FENCE;
+        d.target_unit = ExecUnit::ALU;
+        d.has_rd = false;
+        d.num_src_regs = 0;
         break;
 
     // ---- SYSTEM (ECALL, EBREAK, CSR) ----
@@ -199,11 +231,18 @@ DecodedInstruction Decoder::decode(uint32_t instruction) {
                 d.type = InstructionType::INVALID;
             }
         } else if (f3 == isa::FUNCT3_CSRRS && d.rs1 == 0) {
-            d.type = InstructionType::CSR;
-            d.target_unit = ExecUnit::ALU;
-            d.has_rd = true;
-            d.num_src_regs = 0;  // Only CSRRS rd, csr, x0 is supported for identity CSRs
-            d.csr_addr = static_cast<uint16_t>((instruction >> 20) & 0xFFF);
+            uint16_t csr = static_cast<uint16_t>((instruction >> 20) & 0xFFF);
+            // Only accept known GPU identity CSRs
+            if (csr == isa::CSR_WARP_ID || csr == isa::CSR_LANE_ID ||
+                csr == isa::CSR_NUM_WARPS) {
+                d.type = InstructionType::CSR;
+                d.target_unit = ExecUnit::ALU;
+                d.has_rd = true;
+                d.num_src_regs = 0;
+                d.csr_addr = csr;
+            } else {
+                d.type = InstructionType::INVALID;
+            }
         } else {
             d.type = InstructionType::INVALID;
         }

@@ -83,6 +83,16 @@ int PerfSimBackend::run_functional_only(FunctionalModel& model,
         }
     }
 
+    if (model.is_panicked()) return 1;
+
+    // Check for max-cycle timeout
+    for (uint32_t w = 0; w < config.num_warps; ++w) {
+        if (model.is_warp_active(w)) {
+            std::cerr << "Error: functional simulation did not complete (timeout or hang)\n";
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -103,7 +113,13 @@ int PerfSimBackend::run(const ProgramImage& image, SimConfig& config,
         } else if (arg == "--json") {
             json_output = true;
         } else if (arg.substr(0, 13) == "--max-cycles=") {
-            max_cycles = std::stoull(arg.substr(13));
+            try {
+                max_cycles = std::stoull(arg.substr(13));
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid --max-cycles value: "
+                          << arg.substr(13) << "\n";
+                return 1;
+            }
         }
     }
 
@@ -136,8 +152,15 @@ int PerfSimBackend::run(const ProgramImage& image, SimConfig& config,
                 return 1;
             }
             std::string data_path = spec.substr(0, at_pos);
-            uint32_t addr = static_cast<uint32_t>(
-                std::stoul(spec.substr(at_pos + 1), nullptr, 0));
+            uint32_t addr;
+            try {
+                addr = static_cast<uint32_t>(
+                    std::stoul(spec.substr(at_pos + 1), nullptr, 0));
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid address in --data: "
+                          << spec.substr(at_pos + 1) << "\n";
+                return 1;
+            }
             try {
                 load_data(model, data_path, addr);
             } catch (const std::exception& e) {
@@ -183,7 +206,22 @@ int PerfSimBackend::run(const ProgramImage& image, SimConfig& config,
         }
     }
 
-    return model.is_panicked() ? 1 : 0;
+    if (model.is_panicked()) return 1;
+
+    // Check if simulation ended due to max-cycle timeout rather than completion
+    bool all_done = true;
+    for (uint32_t w = 0; w < config.num_warps; ++w) {
+        if (model.is_warp_active(w)) {
+            all_done = false;
+            break;
+        }
+    }
+    if (!all_done) {
+        std::cerr << "Error: simulation did not complete (timeout or hang)\n";
+        return 1;
+    }
+
+    return 0;
 }
 
 } // namespace gpu_sim

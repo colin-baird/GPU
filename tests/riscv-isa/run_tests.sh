@@ -57,9 +57,9 @@ ERRORS=""
 for elf in "$BUILD_DIR"/rv32u*; do
     test_name="$(basename "$elf")"
 
-    # Run through the backend router
-    output=$("$SIM" --backend="$BACKEND" "$elf" --functional-only --num-warps=1 2>&1) || true
-    exit_code=$?
+    # Run through the backend router — capture exit code without pipefail aborting
+    exit_code=0
+    output=$("$SIM" --backend="$BACKEND" "$elf" --functional-only --num-warps=1 2>&1) || exit_code=$?
 
     if [ $VERBOSE -eq 1 ]; then
         echo "--- $test_name ---"
@@ -77,7 +77,7 @@ for elf in "$BUILD_DIR"/rv32u*; do
 
     # Parse register output for x3 (gp). The functional-only output format is:
     #   x3 = 0x1 (1)
-    gp_val=$(echo "$output" | grep -E '^\s+x3\s*=' | head -1 | \
+    gp_val=$(echo "$output" | { grep -E '^\s+x3\s*=' || true; } | head -1 | \
              sed -E 's/.*0x([0-9a-fA-F]+).*/\1/')
 
     if [ -z "$gp_val" ]; then
