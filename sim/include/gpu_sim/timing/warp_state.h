@@ -11,7 +11,7 @@ struct WarpState {
     bool branch_in_flight = false;
     InstructionBuffer instr_buffer;
 
-    explicit WarpState(uint32_t buffer_depth = 2) : instr_buffer(buffer_depth) {}
+    explicit WarpState(uint32_t buffer_depth = 3) : instr_buffer(buffer_depth) {}
 
     void reset(uint32_t start_pc) {
         pc = start_pc;

@@ -730,3 +730,236 @@ TEST_CASE("WritebackArbiter: queued memory sources preserve simultaneous hit and
     REQUIRE_FALSE(scoreboard.is_pending(0, 6));
     REQUIRE_FALSE(fill_source.has_result());
 }
+
+// ---------------------------------------------------------------------------
+// Instruction buffer depth-3 default: adversarial tests
+// ---------------------------------------------------------------------------
+
+TEST_CASE("InstructionBuffer: default SimConfig has depth 3", "[ibuffer]") {
+    SimConfig cfg;
+    REQUIRE(cfg.instruction_buffer_depth == 3);
+}
+
+TEST_CASE("InstructionBuffer: default WarpState creates buffer of depth 3", "[ibuffer]") {
+    WarpState ws;
+    REQUIRE(ws.instr_buffer.capacity() == 3);
+    REQUIRE(ws.instr_buffer.is_empty());
+    REQUIRE_FALSE(ws.instr_buffer.is_full());
+}
+
+TEST_CASE("InstructionBuffer: accepts exactly 3 entries then reports full", "[ibuffer]") {
+    InstructionBuffer buf(3);
+    REQUIRE(buf.capacity() == 3);
+
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 1);
+    REQUIRE_FALSE(buf.is_full());
+
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 2);
+    REQUIRE_FALSE(buf.is_full());
+
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 3);
+    REQUIRE(buf.is_full());
+
+    // 4th push must be silently dropped (backpressure)
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 3);
+    REQUIRE(buf.is_full());
+}
+
+TEST_CASE("InstructionBuffer: depth-1 boundary — 2 entries not full, 3 entries full", "[ibuffer]") {
+    InstructionBuffer buf(3);
+
+    buf.push(BufferEntry{});
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 2);
+    REQUIRE_FALSE(buf.is_full());
+
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 3);
+    REQUIRE(buf.is_full());
+}
+
+TEST_CASE("InstructionBuffer: drain one from full restores space", "[ibuffer]") {
+    InstructionBuffer buf(3);
+    buf.push(BufferEntry{});
+    buf.push(BufferEntry{});
+    buf.push(BufferEntry{});
+    REQUIRE(buf.is_full());
+
+    buf.pop();
+    REQUIRE(buf.size() == 2);
+    REQUIRE_FALSE(buf.is_full());
+    REQUIRE_FALSE(buf.is_empty());
+
+    // Can accept another entry after draining
+    buf.push(BufferEntry{});
+    REQUIRE(buf.size() == 3);
+    REQUIRE(buf.is_full());
+}
+
+TEST_CASE("InstructionBuffer: flush from full empties completely", "[ibuffer]") {
+    InstructionBuffer buf(3);
+    buf.push(BufferEntry{});
+    buf.push(BufferEntry{});
+    buf.push(BufferEntry{});
+    REQUIRE(buf.is_full());
+
+    buf.flush();
+    REQUIRE(buf.is_empty());
+    REQUIRE(buf.size() == 0);
+    REQUIRE_FALSE(buf.is_full());
+}
+
+TEST_CASE("InstructionBuffer: FIFO ordering preserved through depth-3 buffer", "[ibuffer]") {
+    InstructionBuffer buf(3);
+
+    BufferEntry e0{};
+    e0.pc = 0x100;
+    BufferEntry e1{};
+    e1.pc = 0x104;
+    BufferEntry e2{};
+    e2.pc = 0x108;
+
+    buf.push(e0);
+    buf.push(e1);
+    buf.push(e2);
+
+    REQUIRE(buf.front().pc == 0x100);
+    buf.pop();
+    REQUIRE(buf.front().pc == 0x104);
+    buf.pop();
+    REQUIRE(buf.front().pc == 0x108);
+    buf.pop();
+    REQUIRE(buf.is_empty());
+}
+
+TEST_CASE("Fetch: warp with 2 of 3 buffer slots filled is still eligible", "[ibuffer][timing]") {
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(64);
+    imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(3);  // depth 3
+    warps[0].reset(0);
+
+    // Fill 2 of 3 slots — warp should still be eligible
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
+    REQUIRE(warps[0].instr_buffer.size() == 2);
+    REQUIRE_FALSE(warps[0].instr_buffer.is_full());
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
+}
+
+TEST_CASE("Fetch: warp with 3 of 3 buffer slots filled is skipped", "[ibuffer][timing]") {
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(64);
+    imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(3);  // depth 3
+    warps[0].reset(0);
+
+    // Fill all 3 slots — warp should be skipped
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
+    REQUIRE(warps[0].instr_buffer.is_full());
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE_FALSE(fetch.current_output().has_value());
+}
+
+TEST_CASE("Fetch: decode-pending warp with 2 of 3 slots treated as full", "[ibuffer][timing]") {
+    // Per spec: if decode has a pending instruction targeting warp W and W's
+    // buffer has only one free slot, fetch treats W's buffer as full.
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(64);
+    imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(3);  // depth 3
+    warps[0].reset(0);
+
+    // 2 entries in buffer + 1 pending from decode = effectively full
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
+    REQUIRE(warps[0].instr_buffer.size() == 2);
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    fetch.set_decode_pending_warp(0);
+
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE_FALSE(fetch.current_output().has_value());
+}
+
+TEST_CASE("Fetch: decode-pending warp with 1 of 3 slots is still eligible", "[ibuffer][timing]") {
+    // 1 entry + 1 pending = 2, which is less than capacity 3 — should be eligible
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(64);
+    imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(3);  // depth 3
+    warps[0].reset(0);
+
+    warps[0].instr_buffer.push(BufferEntry{});
+    REQUIRE(warps[0].instr_buffer.size() == 1);
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    fetch.set_decode_pending_warp(0);
+
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
+}
+
+TEST_CASE("InstructionBuffer: repeated fill-drain cycles at depth 3", "[ibuffer]") {
+    InstructionBuffer buf(3);
+
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        // Fill to capacity
+        for (uint32_t i = 0; i < 3; ++i) {
+            BufferEntry e{};
+            e.pc = static_cast<uint32_t>(cycle * 12 + i * 4);
+            buf.push(e);
+        }
+        REQUIRE(buf.is_full());
+        REQUIRE(buf.size() == 3);
+
+        // Drain completely
+        for (uint32_t i = 0; i < 3; ++i) {
+            REQUIRE_FALSE(buf.is_empty());
+            buf.pop();
+        }
+        REQUIRE(buf.is_empty());
+    }
+}
+
+TEST_CASE("WarpState: explicit depth override still works", "[ibuffer]") {
+    // Verify that constructing with a non-default depth is honored
+    WarpState ws2(2);
+    REQUIRE(ws2.instr_buffer.capacity() == 2);
+
+    WarpState ws5(5);
+    REQUIRE(ws5.instr_buffer.capacity() == 5);
+
+    // Depth 1 edge case
+    WarpState ws1(1);
+    REQUIRE(ws1.instr_buffer.capacity() == 1);
+    ws1.instr_buffer.push(BufferEntry{});
+    REQUIRE(ws1.instr_buffer.is_full());
+}

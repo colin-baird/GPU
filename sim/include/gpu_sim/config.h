@@ -15,7 +15,7 @@ struct SimConfig {
     uint32_t instruction_mem_size_bytes = 8192;  // 8 KB = 2048 instructions
 
     // Pipeline
-    uint32_t instruction_buffer_depth = 2;
+    uint32_t instruction_buffer_depth = 3;
     uint32_t multiply_pipeline_stages = 3;
 
     // Load/Store

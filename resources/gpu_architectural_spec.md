@@ -158,8 +158,8 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 - **Panic detection:** if the decoded instruction is EBREAK, the decode stage triggers the panic sequence (§4.8) instead of placing the instruction into the buffer.
 
 **Per-warp instruction buffer:**
-- **Depth:** Parameterizable (default: 2 entries). Implemented as a small FIFO per warp.
-- With 4 warps and strict round-robin, each warp receives a new decoded instruction every 4 cycles (assuming no skips). A depth of 2 ensures a warp that was stalled has an instruction ready when it becomes eligible.
+- **Depth:** Parameterizable (default: 3 entries). Implemented as a small FIFO per warp.
+- With 4 warps and strict round-robin, each warp receives a new decoded instruction every 4 cycles (assuming no skips). A depth of 3 provides more tolerance for fetch stalls and branch shadow periods, keeping the warp scheduler fed even when the frontend experiences transient disruptions.
 - The warp scheduler (§4.3) consumes from the head of this FIFO.
 
 **Decode backpressure:** If the decode stage holds a decoded instruction that cannot be pushed to its target warp's instruction buffer (buffer full), the fetch stage is **stalled** — no new instruction is fetched and no warp PC is updated until the decode stage commits the pending instruction. This prevents instruction loss from unconsumed fetch outputs being overwritten. During a decode stall, the fetch round-robin pointer still advances per the standard rule. Backpressure stalls count toward `fetch_skip_count` statistics.
@@ -607,7 +607,7 @@ All architectural questions have been resolved. This appendix records the resolu
 
 - ~~Custom ISA extensions~~ → Resolved: VDOT8 signed INT8×4 dot-product accumulate using custom-0 opcode (§2.2).
 - ~~Operand read for 3-operand instructions~~ → Resolved: operand collection stage with variable latency (§4.4).
-- ~~Instruction buffer depth~~ → Resolved: parameterizable, default 2 entries per warp (§4.2).
+- ~~Instruction buffer depth~~ → Resolved: parameterizable, default 3 entries per warp (§4.2).
 - ~~Instruction memory architecture~~ → Resolved: preloaded BRAM, no cache (§4.1).
 - ~~External memory interface~~ → Resolved: Avalon-MM behind modular wrapper (§5.6).
 - ~~Thread block / kernel launch~~ → Resolved: CSR-based host interface with DMA program loading (§6).
