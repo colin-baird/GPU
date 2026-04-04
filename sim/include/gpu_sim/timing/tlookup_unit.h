@@ -33,8 +33,8 @@ public:
     }
 
 private:
-    // 2 cycles per lane * 32 lanes = 64 cycles
-    static constexpr uint32_t TLOOKUP_LATENCY = 64;
+    // Pipelined dual-port BRAM: 2 lanes/cycle, ceil(32/2) + 1 drain = 17 cycles
+    static constexpr uint32_t TLOOKUP_LATENCY = 17;
 
     Stats& stats_;
     bool busy_ = false;

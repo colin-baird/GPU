@@ -361,19 +361,241 @@ TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
     REQUIRE(div.has_result());
 }
 
-TEST_CASE("TLookupUnit: result appears after 64 cycles", "[timing]") {
+TEST_CASE("TLookupUnit: result appears after 17 cycles", "[timing]") {
     Stats stats;
     TLookupUnit tlookup(stats);
     auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
 
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 4);
-    for (int i = 0; i < 63; ++i) {
+    for (int i = 0; i < 16; ++i) {
         REQUIRE_FALSE(tlookup.has_result());
         tlookup.evaluate();
     }
     REQUIRE_FALSE(tlookup.has_result());
     tlookup.evaluate();
     REQUIRE(tlookup.has_result());
+}
+
+TEST_CASE("TLookupUnit: busy signal true for exactly 17 cycles", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+
+    REQUIRE_FALSE(tlookup.busy());
+
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    REQUIRE(tlookup.busy());
+
+    // busy must remain true for all 17 evaluate calls
+    for (uint32_t i = 0; i < 17; ++i) {
+        REQUIRE(tlookup.busy());
+        tlookup.evaluate();
+    }
+    // After 17 evaluations, busy must be false
+    REQUIRE_FALSE(tlookup.busy());
+}
+
+TEST_CASE("TLookupUnit: result not available at cycle 16, available at 17", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+
+    // Advance 16 evaluations -- result must NOT be ready
+    for (uint32_t i = 0; i < 16; ++i) {
+        tlookup.evaluate();
+    }
+    REQUIRE_FALSE(tlookup.has_result());
+
+    // One more evaluation (17th) -- result must appear
+    tlookup.evaluate();
+    REQUIRE(tlookup.has_result());
+}
+
+TEST_CASE("TLookupUnit: cycles_remaining counts down from 17 to 0", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    REQUIRE(tlookup.cycles_remaining() == 17);
+
+    for (uint32_t i = 17; i > 0; --i) {
+        REQUIRE(tlookup.cycles_remaining() == i);
+        tlookup.evaluate();
+    }
+    REQUIRE(tlookup.cycles_remaining() == 0);
+}
+
+TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+
+    // Initially ready
+    REQUIRE(tlookup.is_ready());
+
+    // Not ready while busy
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    REQUIRE_FALSE(tlookup.is_ready());
+
+    for (uint32_t i = 0; i < 17; ++i) {
+        REQUIRE_FALSE(tlookup.is_ready());
+        tlookup.evaluate();
+    }
+
+    // Result is available but unconsumed -- still not ready
+    REQUIRE(tlookup.has_result());
+    REQUIRE_FALSE(tlookup.is_ready());
+
+    // After consuming, should be ready again
+    tlookup.consume_result();
+    REQUIRE(tlookup.is_ready());
+}
+
+TEST_CASE("TLookupUnit: back-to-back dispatch completes in 17 cycles each", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto first = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+    auto second = make_issue_output(i_type(16, 1, 0, 6, isa::OP_TLOOKUP), 1);
+
+    // First TLOOKUP
+    tlookup.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 0);
+    for (uint32_t i = 0; i < 17; ++i) {
+        tlookup.evaluate();
+    }
+    REQUIRE(tlookup.has_result());
+    auto wb1 = tlookup.consume_result();
+    REQUIRE(wb1.dest_reg == 5);
+    REQUIRE(wb1.warp_id == 0);
+    REQUIRE(tlookup.is_ready());
+
+    // Second TLOOKUP immediately after consuming
+    tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 17);
+
+    // Must not produce result before 17 evaluations
+    for (uint32_t i = 0; i < 16; ++i) {
+        REQUIRE_FALSE(tlookup.has_result());
+        tlookup.evaluate();
+    }
+    REQUIRE_FALSE(tlookup.has_result());
+    tlookup.evaluate();
+    REQUIRE(tlookup.has_result());
+
+    auto wb2 = tlookup.consume_result();
+    REQUIRE(wb2.dest_reg == 6);
+    REQUIRE(wb2.warp_id == 1);
+    REQUIRE(wb2.issue_cycle == 17);
+}
+
+TEST_CASE("TLookupUnit: stats track busy_cycles=17 and instructions=1 per dispatch", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+
+    REQUIRE(stats.tlookup_stats.busy_cycles == 0);
+    REQUIRE(stats.tlookup_stats.instructions == 0);
+
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    REQUIRE(stats.tlookup_stats.instructions == 1);
+
+    for (uint32_t i = 0; i < 17; ++i) {
+        tlookup.evaluate();
+    }
+    REQUIRE(stats.tlookup_stats.busy_cycles == 17);
+    REQUIRE(stats.tlookup_stats.instructions == 1);
+
+    // Second dispatch -- stats should accumulate
+    tlookup.consume_result();
+    auto second = make_issue_output(i_type(16, 1, 0, 6, isa::OP_TLOOKUP));
+    tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 17);
+    REQUIRE(stats.tlookup_stats.instructions == 2);
+
+    for (uint32_t i = 0; i < 17; ++i) {
+        tlookup.evaluate();
+    }
+    REQUIRE(stats.tlookup_stats.busy_cycles == 34);
+    REQUIRE(stats.tlookup_stats.instructions == 2);
+}
+
+TEST_CASE("TLookupUnit: reset clears all state", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+
+    // Put unit in the middle of processing
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    for (uint32_t i = 0; i < 8; ++i) {
+        tlookup.evaluate();
+    }
+    REQUIRE(tlookup.busy());
+
+    tlookup.reset();
+    REQUIRE_FALSE(tlookup.busy());
+    REQUIRE(tlookup.cycles_remaining() == 0);
+    REQUIRE_FALSE(tlookup.has_result());
+    REQUIRE(tlookup.is_ready());
+}
+
+TEST_CASE("TLookupUnit: consume_result returns correct writeback metadata", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 7, isa::OP_TLOOKUP), 3, 0x100);
+
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 42);
+
+    for (uint32_t i = 0; i < 17; ++i) {
+        tlookup.evaluate();
+    }
+
+    auto wb = tlookup.consume_result();
+    REQUIRE(wb.valid);
+    REQUIRE(wb.warp_id == 3);
+    REQUIRE(wb.dest_reg == 7);
+    REQUIRE(wb.source_unit == ExecUnit::TLOOKUP);
+    REQUIRE(wb.pc == 0x100);
+    REQUIRE(wb.issue_cycle == 42);
+    REQUIRE(wb.values[0] == 0x1234);  // from make_issue_output
+}
+
+TEST_CASE("TLookupUnit: active_warp and pending_entry accessors", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP), 2);
+
+    // Before accept: no active warp
+    REQUIRE_FALSE(tlookup.active_warp().has_value());
+    REQUIRE(tlookup.pending_entry() == nullptr);
+    REQUIRE(tlookup.result_entry() == nullptr);
+
+    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    REQUIRE(tlookup.active_warp().has_value());
+    REQUIRE(tlookup.active_warp().value() == 2);
+    REQUIRE(tlookup.pending_entry() != nullptr);
+    REQUIRE(tlookup.pending_entry()->warp_id == 2);
+
+    // Complete the operation
+    for (uint32_t i = 0; i < 17; ++i) {
+        tlookup.evaluate();
+    }
+
+    // No longer busy, so active_warp and pending_entry should be cleared
+    REQUIRE_FALSE(tlookup.active_warp().has_value());
+    REQUIRE(tlookup.pending_entry() == nullptr);
+    // But result_entry should be available
+    REQUIRE(tlookup.result_entry() != nullptr);
+    REQUIRE(tlookup.result_entry()->warp_id == 2);
+
+    // After consume, result_entry cleared
+    tlookup.consume_result();
+    REQUIRE(tlookup.result_entry() == nullptr);
+}
+
+TEST_CASE("TLookupUnit: get_type returns TLOOKUP", "[timing][tlookup]") {
+    Stats stats;
+    TLookupUnit tlookup(stats);
+    REQUIRE(tlookup.get_type() == ExecUnit::TLOOKUP);
 }
 
 TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[timing]") {

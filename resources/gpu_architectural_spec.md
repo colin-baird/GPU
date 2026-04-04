@@ -85,7 +85,7 @@ rd ← lookup_table_bram[table_addr]
 **Hardware mapping:**
 - `TLOOKUP` has a **dedicated functional unit** with its own local dispatch controller, independent from ALU, multiply, and LD/ST paths.
 - The TLOOKUP unit contains a read port into the lookup table BRAM. It does not use the data cache or coalescing unit.
-- **Latency:** 2 cycles per thread lane (cycle 1: BRAM address presented; cycle 2: data out), with lanes drained serially through the single BRAM read port. Total warp latency: **64 cycles** (2 cycles/lane × 32 lanes). The TLOOKUP unit asserts busy for the full drain duration.
+- **Latency:** Each BRAM read takes 2 cycles (cycle 1: address presented; cycle 2: data out), but reads are **pipelined** — a new read can be issued every cycle. The BRAM is **true dual-port**, so both ports are used for simultaneous reads, giving 2 lanes per cycle throughput. Total warp latency: **17 cycles** (ceil(32 lanes / 2 ports) = 16 issue cycles + 1 pipeline drain cycle for the last pair's results). The TLOOKUP unit asserts busy for the full duration.
 - The TLOOKUP unit asserts a **busy signal** back to the global scheduler, like all other functional units.
 
 **Lookup table BRAM:**
@@ -222,7 +222,7 @@ All units use a **valid-in / valid-out interface**. Warp tag and destination reg
 | Multiply/VDOT8  | Pipelined; accepts new op every cycle; VDOT8 uses same DSP slices with packed INT8 routing | Parameterizable (`STAGES`, default: 3) |
 | Divide          | Iterative (radix-2); busy until complete; follows stock RV32M div-by-zero behavior (DIV/0 → −1, REM/0 → dividend) | 32 cycles (all operand values, including div-by-zero) |
 | LD/ST           | Address generation only; decoupled from cache via FIFO          | Variable (see §5)           |
-| TLOOKUP         | Dedicated BRAM read; bypasses data cache                        | 2 cycles per thread lane    |
+| TLOOKUP         | Pipelined dual-port BRAM read; bypasses data cache              | 17 cycles (2 lanes/cycle pipelined) |
 
 ### 4.7 Writeback
 
@@ -616,7 +616,7 @@ All architectural questions have been resolved. This appendix records the resolu
 - ~~MSHR design details~~ → Resolved: parameterizable count (default 4), stall on exhaustion, no duplicate detection/merging, separate fill paths for load and store misses (§5.3.1).
 - ~~Writeback arbiter policy~~ → Resolved: round-robin among units with valid output; single-cycle parallel write to all 32 banks (§4.7).
 - ~~Register file forwarding~~ → Resolved: no forwarding; scoreboard prevents reads of pending registers; 1-cycle gap after clear is acceptable (§4.7, §8).
-- ~~Lookup-table instruction~~ → Resolved: TLOOKUP custom instruction in custom-1 opcode space, I-type encoding, dedicated functional unit, 2-cycle latency, host-loaded BRAM (§2.3).
+- ~~Lookup-table instruction~~ → Resolved: TLOOKUP custom instruction in custom-1 opcode space, I-type encoding, dedicated functional unit, pipelined dual-port BRAM with 17-cycle warp latency, host-loaded BRAM (§2.3).
 - ~~VDOT8 overflow behavior~~ → Resolved: wrapping (2's complement), consistent with RV32I convention; software manages range (§2.2).
 - ~~VDOT8 encoding details~~ → Resolved: R-type in custom-0, funct7=0000000, funct3=000 (§2.2).
 - ~~DSP slice packing for VDOT8~~ → Moved to FPGA Implementation Notes (physical mapping detail, not architecture).

@@ -286,9 +286,9 @@ Iterative divide unit, 32-cycle latency.
 
 ### `include/gpu_sim/timing/tlookup_unit.h` -- `src/timing/tlookup_unit.cpp`
 
-Serial table lookup, 64-cycle latency (2 cycles/lane x 32 lanes).
+Pipelined dual-port BRAM table lookup, 17-cycle latency (2 lanes/cycle, ceil(32/2)+1 = 17 cycles).
 
-- **`TLookupUnit(stats_ref)`**. Constant `TLOOKUP_LATENCY = 64`.
+- **`TLookupUnit(stats_ref)`**. Constant `TLOOKUP_LATENCY = 17`.
 - Same interface pattern as DivideUnit, plus snapshot helpers `busy()`, `cycles_remaining()`, `pending_entry()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/ldst_unit.h` -- `src/timing/ldst_unit.cpp`
@@ -418,9 +418,9 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_branch.cpp` | 4 | Forward-taken mispredict recovery, non-taken fall-through, backward-loop prediction accuracy, taken-vs-straight-line penalty comparison. |
 | `test_panic.cpp` | 5 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, panic writeback freeze, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
-| `test_timing_components.cpp` | 16 | Fetch skips full-buffer warps, fetch-decode backpressure stall, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing, LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
+| `test_timing_components.cpp` | 26 | Fetch skips full-buffer warps, fetch-decode backpressure stall, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing (busy signal, cycles_remaining countdown, is_ready lifecycle, back-to-back dispatch, stats tracking, reset, writeback metadata, accessor lifecycle), LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
 
-**Totals**: 153 direct Catch2 cases.
+**Totals**: 163 direct Catch2 cases.
 
 ---
 
@@ -437,7 +437,7 @@ Fetch --> Decode --> Scheduler --> OpColl --> Dispatch --> Exec Units
   |              (scoreboard                     |    ALU (1 cyc)
   |               set pending)                   |    MUL (N cyc pipelined)
   |                                              |    DIV (32 cyc)
-  |                                              |    TLOOKUP (64 cyc)
+  |                                              |    TLOOKUP (17 cyc)
   |                                              |    LD/ST -> addr FIFO
   |                                              |               |
   |                                              |        Coalescing Unit
