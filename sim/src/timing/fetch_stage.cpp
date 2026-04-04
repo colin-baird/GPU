@@ -20,7 +20,11 @@ void FetchStage::evaluate() {
     bool fetched = false;
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
-        if (warps_[w].active && !warps_[w].instr_buffer.is_full()) {
+        auto& buf = warps_[w].instr_buffer;
+        bool will_be_full = buf.is_full() ||
+            (decode_pending_warp_.has_value() && *decode_pending_warp_ == w &&
+             buf.size() + 1 >= buf.capacity());
+        if (warps_[w].active && !will_be_full) {
             uint32_t pc = warps_[w].pc;
             FetchOutput out;
             out.raw_instruction = imem_.read(pc);
@@ -58,6 +62,7 @@ void FetchStage::reset() {
     output_consumed_ = true;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
+    decode_pending_warp_ = std::nullopt;
 }
 
 void FetchStage::redirect_warp(uint32_t warp_id, uint32_t target_pc) {

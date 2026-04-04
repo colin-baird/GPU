@@ -212,6 +212,8 @@ void print_summary(const Options& options, const TimingModel& timing, const Stat
     std::cout << "  external memory latency: " << options.memory_latency << " cycles\n";
     std::cout << "  cycles: " << timing.cycle_count() << "\n";
     std::cout << "  issued instructions: " << stats.total_instructions_issued << "\n";
+    std::cout << "  fetch skips: " << stats.fetch_skip_count << "\n";
+    std::cout << "  frontend stall cycles: " << stats.scheduler_frontend_stall_cycles << "\n";
     std::cout << "  copied bytes/cycle: " << bytes_per_cycle << "\n";
     std::cout << "  cache hits/misses: " << stats.cache_hits
               << "/" << stats.cache_misses << "\n";

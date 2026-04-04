@@ -28,6 +28,7 @@ const char* to_string(WarpRestReason reason) {
     switch (reason) {
         case WarpRestReason::NONE:                 return "none";
         case WarpRestReason::WAIT_FRONTEND:        return "wait_frontend";
+        case WarpRestReason::WAIT_BRANCH_SHADOW:   return "wait_branch_shadow";
         case WarpRestReason::WAIT_SCOREBOARD:      return "wait_scoreboard";
         case WarpRestReason::WAIT_OPCOLL:          return "wait_opcoll";
         case WarpRestReason::WAIT_UNIT_ALU:        return "wait_unit_alu";

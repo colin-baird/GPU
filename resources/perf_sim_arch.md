@@ -77,7 +77,7 @@ Statistics collection and reporting.
 
 - **Struct `Stats`**: All counters default to 0. Categories:
   - Global: `total_cycles`, `total_instructions_issued`
-  - Per-warp: `warp_instructions[8]`, `warp_cycles_active[8]`, `warp_stall_scoreboard[8]`, `warp_stall_buffer_empty[8]`, `warp_stall_unit_busy[8]`
+  - Per-warp: `warp_instructions[8]`, `warp_cycles_active[8]`, `warp_stall_scoreboard[8]`, `warp_stall_buffer_empty[8]`, `warp_stall_branch_shadow[8]`, `warp_stall_unit_busy[8]`
   - Pipeline: `fetch_skip_count`, `scheduler_idle_cycles`, `operand_collector_busy_cycles`, `branch_predictions`, `branch_mispredictions`, `branch_flushes`
   - Per-unit (`UnitStats`): `busy_cycles`, `instructions` -- for ALU, MUL, DIV, LD/ST, TLOOKUP
   - Memory: `cache_hits/misses`, `load_hits/misses`, `store_hits/misses`, `mshr_stall_cycles`, `write_buffer_stall_cycles`, `coalesced_requests`, `serialized_requests`, `external_memory_reads/writes`, `total_load_latency`, `total_loads_completed`
@@ -189,14 +189,14 @@ Abstract base for execution units plus the writeback data structure. Header-only
 
 Per-warp timing state. Header-only.
 
-- **Struct `WarpState`**: `pc`, `active`, `instr_buffer` (InstructionBuffer). `reset(start_pc)` sets active and clears buffer.
+- **Struct `WarpState`**: `pc`, `active`, `branch_in_flight`, `instr_buffer` (InstructionBuffer). `reset(start_pc)` sets active, clears `branch_in_flight`, and clears buffer. The `branch_in_flight` flag is set when the scheduler issues a branch/JAL/JALR and cleared when the operand collector dispatches it; while set, the scheduler stalls the warp to prevent issuing shadow instructions.
 
 ### `include/gpu_sim/timing/instruction_buffer.h`
 
 Per-warp instruction FIFO. Header-only.
 
 - **Struct `BufferEntry`**: `decoded` (DecodedInstruction), `warp_id`, `pc`.
-- **Class `InstructionBuffer`**: Deque-backed FIFO with fixed `max_depth`. Methods: `is_full()`, `is_empty()`, `size()`, `push()`, `pop()`, `front()`, `flush()`, `reset()`.
+- **Class `InstructionBuffer`**: Deque-backed FIFO with fixed `max_depth`. Methods: `is_full()`, `is_empty()`, `size()`, `capacity()`, `push()`, `pop()`, `front()`, `flush()`, `reset()`.
 
 ### `include/gpu_sim/timing/scoreboard.h`
 
@@ -214,7 +214,8 @@ Double-buffered register dependency tracking. Header-only.
 Instruction fetch with round-robin warp selection.
 
 - **`FetchStage(num_warps, warps_ptr, imem_ref, predictor_ref, stats_ref)`**
-- **`evaluate()`**: Scans forward from `rr_pointer` through all warps to find the first eligible warp (active and buffer not full). Stalls (produces no output) if the previous output has not been consumed by decode (backpressure); increments `fetch_skip_count` during backpressure stalls. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to the predicted target when `predicted_taken` is set, otherwise `pc + 4`. The RR pointer always advances to `(original + 1) % num_warps` regardless of which warp was fetched.
+- **`evaluate()`**: Scans forward from `rr_pointer` through all warps to find the first eligible warp (active and buffer not full after accounting for decode's pending entry). Stalls (produces no output) if the previous output has not been consumed by decode (backpressure); increments `fetch_skip_count` during backpressure stalls. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to the predicted target when `predicted_taken` is set, otherwise `pc + 4`. The RR pointer always advances to `(original + 1) % num_warps` regardless of which warp was fetched.
+- **`set_decode_pending_warp(optional<uint32_t>)`**: Called by the timing model before `evaluate()` to communicate which warp (if any) has a pending decode entry. Fetch treats that warp's buffer as full when it has only one slot remaining, preventing a fetch that would cause decode backpressure on the next cycle.
 - **`consume_output()`**: Called by decode stage to signal it has consumed `current_output()`. Enables fetch to produce the next instruction.
 - **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch for that warp, resets consumption flag. Used for branch mispredict recovery.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`, `prediction`.
@@ -236,9 +237,9 @@ The staged `BufferEntry` also carries the fetch-time `BranchPrediction`.
 
 Issue stage with round-robin scheduling and 4-way eligibility check.
 
-- **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
+- **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `BRANCH_SHADOW`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
 - **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, func_model_ref, stats_ref)`**
-- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) scoreboard clear for source registers, (3) operand collector free, (4) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, and sets scoreboard pending for `rd`. Pointer advances unconditionally. Stall counters: scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
+- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) no branch in flight for this warp, (3) scoreboard clear for source registers, (4) operand collector free, (5) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, sets scoreboard pending for `rd`, and sets `branch_in_flight` on the warp if the issued instruction is a branch/JAL/JALR. Pointer advances unconditionally. Stall counters: branch shadow stalls increment `warp_stall_branch_shadow`, scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
 - **`set_opcoll_free(bool)`**, **`set_unit_ready_fn(fn)`**: External readiness inputs.
 - **`current_diagnostics()`**: Returns the committed per-warp `SchedulerIssueOutcome` array.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `IssueOutput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
@@ -415,12 +416,12 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_cache.cpp` | 10 | Load miss-then-hit, transient MSHR retry, store hit write buffer, store miss write-allocate, store-fill write-buffer backpressure, replayed multiple fills, direct-mapped eviction, write buffer full, reset. |
 | `test_coalescing.cpp` | 3 | Contiguous addresses coalesce (1 request), scattered addresses serialize (32), boundary case (1 lane different). |
 | `test_warp_scheduler.cpp` | 10 | Issues from buffer, skips empty, scoreboard stall, VDOT8 rd-as-source hazard, opcoll-busy stall, unit-busy stall, RR fairness, committed scheduler diagnostics, scoreboard-pending-on-issue, idle pointer advance. |
-| `test_branch.cpp` | 4 | Forward-taken mispredict recovery, non-taken fall-through, backward-loop prediction accuracy, taken-vs-straight-line penalty comparison. |
+| `test_branch.cpp` | 6 | Forward-taken mispredict recovery, non-taken fall-through, backward-loop prediction accuracy, shadow-instruction-no-commit after mispredict, taken-vs-straight-line penalty comparison, fetch decode-FIFO-full backpressure. |
 | `test_panic.cpp` | 5 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, panic writeback freeze, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
 | `test_timing_components.cpp` | 26 | Fetch skips full-buffer warps, fetch-decode backpressure stall, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing (busy signal, cycles_remaining countdown, is_ready lifecycle, back-to-back dispatch, stats tracking, reset, writeback metadata, accessor lifecycle), LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
 
-**Totals**: 163 direct Catch2 cases.
+**Totals**: 165 direct Catch2 cases.
 
 ---
 

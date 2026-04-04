@@ -21,6 +21,7 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
             << " active_cycles=" << warp_cycles_active[w]
             << " stall_scoreboard=" << warp_stall_scoreboard[w]
             << " stall_buffer_empty=" << warp_stall_buffer_empty[w]
+            << " stall_branch_shadow=" << warp_stall_branch_shadow[w]
             << " stall_unit_busy=" << warp_stall_unit_busy[w] << "\n";
     }
     out << "\n";
@@ -28,6 +29,7 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "--- Pipeline ---\n";
     out << "Fetch skips:               " << fetch_skip_count << "\n";
     out << "Scheduler idle cycles:     " << scheduler_idle_cycles << "\n";
+    out << "  Frontend stall cycles:   " << scheduler_frontend_stall_cycles << "\n";
     out << "Operand collector busy:    " << operand_collector_busy_cycles << "\n";
     out << "Branch predictions:        " << branch_predictions << "\n";
     out << "Branch mispredictions:     " << branch_mispredictions << "\n";
@@ -91,6 +93,7 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     // Pipeline
     out << "  \"fetch_skip_count\": " << fetch_skip_count << ",\n";
     out << "  \"scheduler_idle_cycles\": " << scheduler_idle_cycles << ",\n";
+    out << "  \"scheduler_frontend_stall_cycles\": " << scheduler_frontend_stall_cycles << ",\n";
     out << "  \"operand_collector_busy_cycles\": " << operand_collector_busy_cycles << ",\n";
     out << "  \"branch_predictions\": " << branch_predictions << ",\n";
     out << "  \"branch_mispredictions\": " << branch_mispredictions << ",\n";
@@ -140,6 +143,7 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     emit_warp_array("warp_cycles_active", warp_cycles_active);
     emit_warp_array("warp_stall_scoreboard", warp_stall_scoreboard);
     emit_warp_array("warp_stall_buffer_empty", warp_stall_buffer_empty);
+    emit_warp_array("warp_stall_branch_shadow", warp_stall_branch_shadow);
 
     // Last field — no trailing comma
     out << "  \"warp_stall_unit_busy\": [";

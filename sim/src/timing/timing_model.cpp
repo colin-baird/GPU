@@ -46,6 +46,7 @@ WarpRestReason scheduler_rest_reason(SchedulerIssueOutcome outcome) {
         case SchedulerIssueOutcome::UNIT_BUSY_DIVIDE:  return WarpRestReason::WAIT_UNIT_DIVIDE;
         case SchedulerIssueOutcome::UNIT_BUSY_TLOOKUP: return WarpRestReason::WAIT_UNIT_TLOOKUP;
         case SchedulerIssueOutcome::UNIT_BUSY_LDST:    return WarpRestReason::WAIT_UNIT_LDST;
+        case SchedulerIssueOutcome::BRANCH_SHADOW:     return WarpRestReason::WAIT_BRANCH_SHADOW;
         case SchedulerIssueOutcome::READY_NOT_SELECTED:return WarpRestReason::WAIT_ROUND_ROBIN;
         default:                                       return WarpRestReason::NONE;
     }
@@ -359,6 +360,7 @@ bool TimingModel::tick() {
     scoreboard_.seed_next();
     cache_->evaluate();
 
+    fetch_->set_decode_pending_warp(decode_->pending_warp());
     fetch_->evaluate();
 
     decode_->evaluate();
@@ -389,6 +391,7 @@ bool TimingModel::tick() {
 
         const auto& out = *opcoll_->output();
         if (out.trace.is_branch) {
+            warps_[out.warp_id].branch_in_flight = false;
             stats_.branch_predictions++;
             branch_predictor_->update(out.pc, out.decoded, out.prediction,
                                       out.trace.branch_taken, out.trace.branch_target);

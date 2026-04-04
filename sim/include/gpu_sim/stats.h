@@ -18,11 +18,13 @@ struct Stats {
     std::array<uint64_t, MAX_WARPS> warp_cycles_active{};
     std::array<uint64_t, MAX_WARPS> warp_stall_scoreboard{};
     std::array<uint64_t, MAX_WARPS> warp_stall_buffer_empty{};
+    std::array<uint64_t, MAX_WARPS> warp_stall_branch_shadow{};
     std::array<uint64_t, MAX_WARPS> warp_stall_unit_busy{};
 
     // Pipeline
     uint64_t fetch_skip_count = 0;
     uint64_t scheduler_idle_cycles = 0;
+    uint64_t scheduler_frontend_stall_cycles = 0;  // idle cycles where ≥1 warp has empty buffer
     uint64_t operand_collector_busy_cycles = 0;
     uint64_t branch_predictions = 0;
     uint64_t branch_mispredictions = 0;

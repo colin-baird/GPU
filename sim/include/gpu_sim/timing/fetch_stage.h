@@ -33,6 +33,8 @@ public:
     // Decode stage signals it consumed the current output
     void consume_output() { output_consumed_ = true; }
 
+    void set_decode_pending_warp(std::optional<uint32_t> warp) { decode_pending_warp_ = warp; }
+
 private:
     uint32_t num_warps_;
     WarpState* warps_;
@@ -44,6 +46,7 @@ private:
     bool output_consumed_ = true;
     std::optional<FetchOutput> current_output_;
     std::optional<FetchOutput> next_output_;
+    std::optional<uint32_t> decode_pending_warp_;
 };
 
 } // namespace gpu_sim

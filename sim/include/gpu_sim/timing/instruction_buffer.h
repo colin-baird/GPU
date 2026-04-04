@@ -20,6 +20,7 @@ public:
     bool is_full() const { return entries_.size() >= max_depth_; }
     bool is_empty() const { return entries_.empty(); }
     uint32_t size() const { return static_cast<uint32_t>(entries_.size()); }
+    uint32_t capacity() const { return max_depth_; }
 
     void push(const BufferEntry& entry) {
         if (!is_full()) {

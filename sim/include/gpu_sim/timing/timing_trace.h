@@ -40,6 +40,7 @@ enum class WarpTraceState {
 enum class WarpRestReason {
     NONE,
     WAIT_FRONTEND,
+    WAIT_BRANCH_SHADOW,
     WAIT_SCOREBOARD,
     WAIT_OPCOLL,
     WAIT_UNIT_ALU,

@@ -143,7 +143,7 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 
 **Fetch stage:**
 - A **round-robin pointer** cycles through warps: W0, W1, W2, W3, W0, ...
-- Each cycle, the fetch unit starts at the current pointer position and **scans forward** through warps (in round-robin order) to find the first eligible warp — one that is active and whose instruction buffer is not full. If found, the fetch unit reads the instruction BRAM at that warp's PC. If no eligible warp is found in the scan, no fetch occurs that cycle.
+- Each cycle, the fetch unit starts at the current pointer position and **scans forward** through warps (in round-robin order) to find the first eligible warp — one that is active and whose instruction buffer will not be full after the decode stage commits any pending entry. Specifically, if the decode stage has a pending instruction targeting warp W and W's buffer has only one free slot, the fetch unit treats W's buffer as full. If an eligible warp is found, the fetch unit reads the instruction BRAM at that warp's PC. If no eligible warp is found in the scan, no fetch occurs that cycle.
 - The round-robin pointer always advances to `(original_position + 1) % num_warps` regardless of which warp (if any) was fetched. This ensures fairness: the scan starting point rotates uniformly even when some warps are skipped.
 - **Static branch prediction:** after each successful fetch, the frontend predicts the warp's next PC using a fixed policy:
   - backward conditional branches: **taken**
@@ -187,7 +187,8 @@ Buffer:        W0←   W1←   W2←   W3←   W0←   W1←   W2←   W3←
 
 - **Policy:** Loose round-robin (scan-from-pointer).
 - A round-robin pointer increments by 1 each cycle. The scheduler scans from the pointer position through the warp vector to find the **first eligible** warp. The issued warp may differ from the pointer position — this is the "loose" aspect.
-- **Eligibility:** `buffer_not_empty AND scoreboard_clear AND operand_collector_free AND target_unit_ready`
+- **Eligibility:** `buffer_not_empty AND no_branch_in_flight AND scoreboard_clear AND operand_collector_free AND target_unit_ready`
+- **Branch shadow stall:** When the scheduler issues a branch, JAL, or JALR instruction, it sets a per-warp `branch_in_flight` flag. While set, the warp is ineligible for scheduling — this prevents shadow instructions (fetched speculatively after an unresolved branch) from being issued and executing in the functional model. The flag is cleared when the operand collector dispatches the branch instruction and the branch is resolved (whether correctly predicted or mispredicted). With the current 1-cycle operand collector for branches, the flag is typically set and cleared within the same cycle; it serves as a safety net against issuing bad-path instructions if the operand collector latency changes.
 - **Scoreboard check at issue includes all source operands.** For standard 2-operand instructions, rs1 and rs2 must not be pending. For 3-operand instructions like `VDOT8`, rs1, rs2, and rd must all not be pending.
 - If no warp is eligible, no instruction issues that cycle.
 - The RR pointer always advances to `(original_position + 1) % num_warps` regardless of which warp (if any) actually issued. This ensures fairness: the scan starting point rotates uniformly. Both fetch and scheduler use the same pointer-advance rule.

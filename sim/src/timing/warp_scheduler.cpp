@@ -34,6 +34,7 @@ void WarpScheduler::evaluate() {
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
 
     bool issued = false;
+    bool any_buffer_empty = false;
     uint32_t selected_warp = 0;
     BufferEntry selected_entry{};
     bool has_selected_entry = false;
@@ -49,6 +50,13 @@ void WarpScheduler::evaluate() {
         if (warps_[w].instr_buffer.is_empty()) {
             stats_.warp_stall_buffer_empty[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::BUFFER_EMPTY;
+            any_buffer_empty = true;
+            continue;
+        }
+
+        if (warps_[w].branch_in_flight) {
+            stats_.warp_stall_branch_shadow[w]++;
+            next_diagnostics_[w] = SchedulerIssueOutcome::BRANCH_SHADOW;
             continue;
         }
 
@@ -84,6 +92,7 @@ void WarpScheduler::evaluate() {
 
     if (!issued) {
         stats_.scheduler_idle_cycles++;
+        if (any_buffer_empty) stats_.scheduler_frontend_stall_cycles++;
     } else if (has_selected_entry) {
         IssueOutput out;
         out.decoded = selected_entry.decoded;
@@ -101,6 +110,12 @@ void WarpScheduler::evaluate() {
         next_diagnostics_[selected_warp] = SchedulerIssueOutcome::ISSUED;
         stats_.total_instructions_issued++;
         stats_.warp_instructions[selected_warp]++;
+
+        if (selected_entry.decoded.type == InstructionType::BRANCH ||
+            selected_entry.decoded.type == InstructionType::JAL ||
+            selected_entry.decoded.type == InstructionType::JALR) {
+            warps_[selected_warp].branch_in_flight = true;
+        }
     }
 
     // RR pointer always advances

@@ -231,6 +231,8 @@ void print_summary(const Options& options, const FunctionalModel& model,
     std::cout << "  external memory latency: " << options.memory_latency << " cycles\n";
     std::cout << "  cycles: " << timing.cycle_count() << "\n";
     std::cout << "  issued instructions: " << stats.total_instructions_issued << "\n";
+    std::cout << "  fetch skips: " << stats.fetch_skip_count << "\n";
+    std::cout << "  frontend stall cycles: " << stats.scheduler_frontend_stall_cycles << "\n";
     std::cout << "  elements/cycle: " << elements_per_cycle << "\n";
     std::cout << "  tlookup ops/cycle: " << tlookup_ops_per_cycle << "\n";
     std::cout << "  checksum: " << checksum << "\n";

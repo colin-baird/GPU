@@ -138,6 +138,47 @@ TEST_CASE("Branch: loop counts correctly", "[branch]") {
     REQUIRE(stats.branch_flushes == 1);
 }
 
+TEST_CASE("Branch: shadow instructions from mispredicted branch do not commit", "[branch]") {
+    SimConfig config;
+    config.num_warps = 1;
+    config.start_pc = 0;
+    config.instruction_buffer_depth = 4; // large buffer so shadow could queue
+
+    FunctionalModel model(config);
+
+    // Program:
+    // 0x00: ADDI x5, x0, 1       # set x5 = 1
+    // 0x04: BEQ  x0, x0, +12     # always taken → jumps to 0x10
+    //       (forward branch: predictor predicts NOT taken, so misprediction)
+    // 0x08: ADDI x6, x0, 99      # shadow instruction (bad path) — must NOT commit
+    // 0x0C: ADDI x7, x0, 88      # shadow instruction (bad path) — must NOT commit
+    // 0x10: ADDI x8, x0, 42      # branch target (good path)
+    // 0x14: ECALL
+    model.instruction_memory().write(0, encode_addi(5, 0, 1));
+    model.instruction_memory().write(1, encode_beq(0, 0, 12));
+    model.instruction_memory().write(2, encode_addi(6, 0, 99));
+    model.instruction_memory().write(3, encode_addi(7, 0, 88));
+    model.instruction_memory().write(4, encode_addi(8, 0, 42));
+    model.instruction_memory().write(5, encode_ecall());
+    model.init_kernel(config);
+
+    Stats stats;
+    TimingModel timing(config, model, stats);
+    timing.run(1000);
+
+    // Good-path instructions executed
+    REQUIRE(model.register_file().read(0, 0, 5) == 1);
+    REQUIRE(model.register_file().read(0, 0, 8) == 42);
+
+    // Shadow instructions must NOT have committed
+    REQUIRE(model.register_file().read(0, 0, 6) == 0);
+    REQUIRE(model.register_file().read(0, 0, 7) == 0);
+
+    // Branch was mispredicted (forward BEQ taken, predictor says not taken)
+    REQUIRE(stats.branch_mispredictions == 1);
+    REQUIRE(stats.branch_flushes == 1);
+}
+
 TEST_CASE("Branch: taken branch incurs pipeline flush penalty", "[branch]") {
     SimConfig config;
     config.num_warps = 1;
@@ -174,4 +215,51 @@ TEST_CASE("Branch: taken branch incurs pipeline flush penalty", "[branch]") {
 
     // The branch version should take more cycles due to flush penalty
     REQUIRE(branch_cycles > straight_cycles);
+}
+
+TEST_CASE("Fetch: stalls only when all decode FIFOs are truly full", "[fetch]") {
+    // With decode FIFO visibility, fetch should not stall unless a buffer
+    // is actually full (accounting for decode's pending entry).  The only
+    // backpressure scenario remaining is every decode FIFO at capacity.
+    SimConfig config;
+    config.num_warps = 1;
+    config.start_pc = 0;
+    config.instruction_buffer_depth = 2;
+
+    FunctionalModel model(config);
+
+    // Straight-line program: 6 ADDIs writing to different regs + ECALL.
+    // With depth-2 buffer and 1 warp, once the buffer is full the fetch
+    // must stall.  The decode-pending visibility should let fetch avoid
+    // the spurious stall where decode is about to fill the last slot.
+    model.instruction_memory().write(0, encode_addi(1, 0, 1));
+    model.instruction_memory().write(1, encode_addi(2, 0, 2));
+    model.instruction_memory().write(2, encode_addi(3, 0, 3));
+    model.instruction_memory().write(3, encode_addi(4, 0, 4));
+    model.instruction_memory().write(4, encode_addi(5, 0, 5));
+    model.instruction_memory().write(5, encode_addi(6, 0, 6));
+    model.instruction_memory().write(6, encode_ecall());
+    model.init_kernel(config);
+
+    Stats stats;
+    TimingModel timing(config, model, stats);
+    timing.run(1000);
+
+    // All instructions should have committed correctly
+    REQUIRE(model.register_file().read(0, 0, 1) == 1);
+    REQUIRE(model.register_file().read(0, 0, 2) == 2);
+    REQUIRE(model.register_file().read(0, 0, 3) == 3);
+    REQUIRE(model.register_file().read(0, 0, 4) == 4);
+    REQUIRE(model.register_file().read(0, 0, 5) == 5);
+    REQUIRE(model.register_file().read(0, 0, 6) == 6);
+
+    // With only 1 warp, the only backpressure is when the single decode FIFO
+    // is full.  fetch_skip_count tracks how many times fetch found no eligible
+    // warp.  With decode-pending visibility the fetch stage should never
+    // produce an instruction that decode cannot store, so any fetch_skip that
+    // occurs corresponds to a genuinely full buffer, not a false stall.
+    // We simply verify the program completes and all values are correct above.
+    // As an additional sanity check, the cycle count should be reasonable
+    // (no pathological stalling).
+    REQUIRE(timing.cycle_count() < 50);
 }

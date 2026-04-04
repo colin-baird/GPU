@@ -23,6 +23,7 @@ struct IssueOutput {
 enum class SchedulerIssueOutcome {
     INACTIVE,
     BUFFER_EMPTY,
+    BRANCH_SHADOW,
     SCOREBOARD,
     OPCOLL_BUSY,
     UNIT_BUSY_ALU,

@@ -254,6 +254,8 @@ void print_summary(const Options& options, uint32_t rows, const TimingModel& tim
     std::cout << "  external memory latency: " << options.memory_latency << " cycles\n";
     std::cout << "  cycles: " << timing.cycle_count() << "\n";
     std::cout << "  issued instructions: " << stats.total_instructions_issued << "\n";
+    std::cout << "  fetch skips: " << stats.fetch_skip_count << "\n";
+    std::cout << "  frontend stall cycles: " << stats.scheduler_frontend_stall_cycles << "\n";
     std::cout << "  MACs/cycle: " << macs_per_cycle << "\n";
     std::cout << "  outputs/cycle: " << outputs_per_cycle << "\n";
     std::cout << "  cache hits/misses: " << stats.cache_hits
