@@ -315,8 +315,37 @@ If software does not write `r31` before EBREAK, `PANIC_CAUSE` will contain whate
 - **Phase 1 strategy (all-or-nothing):** checks if all 32 thread addresses fall within a single 128-byte cache line. If yes → single cache line request. If no → falls back to 32 serialized individual requests.
 - **Future optimization (Phase 2+):** proper cache-line grouping — sort addresses by cache line, issue one request per unique line touched. This requires comparator/sorting logic but dramatically reduces requests for strided access patterns.
 - Badly uncoalesced accesses naturally slow down, matching real GPU performance characteristics.
-- **Serialized load writeback:** When a load is serialized into 32 individual cache requests, a **single writeback** is produced for the entire warp. The first lane's cache interaction is designated as the writeback source: a cache hit on the first lane produces an immediate writeback carrying all 32 lanes' results; a cache miss on the first lane produces a writeback when the corresponding MSHR fill completes. Subsequent lanes' cache interactions install cache lines and update hit/miss statistics but suppress duplicate writebacks. This ensures one scoreboard clear and one register file write per serialized load instruction.
-- **Writeback suppression mechanism:** Each MSHR entry carries a `suppress_writeback` flag. The coalescing unit sets this flag to `false` for the first lane and `true` for all subsequent lanes. On a cache hit, the flag controls whether a writeback entry is generated. On a cache miss, the flag is stored in the allocated MSHR entry and checked when the fill completes: fills with `suppress_writeback = true` install the cache line but skip writeback generation and scoreboard clear. This ensures that even when fills complete out of order (e.g., the first lane's MSHR fills last), exactly one writeback is produced and the scoreboard remains pending until the designated first-lane fill arrives.
+- **Loads always flow through the requesting warp's gather buffer.** The coalescing unit does not produce load writebacks directly. On picking up a load FIFO entry, it first checks that the target warp's gather buffer is free (see §5.2.1); if not, it stalls until the buffer is released. Once the buffer is claimed, the coalescing unit issues cache transactions (one coalesced request, or 32 serialized requests, one per cycle) and tags each with the claiming warp's gather-buffer ID plus the per-lane slot index and byte offset within the line. The gather buffer collects results as hits and MSHR fills resolve; the single writeback fires when all 32 slots are valid. This holds uniformly for coalesced and serialized loads — the gather buffer is the one and only assembly point for load data.
+- **Stores are sequenced in place.** The coalescing unit walks the 32 lanes (one per cycle in the serialized case, one coalesced request otherwise), pushing each through the cache's store path (write-through on hit, write-allocate MSHR on miss). Stores do not use the gather buffer, do not produce a writeback, and do not clear a scoreboard entry. The coalescing unit holds the FIFO entry until the final lane has been accepted by the cache.
+
+### 5.2.1 Load Gather Buffers
+
+Each resident warp owns a dedicated **load gather buffer** that assembles the 32 per-lane values for an in-flight load into a single writeback packet. This is the only mechanism by which load data reaches the register file.
+
+**Structure (one per resident warp, parameterizable — default one per warp slot):**
+
+| Field             | Width                | Description                                                            |
+|-------------------|----------------------|------------------------------------------------------------------------|
+| `busy`            | 1                    | Buffer is claimed by an in-flight load                                 |
+| `warp_id`         | log2(max warps)      | Owning warp (fixed — one buffer per warp slot)                         |
+| `dest_reg`        | 5                    | Destination register for the pending writeback                         |
+| `values`          | 32 × 32 bits         | Per-lane data slots                                                    |
+| `slot_valid`      | 32                   | Per-lane valid bits; when all 32 are set, the buffer raises a writeback |
+| `filled_count`    | 6                    | Population count of `slot_valid` (cached; avoids 32-wide reduction)    |
+| `pc`, `issue_cycle`, `raw_instruction` | —     | Carried for writeback-arbitration metadata                             |
+
+**Allocation and release:**
+- Claimed by the coalescing unit when it begins processing a load FIFO entry for that warp. If `busy` is already set, the coalescing unit stalls — this is a structural hazard attributable to the gather buffer.
+- Released when the buffer's writeback commits to the register file via the writeback arbiter (§5.5).
+- **One buffer per warp serializes that warp's loads.** The scoreboard only blocks re-issue against registers with pending writes; two loads from the same warp targeting different destination registers could otherwise overlap, but the single gather buffer per warp forces them to serialize at coalescing time. This is an intentional consequence of the one-buffer-per-warp choice: it matches the physical reality that a single gather structure holds the in-flight line-extracted data for only one load at a time. Workloads with deep per-warp load parallelism will see `gather_buffer_stall_cycles` dominate; adding more buffers per warp is a possible future optimization but is out of scope for Phase 1.
+
+**Write port:**
+- Each gather buffer has **one write port**, shared between the hit path and the fill path of the L1 cache. At most one source — a hit-path extraction or a fill-path extraction — may write the buffer on a given cycle. When both paths target the same warp's buffer in the same cycle, the fill path wins and the hit path stalls one cycle (one-cycle structural hazard; expected to be rare in practice).
+- **Write granularity is bounded by a single cache line.** The port can populate any subset of the 32 slots in one cycle — up to and including all 32 — provided every value in that write is sourced from the *same* cache line. A coalesced hit or coalesced fill populates all 32 slots in one write (all values come from one line). A serialized single-lane hit or fill populates exactly one slot. A Phase 2 partial-coalescing hit or fill populates the subset of slots whose lanes alias to the line being extracted. This matches the physical reality that cache-line extraction logic operates on one line at a time; there is no cross-line multiplexer feeding the gather buffer.
+
+**Writeback emission:**
+- When `filled_count == 32`, the buffer asserts a writeback request to the writeback arbiter (§5.5).
+- On commit, the arbiter writes all 32 values to the register file in one cycle (§5.5 single-cycle warp writeback), clears the scoreboard pending bit for `(warp_id, dest_reg)`, and releases the buffer (`busy ← 0`, `slot_valid ← 0`, `filled_count ← 0`).
 
 ### 5.3 L1 Data Cache
 
@@ -329,9 +358,11 @@ If software does not write `r31` before EBREAK, `PANIC_CAUSE` will contain whate
 | Allocation policy | Allocate on any miss (read or write) |
 | MSHRs             | Parameterizable (default: 4)       |
 
-**Read hit:** Cache line is present. The cache extracts the requested bytes for each thread (using the thread mask and per-thread byte offsets within the line) and routes values to the register file via writeback.
+**Read hit:** Cache line is present. The cache extracts the bytes for each lane indicated by the incoming request's lane mask (using per-lane byte offsets within the line) and writes the extracted values into the requesting warp's gather buffer (§5.2.1) in a single write. Because all values in a single hit-path write come from the one line being extracted, any number of slots from 1 to 32 can be populated in that one cycle — 32 for a fully-coalesced hit, 1 for a single-lane serialized probe, a subset for a Phase 2 partial-coalesced hit. The hit path contends with the fill path for the gather buffer's single write port; on conflict the hit path stalls one cycle. Hit extraction itself may be pipelined over multiple cycles (parameterizable); all that is required architecturally is that the slots are written atomically when extraction completes.
 
-**Read miss:** A free MSHR is allocated (see §5.3.1). The request is sent to external memory via the memory interface (§5.6). The requesting warp's destination register is marked pending in the scoreboard; the warp continues executing non-dependent instructions (stall-on-use).
+**Read miss:** A free MSHR is allocated (see §5.3.1). The request is sent to external memory via the memory interface (§5.6). The MSHR records which warp, which gather-buffer slots, and which byte offsets are waiting on the fill, so that the fill path can deposit the extracted values into the correct gather buffer. The requesting warp's destination register was marked pending in the scoreboard at load issue and remains pending until the gather buffer's writeback commits; the warp continues executing non-dependent instructions (stall-on-use).
+
+**Fill-port cadence:** the cache accepts at most one line delivery from external memory per cycle. A line delivery that coincides with a hit-path extraction targeting the same gather buffer wins the single gather-buffer write port; the hit path stalls one cycle.
 
 **Write hit:** The cache line is updated in L1 **and** the full cache line is pushed into the write buffer for draining to external memory (write-through).
 
@@ -343,27 +374,28 @@ Each MSHR entry tracks one outstanding cache line fetch from external memory (fo
 
 **MSHR entry contents:**
 
-| Field             | Width                | Description                                      |
-|-------------------|----------------------|--------------------------------------------------|
-| `valid`           | 1                    | Entry is active                                  |
-| `cache_line_addr` | Address bits         | Cache line address of the miss                   |
-| `is_store`        | 1                    | 0 = load miss, 1 = store miss (write-allocate)   |
-| `warp_id`         | log2(max warps)      | Requesting warp                                  |
-| `dest_reg`        | 5                    | Destination register index (loads only)           |
-| `thread_mask`     | 32                   | Which threads in the warp need data from this line |
-| `byte_offsets`    | 32 × offset bits     | Per-thread byte offset within the cache line     |
-| `store_data`      | 32 × 32 bits         | Per-thread store data (store misses only)         |
-| `store_byte_en`   | 32 × 4 bits          | Per-thread byte enables (store misses only)       |
+| Field             | Width                | Description                                                             |
+|-------------------|----------------------|-------------------------------------------------------------------------|
+| `valid`           | 1                    | Entry is active                                                         |
+| `cache_line_addr` | Address bits         | Cache line address of the miss                                          |
+| `is_store`        | 1                    | 0 = load miss, 1 = store miss (write-allocate)                          |
+| `warp_id`         | log2(max warps)      | Requesting warp (also selects the target gather buffer for loads)       |
+| `lane_mask`       | 32                   | Which lanes of the owning warp are waiting on this line (loads: slots to fill; stores: lanes whose data must be merged before write-through) |
+| `byte_offsets`    | 32 × offset bits     | Per-lane byte offset within the cache line (valid where `lane_mask` is set) |
+| `store_data`      | 32 × 32 bits         | Per-lane store data (store misses only)                                 |
+| `store_byte_en`   | 32 × 4 bits          | Per-lane byte enables (store misses only)                               |
+
+For Phase 1 serialized loads, `lane_mask` always has exactly one bit set (the lane that issued this particular request); for coalesced loads, `lane_mask` reflects the lanes actually targeting this line.
 
 **Allocation:** On any cache miss (read or write), the cache allocates the first free MSHR. If no MSHR is free, the coalescing unit **stalls** (backpressure) until one becomes available.
 
-**No duplicate detection or merging:** If two warps (or two serialized requests from the same warp) miss on the same cache line, each gets its own MSHR and generates its own external memory request. This trades redundant bandwidth for simpler hardware (no CAM lookup across MSHRs).
+**No duplicate detection or merging:** If two warps (or two serialized requests from the same warp) miss on the same cache line, each gets its own MSHR and generates its own external memory request. This trades redundant bandwidth for simpler hardware (no CAM lookup across MSHRs). One consequence under serialized loads: 32 single-lane misses from one warp may occupy up to 32 MSHR slots' worth of traffic over the load's lifetime, even when several lanes happen to alias to the same line.
 
-**Load miss fill path:** When external memory returns a cache line for a load miss:
-1. The MSHR's `cache_line_addr` is used to install the line in L1.
-2. The cache then extracts per-thread values using the MSHR's `thread_mask` and `byte_offsets`.
-3. Extracted values are routed to the register file (warp_id, dest_reg) via the writeback path.
-4. The scoreboard clears the pending flag for the destination register.
+**Load miss fill path:** When external memory returns a cache line for a load miss (subject to the 1-line-per-cycle cache fill-port cap, §5.3):
+1. The line is installed in L1 at `cache_line_addr`.
+2. The cache extracts per-lane values using the MSHR's `lane_mask` and `byte_offsets`.
+3. The extracted values are written into the owning warp's gather buffer (§5.2.1), populating the slots selected by `lane_mask`. This write contends for the gather buffer's single write port; it takes priority over a same-cycle hit-path extraction.
+4. If this fill fills the last outstanding slot (`filled_count` reaches 32), the gather buffer raises a writeback request; the writeback arbiter eventually commits the full 32-lane writeback and clears the scoreboard pending flag.
 5. The MSHR entry is freed.
 
 **Store miss fill path (write-allocate):** When external memory returns a cache line for a store miss:
@@ -546,7 +578,7 @@ A simple DMA engine transfers data from external memory into on-chip BRAMs (inst
 - **Set pending:** on instruction issue, the destination register is marked pending for the issuing warp.
 - **Clear pending:** when the writeback arbiter selects a unit and the write commits to the register file (not when the unit's buffer becomes valid — only on actual commit).
 - **Issue-time check covers all source operands:** for 2-operand instructions, rs1 and rs2 must not be pending. For 3-operand instructions (`VDOT8`), rs1, rs2, and rd must all not be pending. A warp is ineligible if any required source register is pending.
-- **Load destinations:** marked pending on load issue; cleared when the MSHR fill completes and data is written to the register file via the writeback arbiter.
+- **Load destinations:** marked pending on load issue; cleared when the owning warp's load gather buffer (§5.2.1) asserts its writeback to the writeback arbiter and the 32-lane write commits to the register file. A coalesced load resolves its gather buffer in a single extraction (hit) or on the single fill (miss); a serialized load resolves it incrementally as the 32 lane transactions hit and/or their MSHR fills return. In either case the scoreboard does not clear until all 32 slots are valid and the arbiter commits the packet.
 - **Minimum read-after-write latency:** 1 cycle after scoreboard clear (write commits → scoreboard clears → next scheduler cycle the warp becomes eligible → operand collect reads committed value). Warp-switching hides this gap.
 - **Panic interaction:** when a panic is triggered, the scoreboard state is abandoned (not explicitly cleared). The `CTRL.RESET` path handles full cleanup before the next kernel launch.
 

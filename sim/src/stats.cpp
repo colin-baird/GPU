@@ -28,8 +28,11 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
 
     out << "--- Pipeline ---\n";
     out << "Fetch skips:               " << fetch_skip_count << "\n";
+    out << "  Backpressure:            " << fetch_skip_backpressure << "\n";
+    out << "  All buffers full:        " << fetch_skip_all_full << "\n";
     out << "Scheduler idle cycles:     " << scheduler_idle_cycles << "\n";
-    out << "  Frontend stall cycles:   " << scheduler_frontend_stall_cycles << "\n";
+    out << "  Frontend stall:          " << scheduler_frontend_stall_cycles << "\n";
+    out << "  Backend stall:           " << scheduler_stall_backend_cycles << "\n";
     out << "Operand collector busy:    " << operand_collector_busy_cycles << "\n";
     out << "Branch predictions:        " << branch_predictions << "\n";
     out << "Branch mispredictions:     " << branch_mispredictions << "\n";
@@ -68,6 +71,8 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "Serialized requests:       " << serialized_requests << "\n";
     out << "External memory reads:     " << external_memory_reads << "\n";
     out << "External memory writes:    " << external_memory_writes << "\n";
+    out << "Gather buffer stall:       " << gather_buffer_stall_cycles << "\n";
+    out << "Gather buffer port conf.:  " << gather_buffer_port_conflict_cycles << "\n";
     if (total_loads_completed > 0) {
         out << "Avg load latency:          " << std::fixed << std::setprecision(1)
             << static_cast<double>(total_load_latency) / static_cast<double>(total_loads_completed)
@@ -92,8 +97,11 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
 
     // Pipeline
     out << "  \"fetch_skip_count\": " << fetch_skip_count << ",\n";
+    out << "  \"fetch_skip_backpressure\": " << fetch_skip_backpressure << ",\n";
+    out << "  \"fetch_skip_all_full\": " << fetch_skip_all_full << ",\n";
     out << "  \"scheduler_idle_cycles\": " << scheduler_idle_cycles << ",\n";
     out << "  \"scheduler_frontend_stall_cycles\": " << scheduler_frontend_stall_cycles << ",\n";
+    out << "  \"scheduler_stall_backend_cycles\": " << scheduler_stall_backend_cycles << ",\n";
     out << "  \"operand_collector_busy_cycles\": " << operand_collector_busy_cycles << ",\n";
     out << "  \"branch_predictions\": " << branch_predictions << ",\n";
     out << "  \"branch_mispredictions\": " << branch_mispredictions << ",\n";
@@ -125,6 +133,8 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"external_memory_writes\": " << external_memory_writes << ",\n";
     out << "  \"total_load_latency\": " << total_load_latency << ",\n";
     out << "  \"total_loads_completed\": " << total_loads_completed << ",\n";
+    out << "  \"gather_buffer_stall_cycles\": " << gather_buffer_stall_cycles << ",\n";
+    out << "  \"gather_buffer_port_conflict_cycles\": " << gather_buffer_port_conflict_cycles << ",\n";
 
     // Writeback
     out << "  \"writeback_conflicts\": " << writeback_conflicts << ",\n";

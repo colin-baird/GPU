@@ -3,6 +3,7 @@
 #include "gpu_sim/timing/ldst_unit.h"
 #include "gpu_sim/timing/cache.h"
 #include "gpu_sim/timing/execution_unit.h"
+#include "gpu_sim/timing/load_gather_buffer.h"
 #include "gpu_sim/stats.h"
 #include <optional>
 
@@ -10,10 +11,12 @@ namespace gpu_sim {
 
 class CoalescingUnit {
 public:
-    CoalescingUnit(LdStUnit& ldst, L1Cache& cache, uint32_t line_size, Stats& stats);
+    CoalescingUnit(LdStUnit& ldst, L1Cache& cache, LoadGatherBufferFile& gather_file,
+                   uint32_t line_size, Stats& stats);
 
-    // Returns a writeback entry if a cache hit produced one
-    void evaluate(WritebackEntry& wb_out, bool& wb_valid);
+    // Pulls the next load/store FIFO entry and drives cache transactions.
+    // Loads never produce writebacks here — the gather buffer emits them.
+    void evaluate();
     void commit();
     void reset();
     bool is_idle() const { return !processing_; }
@@ -30,6 +33,7 @@ public:
 private:
     LdStUnit& ldst_;
     L1Cache& cache_;
+    LoadGatherBufferFile& gather_file_;
     uint32_t line_size_;
     Stats& stats_;
 
@@ -38,11 +42,6 @@ private:
     AddrGenFIFOEntry current_entry_;
     bool is_coalesced_ = false;
     uint32_t serial_index_ = 0;  // For serialized requests
-    bool wb_already_produced_ = false;  // Serialized load writeback suppression
-
-    // Deferred writeback for serialized loads: held until all lanes finish
-    bool deferred_wb_valid_ = false;
-    WritebackEntry deferred_wb_;
 };
 
 } // namespace gpu_sim

@@ -30,6 +30,7 @@ add_library(gpu_sim_lib
     src/timing/mshr.cpp
     src/timing/cache.cpp
     src/timing/coalescing_unit.cpp
+    src/timing/load_gather_buffer.cpp
     src/timing/memory_interface.cpp
     src/timing/panic_controller.cpp
     src/timing/timing_trace.cpp

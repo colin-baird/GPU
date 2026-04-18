@@ -4,6 +4,7 @@
 #include "gpu_sim/timing/mshr.h"
 #include "gpu_sim/timing/memory_interface.h"
 #include "gpu_sim/timing/execution_unit.h"
+#include "gpu_sim/timing/load_gather_buffer.h"
 #include "gpu_sim/stats.h"
 #include <vector>
 #include <deque>
@@ -47,20 +48,25 @@ struct CacheFillTraceEvent {
 class L1Cache {
 public:
     L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
-            uint32_t write_buffer_depth, ExternalMemoryInterface& mem_if, Stats& stats);
+            uint32_t write_buffer_depth, ExternalMemoryInterface& mem_if,
+            LoadGatherBufferFile& gather_file, Stats& stats);
 
     // Process one cache request. Returns true if the request was accepted.
-    // For loads: if hit, fills wb_out. If miss, allocates MSHR.
-    // For stores: if hit, updates cache and write buffer. If miss, allocates MSHR.
-    bool process_load(uint32_t addr, uint32_t warp_id, uint8_t dest_reg,
+    // For loads: on a hit, attempts to write the lanes selected by `lane_mask`
+    // into the caller's gather buffer; returns false if the gather-buffer port
+    // was already used this cycle (caller must retry next cycle). On a miss,
+    // allocates an MSHR recording `lane_mask`. For stores: hit updates cache
+    // and write buffer; miss allocates an MSHR (write-allocate).
+    bool process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
                       const std::array<uint32_t, WARP_SIZE>& results,
-                      uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction,
-                      WritebackEntry& wb_out, bool suppress_writeback = false);
+                      uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction);
     bool process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue_cycle,
                        uint32_t pc, uint32_t raw_instruction);
 
-    // Handle memory responses (MSHR fills)
-    void handle_responses(WritebackEntry& wb_out, bool& wb_valid);
+    // Handle one pending memory response (MSHR fill) per cycle. Load fills
+    // deposit lane data into the owning warp's gather buffer; store fills push
+    // the line into the write buffer.
+    void handle_responses();
 
     // Drain write buffer
     void drain_write_buffer();
@@ -81,7 +87,7 @@ public:
     const CacheFillTraceEvent& last_fill_event() const { return last_fill_event_; }
 
 private:
-    bool complete_fill(const MemoryResponse& resp, WritebackEntry& wb_out, bool& wb_valid);
+    bool complete_fill(const MemoryResponse& resp);
     uint32_t get_set(uint32_t addr) const;
     uint32_t get_tag(uint32_t addr) const;
     uint32_t get_line_addr(uint32_t addr) const;
@@ -95,6 +101,7 @@ private:
     std::deque<uint32_t> write_buffer_;  // Queue of line addresses to write back
     uint32_t write_buffer_depth_;
     ExternalMemoryInterface& mem_if_;
+    LoadGatherBufferFile& gather_file_;
     Stats& stats_;
     bool stalled_ = false;
     CacheStallReason stall_reason_ = CacheStallReason::NONE;

@@ -23,8 +23,11 @@ struct Stats {
 
     // Pipeline
     uint64_t fetch_skip_count = 0;
+    uint64_t fetch_skip_backpressure = 0;   // fetch stalled: decode hasn't consumed previous output
+    uint64_t fetch_skip_all_full = 0;        // fetch stalled: all warp instruction buffers at capacity
     uint64_t scheduler_idle_cycles = 0;
-    uint64_t scheduler_frontend_stall_cycles = 0;  // idle cycles where ≥1 warp has empty buffer
+    uint64_t scheduler_frontend_stall_cycles = 0;  // idle: ≥1 active warp has empty buffer
+    uint64_t scheduler_stall_backend_cycles = 0;   // idle: all active warps have instructions but can't issue
     uint64_t operand_collector_busy_cycles = 0;
     uint64_t branch_predictions = 0;
     uint64_t branch_mispredictions = 0;
@@ -56,6 +59,8 @@ struct Stats {
     uint64_t external_memory_writes = 0;
     uint64_t total_load_latency = 0;
     uint64_t total_loads_completed = 0;
+    uint64_t gather_buffer_stall_cycles = 0;
+    uint64_t gather_buffer_port_conflict_cycles = 0;
 
     // Writeback
     uint64_t writeback_conflicts = 0;

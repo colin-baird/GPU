@@ -80,7 +80,7 @@ Statistics collection and reporting.
   - Per-warp: `warp_instructions[8]`, `warp_cycles_active[8]`, `warp_stall_scoreboard[8]`, `warp_stall_buffer_empty[8]`, `warp_stall_branch_shadow[8]`, `warp_stall_unit_busy[8]`
   - Pipeline: `fetch_skip_count`, `scheduler_idle_cycles`, `operand_collector_busy_cycles`, `branch_predictions`, `branch_mispredictions`, `branch_flushes`
   - Per-unit (`UnitStats`): `busy_cycles`, `instructions` -- for ALU, MUL, DIV, LD/ST, TLOOKUP
-  - Memory: `cache_hits/misses`, `load_hits/misses`, `store_hits/misses`, `mshr_stall_cycles`, `write_buffer_stall_cycles`, `coalesced_requests`, `serialized_requests`, `external_memory_reads/writes`, `total_load_latency`, `total_loads_completed`
+  - Memory: `cache_hits/misses`, `load_hits/misses`, `store_hits/misses`, `mshr_stall_cycles`, `write_buffer_stall_cycles`, `coalesced_requests`, `serialized_requests`, `external_memory_reads/writes`, `total_load_latency`, `total_loads_completed`, `gather_buffer_stall_cycles`, `gather_buffer_port_conflict_cycles`
   - Writeback: `writeback_conflicts`
 - **`report(ostream, num_warps)`**: Human-readable text summary.
 - **`report_json(ostream, num_warps)`**: Machine-parseable JSON.
@@ -315,7 +315,7 @@ Round-robin writeback arbitration among execution units and queued memory-result
 - **`has_pending_work()`**: Reports queued writeback work so DONE/PANIC waits for the writeback path to drain.
 - **Snapshot helpers**: `ready_source_count()`.
 
-`include/gpu_sim/timing/execution_unit.h` also defines **`QueuedWritebackSource`**, a tiny FIFO-backed `ExecutionUnit` implementation used to model cache-hit and MSHR-fill writeback queues as first-class arbitration sources.
+`include/gpu_sim/timing/execution_unit.h` also defines **`QueuedWritebackSource`**, a tiny FIFO-backed `ExecutionUnit` implementation retained for tests and generic writeback-source scenarios. The LD/ST writeback source in production wiring is the `LoadGatherBufferFile` (see below).
 
 ### `include/gpu_sim/timing/cache.h` -- `src/timing/cache.cpp`
 
@@ -324,29 +324,40 @@ Direct-mapped L1 data cache with MSHRs and write buffer.
 This timing model intentionally tracks cache residency, misses, backpressure, and writeback-source timing without storing full cache-line payloads. Load values are replayed from the functional-model trace; the cache exists here to model performance behavior, not data correctness.
 
 - **Enum `CacheStallReason`**: `NONE`, `MSHR_FULL`, `WRITE_BUFFER_FULL`.
-- **`L1Cache(cache_size, line_size, num_mshrs, write_buffer_depth, mem_if_ref, stats_ref)`**
-- **`process_load(addr, warp_id, dest_reg, results, issue_cycle, pc, raw_instruction, wb_out, suppress_writeback=false)`**: Hit -> fills `wb_out` immediately (unless `suppress_writeback`). Miss -> allocates MSHR (with `suppress_writeback` flag propagated), submits read to external memory, and records a one-cycle miss-allocation trace event. Returns false if MSHR full (stall). The `suppress_writeback` flag is used by the coalescing unit to prevent redundant writebacks from serialized load lanes after the first.
+- **`L1Cache(cache_size, line_size, num_mshrs, write_buffer_depth, mem_if_ref, gather_file_ref, stats_ref)`**
+- **`process_load(addr, warp_id, lane_mask, results, issue_cycle, pc, raw_instruction)`**: Hit -> attempts to write the lanes selected by `lane_mask` into the owning warp's gather buffer; returns false when the gather-buffer write port was already used this cycle (caller must retry). Miss -> allocates an MSHR recording `lane_mask`, submits the read, and records a miss-allocation trace event. Returns false if MSHR full (stall). Does not produce a writeback directly.
 - **`process_store(line_addr, warp_id, issue_cycle, pc, raw_instruction)`**: Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate) with trace metadata. Returns false if MSHR or write buffer full.
-- **`handle_responses(wb_out, wb_valid)`**: Processes at most one readable cache-line fill per cycle. Responses are buffered internally if a store fill is blocked by the write buffer, so MSHRs are not freed early and multiple fills are replayed across cycles instead of being dropped.
+- **`handle_responses()`**: Processes at most one readable cache-line fill per cycle. For load fills, deposits the lane values into the owning warp's gather buffer via the FILL write-port path (FILL wins a same-cycle HIT). For store fills, pushes the line into the write buffer. Responses are buffered internally if a store fill is blocked by the write buffer.
 - **`drain_write_buffer()`**: Submits one write-buffer entry per cycle to external memory.
-- **`evaluate()`**: Clears one-cycle cache backpressure so the coalescer retries once resources free up.
+- **`evaluate()`**: Clears one-cycle cache backpressure and runs `handle_responses()` so FILL writes to the gather buffer occur before any HIT writes later in the cycle.
 - **`is_idle()`**: True only when there are no live MSHRs, queued write-through entries, or pending fills.
 - **Snapshot helpers**: `stall_reason()`, `active_mshr_count()`, `write_buffer_size()`, `pending_fill()`, `mshrs()`, `last_miss_event()`, `last_fill_event()`.
 - **Indexing**: `set = (addr / line_size) % num_sets`, `tag = addr / line_size / num_sets`.
+
+### `include/gpu_sim/timing/load_gather_buffer.h` -- `src/timing/load_gather_buffer.cpp`
+
+Per-resident-warp load gather buffers — the sole assembly point for load data before writeback. See §5.2.1 of the architectural spec.
+
+- **Struct `LoadGatherBuffer`**: One per resident warp. Fields: `busy`, `dest_reg`, `values[32]`, `slot_valid[32]`, `filled_count`, `pc`, `issue_cycle`, `raw_instruction`, plus a `port_used_this_cycle` scratch bit cleared every `commit()`.
+- **Class `LoadGatherBufferFile : public ExecutionUnit`**: Allocates `num_warps` buffers indexed by `warp_id` and registers with the writeback arbiter.
+  - **`is_busy(warp_id)`**: Query used by the coalescing unit to gate claiming a load.
+  - **`claim(warp_id, dest_reg, pc, issue_cycle, raw_instruction)`**: Marks the buffer busy and stamps metadata.
+  - **`try_write(warp_id, lane_mask, values, source)`** where `source` is `HIT` or `FILL`: Writes the selected lanes into the buffer and increments `filled_count`. Returns false iff the buffer's single write port was already used this cycle; a HIT losing to a same-cycle FILL increments `stats_.gather_buffer_port_conflict_cycles`.
+  - **`has_result()` / `consume_result()`**: Raises and consumes a full 32-lane writeback when any buffer's `filled_count` reaches 32, using round-robin selection across buffers. Consuming releases the buffer.
 
 ### `include/gpu_sim/timing/mshr.h` -- `src/timing/mshr.cpp`
 
 Miss Status Holding Registers.
 
-- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`), `suppress_writeback` (when true, MSHR fill skips writeback generation — used for serialized load writeback suppression).
+- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`), `lane_mask` (for load misses: lanes of the owning warp waiting on this fill; the cache deposits these lanes into the warp's gather buffer on fill).
 - **Class `MSHRFile`**: Vector of entries. `allocate(entry)` -> index or -1. `free(index)`. `has_free()`. `has_active()`. `at(index)`.
 
 ### `include/gpu_sim/timing/coalescing_unit.h` -- `src/timing/coalescing_unit.cpp`
 
 All-or-nothing address coalescing.
 
-- **`CoalescingUnit(ldst_ref, cache_ref, line_size, stats_ref)`**
-- **`evaluate(wb_out, wb_valid)`**: Pulls entry from LD/ST FIFO. Checks if all 32 thread addresses fall in the same cache line. If yes: 1 cache request. If no: serializes to 32 individual requests (1 per cycle). For serialized loads, only the first lane's cache interaction produces a writeback (tracked by `wb_already_produced_`); subsequent lanes pass `suppress_writeback=true` to the cache. Stalls if cache cannot accept.
+- **`CoalescingUnit(ldst_ref, cache_ref, gather_file_ref, line_size, stats_ref)`**
+- **`evaluate()`**: Pulls entry from LD/ST FIFO. For loads, stalls (without popping) if the target warp's gather buffer is busy, incrementing `stats_.gather_buffer_stall_cycles`; once the buffer is free, claims it before issuing cache transactions. Checks if all 32 thread addresses fall in the same cache line. If yes: one cache request with `lane_mask = 0xFFFFFFFF`. If no: 32 serialized single-lane requests with one-hot `lane_mask`, one per cycle. Stalls if cache cannot accept. Never produces a writeback — the gather buffer emits it once all 32 slots are valid.
 - **`is_idle()`**: Reports whether the unit is currently holding a warp entry mid-coalescing/serialization.
 - **Snapshot helpers**: `active_warp()`, `current_entry()`, `is_coalesced()`, `serial_index()`.
 

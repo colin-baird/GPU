@@ -148,21 +148,19 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     ldst_ = std::make_unique<LdStUnit>(config.num_ldst_units, config.addr_gen_fifo_depth, stats);
 
     mem_if_ = std::make_unique<ExternalMemoryInterface>(config.external_memory_latency_cycles, stats);
+    gather_file_ = std::make_unique<LoadGatherBufferFile>(config.num_warps, stats);
     cache_ = std::make_unique<L1Cache>(config.l1_cache_size_bytes, config.cache_line_size_bytes,
                                        config.num_mshrs, config.write_buffer_depth,
-                                       *mem_if_, stats);
-    coalescing_ = std::make_unique<CoalescingUnit>(*ldst_, *cache_,
+                                       *mem_if_, *gather_file_, stats);
+    coalescing_ = std::make_unique<CoalescingUnit>(*ldst_, *cache_, *gather_file_,
                                                    config.cache_line_size_bytes, stats);
 
-    load_hit_wb_ = std::make_unique<QueuedWritebackSource>(ExecUnit::LDST);
-    load_fill_wb_ = std::make_unique<QueuedWritebackSource>(ExecUnit::LDST);
     wb_arbiter_ = std::make_unique<WritebackArbiter>(scoreboard_, stats);
     wb_arbiter_->add_source(alu_.get());
     wb_arbiter_->add_source(mul_.get());
     wb_arbiter_->add_source(div_.get());
     wb_arbiter_->add_source(tlookup_.get());
-    wb_arbiter_->add_source(load_hit_wb_.get());
-    wb_arbiter_->add_source(load_fill_wb_.get());
+    wb_arbiter_->add_source(gather_file_.get());
 
     panic_ = std::make_unique<PanicController>(config.num_warps, warps_.data(), func_model);
 
@@ -278,8 +276,7 @@ void TimingModel::discard_writeback_results() {
     discard(*mul_);
     discard(*div_);
     discard(*tlookup_);
-    discard(*load_hit_wb_);
-    discard(*load_fill_wb_);
+    discard(*gather_file_);
 }
 
 bool TimingModel::all_warps_done() const {
@@ -326,17 +323,9 @@ bool TimingModel::tick() {
         div_->evaluate();
         tlookup_->evaluate();
         ldst_->evaluate();
-        WritebackEntry coal_wb;
-        bool coal_wb_valid = false;
-        coalescing_->evaluate(coal_wb, coal_wb_valid);
+        coalescing_->evaluate();
         mem_if_->evaluate();
-
-        WritebackEntry fill_wb;
-        bool fill_valid = false;
-        cache_->handle_responses(fill_wb, fill_valid);
         cache_->drain_write_buffer();
-        (void)fill_valid;
-        (void)coal_wb_valid;
 
         discard_writeback_results();
 
@@ -348,6 +337,7 @@ bool TimingModel::tick() {
         coalescing_->commit();
         cache_->commit();
         mem_if_->commit();
+        gather_file_->commit();
 
         record_cycle_trace(false);
 
@@ -371,8 +361,7 @@ bool TimingModel::tick() {
         decode_->commit();
         scheduler_->reset();
         opcoll_->reset();
-        load_hit_wb_->reset();
-        load_fill_wb_->reset();
+        gather_file_->reset();
         wb_arbiter_->reset();
         record_cycle_trace(true);
         return true;
@@ -413,24 +402,15 @@ bool TimingModel::tick() {
     tlookup_->evaluate();
     ldst_->evaluate();
 
-    WritebackEntry coal_wb;
-    bool coal_wb_valid = false;
-    coalescing_->evaluate(coal_wb, coal_wb_valid);
+    // Coalescing drives HIT writes into the gather buffer. cache_->evaluate()
+    // at the top of tick already deposited any FILL into the gather buffer
+    // (FILL has port priority); HIT writes here stall one cycle if FILL won
+    // the port this cycle.
+    coalescing_->evaluate();
 
     mem_if_->evaluate();
 
-    WritebackEntry fill_wb;
-    bool fill_valid = false;
-    cache_->handle_responses(fill_wb, fill_valid);
-
     cache_->drain_write_buffer();
-
-    if (fill_valid) {
-        load_fill_wb_->enqueue(fill_wb);
-    }
-    if (coal_wb_valid) {
-        load_hit_wb_->enqueue(coal_wb);
-    }
 
     wb_arbiter_->evaluate();
 
@@ -447,6 +427,9 @@ bool TimingModel::tick() {
     cache_->commit();
     mem_if_->commit();
     wb_arbiter_->commit();
+    // The gather buffer's write-port scratch must be cleared after the
+    // arbiter observes has_result() for this cycle.
+    gather_file_->commit();
     scoreboard_.commit();
 
     if (trace_enabled_) {
@@ -650,13 +633,12 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
         set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
                  wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
     }
-    if (const auto* wb = load_hit_wb_->front_entry()) {
-        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
-                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
-    }
-    if (const auto* wb = load_fill_wb_->front_entry()) {
-        set_warp(wb->warp_id, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
-                 wb->pc, wb->raw_instruction, wb->source_unit, wb->dest_reg);
+    for (uint32_t w = 0; w < gather_file_->num_buffers(); ++w) {
+        const auto& buf = gather_file_->buffer(w);
+        if (buf.busy && buf.filled_count == WARP_SIZE) {
+            set_warp(w, WarpTraceState::WRITEBACK_WAIT, WarpRestReason::WAIT_WRITEBACK,
+                     buf.pc, buf.raw_instruction, ExecUnit::LDST, buf.dest_reg);
+        }
     }
 
     if (panic_->is_active() && !panic_->is_done()) {

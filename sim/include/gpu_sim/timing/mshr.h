@@ -23,8 +23,10 @@ struct MSHREntry {
     std::array<uint8_t, WARP_SIZE> mem_size{};
     // Loaded data result (filled by functional model already in trace)
     std::array<uint32_t, WARP_SIZE> results{};
-    // Serialized load writeback suppression: when true, MSHR fill skips writeback
-    bool suppress_writeback = false;
+    // For load misses: lanes of the owning warp waiting on this fill. The
+    // load's destination register lives in the warp's gather buffer; on fill
+    // the cache deposits these lanes into the gather buffer.
+    uint32_t lane_mask = 0;
 };
 
 class MSHRFile {

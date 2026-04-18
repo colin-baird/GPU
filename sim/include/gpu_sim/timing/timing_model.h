@@ -19,6 +19,7 @@
 #include "gpu_sim/timing/memory_interface.h"
 #include "gpu_sim/timing/cache.h"
 #include "gpu_sim/timing/coalescing_unit.h"
+#include "gpu_sim/timing/load_gather_buffer.h"
 #include "gpu_sim/timing/panic_controller.h"
 #include "gpu_sim/timing/timing_trace.h"
 #include <memory>
@@ -98,12 +99,11 @@ private:
 
     // Memory system
     std::unique_ptr<ExternalMemoryInterface> mem_if_;
+    std::unique_ptr<LoadGatherBufferFile> gather_file_;
     std::unique_ptr<L1Cache> cache_;
     std::unique_ptr<CoalescingUnit> coalescing_;
 
     // Writeback
-    std::unique_ptr<QueuedWritebackSource> load_hit_wb_;
-    std::unique_ptr<QueuedWritebackSource> load_fill_wb_;
     std::unique_ptr<WritebackArbiter> wb_arbiter_;
 
     // Panic
