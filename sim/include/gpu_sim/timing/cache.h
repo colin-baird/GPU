@@ -51,6 +51,26 @@ struct CacheFillTraceEvent {
     uint32_t raw_instruction = 0;
     // Length of the dependent chain (primary + secondaries) at fill time.
     uint32_t chain_length_at_fill = 0;
+    // True when complete_fill deferred because the target set was pinned by a
+    // different line. The fill stays in pending_fill_ and is retried next cycle.
+    bool deferred = false;
+};
+
+struct CacheSecondaryDrainTraceEvent {
+    bool valid = false;
+    uint32_t warp_id = 0;
+    uint32_t line_addr = 0;
+    bool is_store = false;
+    uint32_t pc = 0;
+    uint32_t raw_instruction = 0;
+};
+
+struct CachePinStallTraceEvent {
+    bool valid = false;
+    uint32_t warp_id = 0;
+    uint32_t requested_line_addr = 0;
+    uint32_t pinned_line_addr = 0;
+    bool is_store = false;
 };
 
 class L1Cache {
@@ -93,6 +113,10 @@ public:
     const MSHRFile& mshrs() const { return mshrs_; }
     const CacheMissTraceEvent& last_miss_event() const { return last_miss_event_; }
     const CacheFillTraceEvent& last_fill_event() const { return last_fill_event_; }
+    const CacheSecondaryDrainTraceEvent& last_drain_event() const { return last_drain_event_; }
+    const CachePinStallTraceEvent& last_pin_stall_event() const { return last_pin_stall_event_; }
+    uint32_t pinned_line_count() const;
+    uint32_t secondary_mshr_count() const;
 
 private:
     bool complete_fill(const MemoryResponse& resp);
@@ -117,6 +141,8 @@ private:
     PendingCacheFill pending_fill_;
     CacheMissTraceEvent last_miss_event_;
     CacheFillTraceEvent last_fill_event_;
+    CacheSecondaryDrainTraceEvent last_drain_event_;
+    CachePinStallTraceEvent last_pin_stall_event_;
     // Per-cycle gather-buffer extraction-port bookkeeping. The cache has one
     // line-to-gather-buffer extraction path per cycle shared by FILL, HIT, and
     // secondary-drain. Arbitration priority is FILL > secondary > HIT; the

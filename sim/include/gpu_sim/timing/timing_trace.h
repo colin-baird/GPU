@@ -88,6 +88,8 @@ struct CycleTraceSnapshot {
     bool ldst_busy = false;
     uint32_t ldst_fifo_depth = 0;
     uint32_t active_mshrs = 0;
+    uint32_t secondary_mshrs = 0;
+    uint32_t pinned_lines = 0;
     uint32_t write_buffer_depth = 0;
     bool panic_active = false;
 };

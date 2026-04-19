@@ -402,7 +402,7 @@ Top-level cycle stepper wiring everything together.
 - **`execution_units_drained()`**: Narrower check covering only operand collector, execution units, LD/ST FIFO, and writeback. Used for panic drain where in-flight memory requests are abandoned.
 - **Panic behavior detail:** once panic is active, cache/memory submodels may continue advancing internal timing state, but the timing model discards any would-be committed writebacks from those paths.
 - **`build_cycle_snapshot()`**: Classifies each warp after commit into one `WarpTraceState` plus optional `WarpRestReason`, preferring explicit ownership (`fetch`, `decode_pending`, `operand_collect`, `execute_*`, `addr_gen`, `ldst_fifo`, `coalescing`, `memory_wait`, `writeback_wait`, `panic_drain`) and falling back to committed scheduler diagnostics for active rest reasons.
-- **`record_cycle_trace()` / `emit_cycle_events()`**: Coalesce adjacent identical warp/hardware states into complete trace slices, emit per-cycle counters, and publish instant events (`issue`, `branch_redirect`, `writeback`, `panic_trigger`, `cache_miss_alloc`, `memory_response_complete`).
+- **`record_cycle_trace()` / `emit_cycle_events()`**: Coalesce adjacent identical warp/hardware states into complete trace slices, emit per-cycle counters (`active_warps`, unit occupancy, `ldst_fifo_depth`, `active_mshrs`, `secondary_mshrs`, `pinned_lines`, `write_buffer_depth`), and publish instant events (`issue`, `branch_redirect`, `writeback`, `panic_trigger`, `cache_miss_alloc` (with `merged_secondary`), `memory_response_complete` (with `chain_length_at_fill`, `deferred`), `secondary_drain`, `line_pin_stall`).
 - **`last_cycle_snapshot()`**: Returns the most recent committed `CycleTraceSnapshot` for tests.
 - **`trace_cycle()`**: Prints per-cycle pipeline state to stderr when `--trace` enabled.
 
@@ -410,7 +410,7 @@ Top-level cycle stepper wiring everything together.
 
 - Run the simulator with `--trace-file=/tmp/gpu_trace.json` to emit Chrome trace JSON while preserving the simulator's normal stdout/stderr reporting.
 - Open the file in Perfetto using its legacy Chrome-trace import path.
-- Warp tracks show coalesced state slices; hardware tracks show occupancy/state slices; counter tracks expose active warps, unit occupancy, LD/ST FIFO depth, active MSHRs, and write-buffer depth.
+- Warp tracks show coalesced state slices; hardware tracks show occupancy/state slices; counter tracks expose active warps, unit occupancy, LD/ST FIFO depth, active MSHRs, secondary MSHRs, pinned cache lines, and write-buffer depth.
 - Helper analysis queries live in [`/resources/perfetto_trace_queries.sql`](/Users/colinbaird/Projects/GPU/resources/perfetto_trace_queries.sql).
 
 ---

@@ -52,6 +52,11 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         stats_.line_pin_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
+        last_pin_stall_event_.valid = true;
+        last_pin_stall_event_.warp_id = warp_id;
+        last_pin_stall_event_.requested_line_addr = line_addr;
+        last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
+        last_pin_stall_event_.is_store = false;
         return false;
     }
 
@@ -129,6 +134,11 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         stats_.line_pin_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
+        last_pin_stall_event_.valid = true;
+        last_pin_stall_event_.warp_id = warp_id;
+        last_pin_stall_event_.requested_line_addr = line_addr;
+        last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
+        last_pin_stall_event_.is_store = true;
         return false;
     }
 
@@ -191,6 +201,14 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // will be retried next cycle.
     if (tags_[set].valid && tags_[set].pinned && tags_[set].tag != new_tag) {
         stats_.line_pin_stall_cycles++;
+        last_fill_event_.valid = true;
+        last_fill_event_.warp_id = mshr.warp_id;
+        last_fill_event_.line_addr = mshr.cache_line_addr;
+        last_fill_event_.is_store = mshr.is_store;
+        last_fill_event_.pc = mshr.pc;
+        last_fill_event_.raw_instruction = mshr.raw_instruction;
+        last_fill_event_.chain_length_at_fill = 0;
+        last_fill_event_.deferred = true;
         return false;
     }
 
@@ -304,6 +322,12 @@ void L1Cache::drain_secondary_chain_head() {
             }
             write_buffer_.push_back(line_addr);
             stats_.secondary_drain_cycles++;
+            last_drain_event_.valid = true;
+            last_drain_event_.warp_id = cand.warp_id;
+            last_drain_event_.line_addr = line_addr;
+            last_drain_event_.is_store = true;
+            last_drain_event_.pc = cand.pc;
+            last_drain_event_.raw_instruction = cand.raw_instruction;
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
@@ -323,6 +347,12 @@ void L1Cache::drain_secondary_chain_head() {
             }
             gather_extract_port_used_ = true;
             stats_.secondary_drain_cycles++;
+            last_drain_event_.valid = true;
+            last_drain_event_.warp_id = cand.warp_id;
+            last_drain_event_.line_addr = line_addr;
+            last_drain_event_.is_store = false;
+            last_drain_event_.pc = cand.pc;
+            last_drain_event_.raw_instruction = cand.raw_instruction;
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
@@ -346,6 +376,9 @@ void L1Cache::evaluate() {
     stall_reason_ = CacheStallReason::NONE;
     last_miss_event_.valid = false;
     last_fill_event_.valid = false;
+    last_fill_event_.deferred = false;
+    last_drain_event_.valid = false;
+    last_pin_stall_event_.valid = false;
     gather_extract_port_used_ = false;
 
     // FILL takes priority over HIT for the gather-buffer write port: run the
@@ -398,7 +431,27 @@ void L1Cache::reset() {
     pending_fill_.valid = false;
     last_miss_event_.valid = false;
     last_fill_event_.valid = false;
+    last_fill_event_.deferred = false;
+    last_drain_event_.valid = false;
+    last_pin_stall_event_.valid = false;
     gather_extract_port_used_ = false;
+}
+
+uint32_t L1Cache::pinned_line_count() const {
+    uint32_t count = 0;
+    for (const auto& t : tags_) {
+        if (t.valid && t.pinned) count++;
+    }
+    return count;
+}
+
+uint32_t L1Cache::secondary_mshr_count() const {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < mshrs_.num_entries(); ++i) {
+        const auto& m = mshrs_.at(i);
+        if (m.valid && m.is_secondary) count++;
+    }
+    return count;
 }
 
 } // namespace gpu_sim

@@ -471,6 +471,8 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     snapshot.ldst_busy = ldst_->busy();
     snapshot.ldst_fifo_depth = static_cast<uint32_t>(ldst_->fifo_entries().size());
     snapshot.active_mshrs = cache_->active_mshr_count();
+    snapshot.secondary_mshrs = cache_->secondary_mshr_count();
+    snapshot.pinned_lines = cache_->pinned_line_count();
     snapshot.write_buffer_depth = static_cast<uint32_t>(cache_->write_buffer_size());
     snapshot.panic_active = panic_->is_active();
 
@@ -758,6 +760,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
     if (snapshot.active_mshrs > 0 || snapshot.write_buffer_depth > 0 || cache_->pending_fill().valid) {
         TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
                        {"active_mshrs", static_cast<uint64_t>(snapshot.active_mshrs)},
+                       {"secondary_mshrs", static_cast<uint64_t>(snapshot.secondary_mshrs)},
+                       {"pinned_lines", static_cast<uint64_t>(snapshot.pinned_lines)},
                        {"write_buffer_depth", static_cast<uint64_t>(snapshot.write_buffer_depth)}};
         if (cache_->pending_fill().valid) {
             args.emplace_back("pending_fill_mshr",
@@ -823,6 +827,10 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                      {{"value", static_cast<uint64_t>(snapshot.ldst_fifo_depth)}});
     structured_trace_->write_counter("active_mshrs", snapshot.cycle, kCounterPid, 1,
                                      {{"value", static_cast<uint64_t>(snapshot.active_mshrs)}});
+    structured_trace_->write_counter("secondary_mshrs", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.secondary_mshrs)}});
+    structured_trace_->write_counter("pinned_lines", snapshot.cycle, kCounterPid, 1,
+                                     {{"value", static_cast<uint64_t>(snapshot.pinned_lines)}});
     structured_trace_->write_counter("write_buffer_depth", snapshot.cycle, kCounterPid, 1,
                                      {{"value", static_cast<uint64_t>(snapshot.write_buffer_depth)}});
 
@@ -871,6 +879,7 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                           miss.raw_instruction, ExecUnit::LDST, 0);
         args.emplace_back("line_addr", static_cast<uint64_t>(miss.line_addr));
         args.emplace_back("is_store", miss.is_store);
+        args.emplace_back("merged_secondary", miss.merged_secondary);
         structured_trace_->write_instant("cache_miss_alloc", snapshot.cycle, kHardwarePid,
                                          kCacheTid, args);
     }
@@ -881,8 +890,34 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                           fill.raw_instruction, ExecUnit::LDST, 0);
         args.emplace_back("line_addr", static_cast<uint64_t>(fill.line_addr));
         args.emplace_back("is_store", fill.is_store);
+        args.emplace_back("chain_length_at_fill",
+                          static_cast<uint64_t>(fill.chain_length_at_fill));
+        args.emplace_back("deferred", fill.deferred);
         structured_trace_->write_instant("memory_response_complete", snapshot.cycle,
                                          kHardwarePid, kCacheTid, args);
+    }
+
+    if (cache_->last_drain_event().valid) {
+        const auto& drain = cache_->last_drain_event();
+        TraceArgs args = instruction_args(snapshot.cycle, drain.warp_id, drain.pc,
+                                          drain.raw_instruction, ExecUnit::LDST, 0);
+        args.emplace_back("line_addr", static_cast<uint64_t>(drain.line_addr));
+        args.emplace_back("is_store", drain.is_store);
+        structured_trace_->write_instant("secondary_drain", snapshot.cycle, kHardwarePid,
+                                         kCacheTid, args);
+    }
+
+    if (cache_->last_pin_stall_event().valid) {
+        const auto& pin = cache_->last_pin_stall_event();
+        TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
+                       {"warp_id", static_cast<uint64_t>(pin.warp_id)},
+                       {"requested_line_addr",
+                        static_cast<uint64_t>(pin.requested_line_addr)},
+                       {"pinned_line_addr",
+                        static_cast<uint64_t>(pin.pinned_line_addr)},
+                       {"is_store", pin.is_store}};
+        structured_trace_->write_instant("line_pin_stall", snapshot.cycle, kHardwarePid,
+                                         kCacheTid, args);
     }
 }
 
