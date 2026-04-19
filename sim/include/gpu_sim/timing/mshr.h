@@ -9,6 +9,8 @@
 namespace gpu_sim {
 
 struct MSHREntry {
+    static constexpr uint32_t INVALID_MSHR = 0xFFFFFFFFu;
+
     bool valid = false;
     uint32_t cache_line_addr = 0;
     bool is_store = false;
@@ -27,6 +29,12 @@ struct MSHREntry {
     // load's destination register lives in the warp's gather buffer; on fill
     // the cache deposits these lanes into the gather buffer.
     uint32_t lane_mask = 0;
+    // Same-line merging: singly-linked dependent chain in program order.
+    // `next_in_chain` points to the next MSHR for the same line, or
+    // INVALID_MSHR at the tail. `is_secondary` is true for entries that
+    // inherit the primary's external fetch (no own submit_read).
+    uint32_t next_in_chain = INVALID_MSHR;
+    bool is_secondary = false;
 };
 
 class MSHRFile {
@@ -45,6 +53,11 @@ public:
 
     bool has_free() const;
     bool has_active() const;
+
+    // Linear scan over valid entries matching `line_addr`. Returns the MSHR
+    // index of the chain tail (the entry whose `next_in_chain == INVALID_MSHR`)
+    // for this line, or -1 if no MSHR currently holds this line.
+    int find_chain_tail(uint32_t line_addr) const;
     uint32_t num_entries() const { return num_entries_; }
 
     void reset();

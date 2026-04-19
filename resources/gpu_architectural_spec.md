@@ -384,12 +384,20 @@ Each MSHR entry tracks one outstanding cache line fetch from external memory (fo
 | `byte_offsets`    | 32 × offset bits     | Per-lane byte offset within the cache line (valid where `lane_mask` is set) |
 | `store_data`      | 32 × 32 bits         | Per-lane store data (store misses only)                                 |
 | `store_byte_en`   | 32 × 4 bits          | Per-lane byte enables (store misses only)                               |
+| `next_in_chain`   | log2(num_mshrs)+1    | Index of next dependent MSHR, or INVALID                                |
+| `is_secondary`    | 1                    | 0 = primary (owns external fetch), 1 = secondary (inherits primary's fetch) |
 
 For Phase 1 serialized loads, `lane_mask` always has exactly one bit set (the lane that issued this particular request); for coalesced loads, `lane_mask` reflects the lanes actually targeting this line.
 
-**Allocation:** On any cache miss (read or write), the cache allocates the first free MSHR. If no MSHR is free, the coalescing unit **stalls** (backpressure) until one becomes available.
+**Allocation:** On any cache miss (read or write), the cache allocates the first free MSHR. If no MSHR is free, the coalescing unit **stalls** (`MSHR_FULL`). If a new miss would install a tag into a set whose current tag is pinned, the coalescing unit stalls (`LINE_PINNED`). Secondary allocation does not introduce a new stall condition beyond `MSHR_FULL`.
 
-**No duplicate detection or merging:** If two warps (or two serialized requests from the same warp) miss on the same cache line, each gets its own MSHR and generates its own external memory request. This trades redundant bandwidth for simpler hardware (no CAM lookup across MSHRs). One consequence under serialized loads: 32 single-lane misses from one warp may occupy up to 32 MSHR slots' worth of traffic over the load's lifetime, even when several lanes happen to alias to the same line.
+**Same-line merging:** On any cache miss (read or write), before allocating an MSHR the cache linearly scans all valid MSHRs for a matching `cache_line_addr`. If no match is found, the new MSHR is a **primary**: allocated, submits an external memory read, starts a new dependent chain. If a match is found, the new MSHR is a **secondary**: allocated but does **not** issue an external read, and is linked to the tail of the matching line's chain. Secondary MSHRs inherit the external fetch of the primary. This eliminates redundant external bandwidth for same-line accesses and guarantees read-after-write correctness when a load to a line arrives while a prior store miss to that line is still outstanding.
+
+**Chain ordering:** Entries within a chain are ordered by allocation time. Because the LD/ST coalescing unit emits operations from a single warp in program order and the cache accepts one request per cycle, allocation order equals program order within a warp. Cross-warp entries on the same chain have no inter-warp ordering requirement; their relative order is determined by allocation order and is observationally consistent.
+
+**Chain representation:** Each MSHR entry carries `next_in_chain` (MSHR index or `INVALID`) and `is_secondary` (1 bit).
+
+**Implementation note (Phase 1):** Same-line detection is a linear scan over the MSHR file on every miss. At the default MSHR count (4) this is trivial. If the MSHR count grows (Phase 2 candidate: 16+), revisit with a per-set head pointer or per-line CAM.
 
 **Load miss fill path:** When external memory returns a cache line for a load miss (subject to the 1-line-per-cycle cache fill-port cap, §5.3):
 1. The line is installed in L1 at `cache_line_addr`.
@@ -405,6 +413,14 @@ For Phase 1 serialized loads, `lane_mask` always has exactly one bit set (the la
 4. The MSHR entry is freed.
 5. No register writeback or scoreboard update is needed (stores don't write to the register file).
 
+**Secondary MSHR wake path:** When a primary MSHR retires (its load or store fill path has completed), the cache pins the filled line (see below) and promotes `next_in_chain` to the new chain head. On each subsequent cycle, the head secondary is drained through its appropriate path:
+- **Load secondary:** extracts per-lane values from the resident line and writes them into the owning warp's gather buffer — the same extraction path as a read hit. On success, the MSHR is freed and `next_in_chain` is promoted.
+- **Store secondary:** merges `store_data`/`store_byte_en` into the resident line and pushes the updated line to the write buffer. If the write buffer is full, the drain stalls and the MSHR remains until space is available. On success, the MSHR is freed and `next_in_chain` is promoted.
+
+**Port model:** The cache can perform one line-to-gather-buffer extraction per cycle (populating any number of slots in that one target gather buffer in that cycle); this port is shared by the hit path, the fill path, and the secondary-load drain path. Arbitration priority: **FILL > secondary drain > HIT**. Losers retry next cycle. Gather-buffer writebacks use the shared writeback port between functional units (§5.2), not a cache-local resource, so secondary-load drains do not contend for writeback bandwidth beyond the normal gather-buffer writeback arbitration.
+
+**Line pinning:** A tag entry gains a `pinned` bit, set when a primary fill installs the line and that primary has a non-empty dependent chain. A miss that would install a different tag into a pinned set stalls with a new `LINE_PINNED` stall reason until the chain drains. The pin is cleared when the last secondary in the chain retires.
+
 #### 5.3.2 Write Buffer
 
 A FIFO buffer between the L1 cache and the external memory interface, absorbing write-through traffic so stores don't stall the pipeline waiting for external memory.
@@ -418,13 +434,14 @@ A FIFO buffer between the L1 cache and the external memory interface, absorbing 
 - On a store (hit or after write-allocate fill completes), the full updated cache line is pushed to the back of the write buffer. If the buffer is full, the store (and the coalescing unit) **stalls** until an entry drains.
 - The write buffer drains to external memory via the same memory interface (§5.6) as cache miss reads. Within a cycle, cache miss read submissions are processed before write buffer drain submissions. The external memory interface processes requests in FIFO order with no read/write priority distinction.
 - **No write coalescing:** each store generates its own buffer entry. Multiple stores to the same cache line are not merged. (Phase 2 optimization candidate.)
+- Write-buffer-full stalls also apply to secondary store drains; a stalled secondary drain keeps its line pinned.
 
 ### 5.4 Memory Ordering
 
 - **Stall-on-use:** a warp continues executing after issuing a load; it stalls only when a subsequent instruction reads the load's destination register before data arrives.
 - The scoreboard marks load destinations as pending on issue and clears them when the MSHR fill completes and data is written to the register file.
 - No store buffer or store-to-load forwarding. Stores update L1 (if hit) and write through to external memory. Within a single warp, program order ensures correctness.
-- **Read-after-write correctness:** the write-allocate policy ensures that stores always install a cache line in L1 (fetching it first on a miss). A subsequent load to the same address will hit in L1 and see the updated value. No RAW hazard exists across cache misses.
+- **Read-after-write correctness:** Same-line merging (§5.3.1) guarantees that a load to a cache line with an outstanding store miss is serialized behind that store. The primary store-miss MSHR fetches the line, merges the store data, and pushes the write-through; dependent load secondaries then extract lane values from the resident, updated line. No RAW hazard exists for same-line traffic regardless of whether the load finds the line already resident, finds a tag becoming valid during a fill, or arrives during an in-flight miss.
 
 ### 5.5 Instruction Memory
 
@@ -654,7 +671,7 @@ All architectural questions have been resolved. This appendix records the resolu
 - ~~VDOT8 encoding details~~ → Resolved: R-type in custom-0, funct7=0000000, funct3=000 (§2.2).
 - ~~DSP slice packing for VDOT8~~ → Moved to FPGA Implementation Notes (physical mapping detail, not architecture).
 - ~~DMA engine details~~ → Resolved: simple state machine, 32-byte fixed bursts, no FIFO, exclusive memory access before kernel launch (§6.7).
-- ~~Read-after-write across cache misses~~ → Resolved: changed to write-allocate policy; store misses fetch the line via MSHR, update L1, then write through. RAW hazard eliminated (§5.3, §5.4).
+- ~~Read-after-write across cache misses~~ → Resolved: same-line MSHR merging (§5.3.1) serializes loads behind outstanding store misses on the same line. Combined with write-allocate, this eliminates the RAW hazard across cache misses (§5.3, §5.4).
 - ~~EBREAK / panic behavior~~ → Resolved: EBREAK triggers whole-SM panic with diagnostic latch (warp, lane, PC, cause). Software convention: r31 holds cause code. Divide-by-zero follows stock RV32M (no panic). Panic wire extensible for future hardware sources (§4.8).
 
 ---

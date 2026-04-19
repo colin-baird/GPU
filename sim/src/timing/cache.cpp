@@ -1,4 +1,5 @@
 #include "gpu_sim/timing/cache.h"
+#include <cassert>
 
 namespace gpu_sim {
 
@@ -40,10 +41,20 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         }
         stats_.cache_hits++;
         stats_.load_hits++;
+        gather_extract_port_used_ = true;
         return true;
     }
 
-    // Cache miss
+    // Cache miss: check for line-pin stall before accepting the request. A
+    // pin stall means this request has not been accepted, so the miss/load-miss
+    // counters must not be incremented here.
+    if (tags_[set].valid && tags_[set].tag != tag && tags_[set].pinned) {
+        stats_.line_pin_stall_cycles++;
+        stalled_ = true;
+        stall_reason_ = CacheStallReason::LINE_PINNED;
+        return false;
+    }
+
     stats_.cache_misses++;
     stats_.load_misses++;
 
@@ -53,6 +64,8 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         stall_reason_ = CacheStallReason::MSHR_FULL;
         return false;
     }
+
+    int tail_idx = mshrs_.find_chain_tail(line_addr);
 
     MSHREntry entry;
     entry.cache_line_addr = line_addr;
@@ -64,15 +77,27 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     entry.issue_cycle = issue_cycle;
     entry.results = results;
     entry.lane_mask = lane_mask;
+    entry.is_secondary = (tail_idx >= 0);
 
     int mshr_idx = mshrs_.allocate(entry);
-    mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
+    assert(mshr_idx >= 0);
+
     last_miss_event_.valid = true;
     last_miss_event_.warp_id = warp_id;
     last_miss_event_.line_addr = line_addr;
     last_miss_event_.is_store = false;
     last_miss_event_.pc = pc;
     last_miss_event_.raw_instruction = raw_instruction;
+    last_miss_event_.merged_secondary = (tail_idx >= 0);
+
+    if (tail_idx >= 0) {
+        // Secondary: inherit the primary's external fetch. Link to the tail.
+        mshrs_.at(static_cast<uint32_t>(tail_idx)).next_in_chain =
+            static_cast<uint32_t>(mshr_idx);
+        stats_.mshr_merged_loads++;
+    } else {
+        mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
+    }
 
     return true;  // Request accepted (but result will come later)
 }
@@ -98,7 +123,15 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         return true;
     }
 
-    // Store miss (write-allocate): need to fetch line first
+    // Store miss (write-allocate): pin check first. Non-acceptance path must
+    // not bump the miss counters.
+    if (tags_[set].valid && tags_[set].tag != tag && tags_[set].pinned) {
+        stats_.line_pin_stall_cycles++;
+        stalled_ = true;
+        stall_reason_ = CacheStallReason::LINE_PINNED;
+        return false;
+    }
+
     stats_.cache_misses++;
     stats_.store_misses++;
 
@@ -109,6 +142,8 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         return false;
     }
 
+    int tail_idx = mshrs_.find_chain_tail(line_addr);
+
     MSHREntry entry;
     entry.cache_line_addr = line_addr;
     entry.is_store = true;
@@ -117,25 +152,54 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     entry.pc = pc;
     entry.raw_instruction = raw_instruction;
     entry.issue_cycle = issue_cycle;
+    entry.is_secondary = (tail_idx >= 0);
 
     int mshr_idx = mshrs_.allocate(entry);
-    mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
+    assert(mshr_idx >= 0);
+
     last_miss_event_.valid = true;
     last_miss_event_.warp_id = warp_id;
     last_miss_event_.line_addr = line_addr;
     last_miss_event_.is_store = true;
     last_miss_event_.pc = pc;
     last_miss_event_.raw_instruction = raw_instruction;
+    last_miss_event_.merged_secondary = (tail_idx >= 0);
+
+    if (tail_idx >= 0) {
+        mshrs_.at(static_cast<uint32_t>(tail_idx)).next_in_chain =
+            static_cast<uint32_t>(mshr_idx);
+        stats_.mshr_merged_stores++;
+    } else {
+        mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
+    }
 
     return true;
 }
 
 bool L1Cache::complete_fill(const MemoryResponse& resp) {
     auto& mshr = mshrs_.at(resp.mshr_id);
+    assert(!mshr.is_secondary && "fill response must complete a primary MSHR");
 
     // Install line in cache
     uint32_t addr = mshr.cache_line_addr * line_size_;
     uint32_t set = get_set(addr);
+    uint32_t new_tag = get_tag(addr);
+
+    // If the target set is currently pinned for a different tag (another
+    // line's secondaries are still draining), we cannot evict it. Defer this
+    // fill until the pin is released. The fill stays in `pending_fill_` and
+    // will be retried next cycle.
+    if (tags_[set].valid && tags_[set].pinned && tags_[set].tag != new_tag) {
+        stats_.line_pin_stall_cycles++;
+        return false;
+    }
+
+    // Count the full chain length at fill time for tracing.
+    uint32_t chain_length = 1;
+    for (uint32_t nxt = mshr.next_in_chain; nxt != MSHREntry::INVALID_MSHR;
+         nxt = mshrs_.at(nxt).next_in_chain) {
+        chain_length++;
+    }
 
     if (mshr.is_store) {
         if (write_buffer_.size() >= write_buffer_depth_) {
@@ -147,17 +211,20 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
 
         tags_[set].valid = true;
         tags_[set].tag = get_tag(addr);
+        tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
         write_buffer_.push_back(mshr.cache_line_addr);
     } else {
         // Load miss fill: deposit lane values into the owning warp's gather
-        // buffer. FILL has priority over a same-cycle HIT, so a busy port here
-        // would indicate two FILLs to the same buffer in one cycle, which
-        // cannot happen (one outstanding load per warp).
+        // buffer. FILL wins its per-buffer port over HIT; the cache-level
+        // extraction port is also marked used so any secondary-drain this
+        // cycle defers.
         tags_[set].valid = true;
         tags_[set].tag = get_tag(addr);
+        tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
         bool ok = gather_file_.try_write(mshr.warp_id, mshr.lane_mask, mshr.results,
                                          LoadGatherBufferFile::GatherWriteSource::FILL);
         (void)ok;
+        gather_extract_port_used_ = true;
     }
 
     last_fill_event_.valid = true;
@@ -166,6 +233,7 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     last_fill_event_.is_store = mshr.is_store;
     last_fill_event_.pc = mshr.pc;
     last_fill_event_.raw_instruction = mshr.raw_instruction;
+    last_fill_event_.chain_length_at_fill = chain_length;
     mshrs_.free(resp.mshr_id);
     return true;
 }
@@ -195,6 +263,76 @@ void L1Cache::handle_responses() {
     }
 }
 
+void L1Cache::drain_secondary_chain_head() {
+    // Find the first valid secondary MSHR that is the chain head for its line
+    // (i.e., no other valid same-line MSHR points to it via `next_in_chain`).
+    // The head resides on a pinned, matching tag (the primary installed it).
+    const uint32_t n = mshrs_.num_entries();
+    for (uint32_t i = 0; i < n; ++i) {
+        auto& cand = mshrs_.at(i);
+        if (!cand.valid || !cand.is_secondary) continue;
+
+        uint32_t line_addr = cand.cache_line_addr;
+        uint32_t addr = line_addr * line_size_;
+        uint32_t set = get_set(addr);
+        uint32_t tag = get_tag(addr);
+        if (!tags_[set].valid || tags_[set].tag != tag || !tags_[set].pinned) {
+            continue;
+        }
+
+        // Confirm this secondary is the chain head: no other valid same-line
+        // MSHR references `i` in `next_in_chain`.
+        bool is_head = true;
+        for (uint32_t j = 0; j < n; ++j) {
+            if (j == i) continue;
+            const auto& other = mshrs_.at(j);
+            if (!other.valid) continue;
+            if (other.cache_line_addr != line_addr) continue;
+            if (other.next_in_chain == i) {
+                is_head = false;
+                break;
+            }
+        }
+        if (!is_head) continue;
+
+        // Drain exactly one per cycle.
+        if (cand.is_store) {
+            if (write_buffer_.size() >= write_buffer_depth_) {
+                // Normal write-buffer backpressure; leave pinned, retry next
+                // cycle. No stall-counter bump.
+                return;
+            }
+            write_buffer_.push_back(line_addr);
+            stats_.secondary_drain_cycles++;
+            uint32_t next = cand.next_in_chain;
+            mshrs_.free(i);
+            if (next == MSHREntry::INVALID_MSHR) {
+                tags_[set].pinned = false;
+            }
+            return;
+        } else {
+            // Load secondary: share the cache extraction port with FILL/HIT.
+            if (gather_extract_port_used_) {
+                return;
+            }
+            bool ok = gather_file_.try_write(cand.warp_id, cand.lane_mask, cand.results,
+                                             LoadGatherBufferFile::GatherWriteSource::FILL);
+            if (!ok) {
+                // Per-buffer port already used; defer.
+                return;
+            }
+            gather_extract_port_used_ = true;
+            stats_.secondary_drain_cycles++;
+            uint32_t next = cand.next_in_chain;
+            mshrs_.free(i);
+            if (next == MSHREntry::INVALID_MSHR) {
+                tags_[set].pinned = false;
+            }
+            return;
+        }
+    }
+}
+
 void L1Cache::drain_write_buffer() {
     // Drain one entry per cycle if external memory can accept
     if (!write_buffer_.empty()) {
@@ -208,11 +346,17 @@ void L1Cache::evaluate() {
     stall_reason_ = CacheStallReason::NONE;
     last_miss_event_.valid = false;
     last_fill_event_.valid = false;
+    gather_extract_port_used_ = false;
 
     // FILL takes priority over HIT for the gather-buffer write port: run the
     // fill path first so a same-cycle hit-path write sees port_used_this_cycle
     // set and stalls one cycle.
     handle_responses();
+
+    // Secondary drain runs after FILL (priority: FILL > secondary > HIT). A
+    // same-cycle HIT from process_load() called later will see HIT still
+    // possible only if neither FILL nor secondary drain used the port.
+    drain_secondary_chain_head();
 }
 
 void L1Cache::commit() {}
@@ -245,6 +389,7 @@ void L1Cache::reset() {
     for (auto& t : tags_) {
         t.valid = false;
         t.tag = 0;
+        t.pinned = false;
     }
     mshrs_.reset();
     write_buffer_.clear();
@@ -253,6 +398,7 @@ void L1Cache::reset() {
     pending_fill_.valid = false;
     last_miss_event_.valid = false;
     last_fill_event_.valid = false;
+    gather_extract_port_used_ = false;
 }
 
 } // namespace gpu_sim

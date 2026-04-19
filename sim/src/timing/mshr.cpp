@@ -36,9 +36,21 @@ bool MSHRFile::has_active() const {
     return false;
 }
 
+int MSHRFile::find_chain_tail(uint32_t line_addr) const {
+    for (uint32_t i = 0; i < num_entries_; ++i) {
+        const auto& e = entries_[i];
+        if (!e.valid) continue;
+        if (e.cache_line_addr != line_addr) continue;
+        if (e.next_in_chain == MSHREntry::INVALID_MSHR) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 void MSHRFile::reset() {
     for (auto& e : entries_) {
-        e.valid = false;
+        e = MSHREntry{};
     }
 }
 

@@ -323,13 +323,14 @@ Direct-mapped L1 data cache with MSHRs and write buffer.
 
 This timing model intentionally tracks cache residency, misses, backpressure, and writeback-source timing without storing full cache-line payloads. Load values are replayed from the functional-model trace; the cache exists here to model performance behavior, not data correctness.
 
-- **Enum `CacheStallReason`**: `NONE`, `MSHR_FULL`, `WRITE_BUFFER_FULL`.
+- **Enum `CacheStallReason`**: `NONE`, `MSHR_FULL`, `WRITE_BUFFER_FULL`, `LINE_PINNED`.
 - **`L1Cache(cache_size, line_size, num_mshrs, write_buffer_depth, mem_if_ref, gather_file_ref, stats_ref)`**
 - **`process_load(addr, warp_id, lane_mask, results, issue_cycle, pc, raw_instruction)`**: Hit -> attempts to write the lanes selected by `lane_mask` into the owning warp's gather buffer; returns false when the gather-buffer write port was already used this cycle (caller must retry). Miss -> allocates an MSHR recording `lane_mask`, submits the read, and records a miss-allocation trace event. Returns false if MSHR full (stall). Does not produce a writeback directly.
 - **`process_store(line_addr, warp_id, issue_cycle, pc, raw_instruction)`**: Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate) with trace metadata. Returns false if MSHR or write buffer full.
 - **`handle_responses()`**: Processes at most one readable cache-line fill per cycle. For load fills, deposits the lane values into the owning warp's gather buffer via the FILL write-port path (FILL wins a same-cycle HIT). For store fills, pushes the line into the write buffer. Responses are buffered internally if a store fill is blocked by the write buffer.
 - **`drain_write_buffer()`**: Submits one write-buffer entry per cycle to external memory.
-- **`evaluate()`**: Clears one-cycle cache backpressure and runs `handle_responses()` so FILL writes to the gather buffer occur before any HIT writes later in the cycle.
+- **`evaluate()`**: Clears one-cycle cache backpressure, resets the per-cycle gather-extract-port flag, runs `handle_responses()` so FILL writes to the gather buffer occur before any HIT writes later in the cycle, then runs `drain_secondary_chain_head()` (priority FILL > secondary > HIT).
+- **Same-line MSHR merging**: Each `MSHREntry` carries `next_in_chain` and `is_secondary`. On a miss, the cache scans MSHRs for a same-line entry; if found, the new MSHR is linked as a secondary and does not submit an external read. A primary fill installs the line, sets the tag's `pinned` bit when a chain follows, and subsequent cycles drain the chain head one per cycle via `drain_secondary_chain_head()` (loads extract into the owning warp's gather buffer; stores push to the write buffer). The pin clears when the last secondary retires. Pin conflicts (different-tag miss into a pinned set) stall with `LINE_PINNED`.
 - **`is_idle()`**: True only when there are no live MSHRs, queued write-through entries, or pending fills.
 - **Snapshot helpers**: `stall_reason()`, `active_mshr_count()`, `write_buffer_size()`, `pending_fill()`, `mshrs()`, `last_miss_event()`, `last_fill_event()`.
 - **Indexing**: `set = (addr / line_size) % num_sets`, `tag = addr / line_size / num_sets`.
@@ -349,8 +350,8 @@ Per-resident-warp load gather buffers — the sole assembly point for load data 
 
 Miss Status Holding Registers.
 
-- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`), `lane_mask` (for load misses: lanes of the owning warp waiting on this fill; the cache deposits these lanes into the warp's gather buffer on fill).
-- **Class `MSHRFile`**: Vector of entries. `allocate(entry)` -> index or -1. `free(index)`. `has_free()`. `has_active()`. `at(index)`.
+- **Struct `MSHREntry`**: `valid`, `cache_line_addr`, `is_store`, `warp_id`, `dest_reg`, `pc`, `raw_instruction`, `issue_cycle`, per-lane arrays (`mem_addresses`, `store_data`, `mem_size`, `results`), `lane_mask` (for load misses: lanes of the owning warp waiting on this fill; the cache deposits these lanes into the warp's gather buffer on fill), plus same-line merging fields `next_in_chain` (index or `INVALID_MSHR`) and `is_secondary`.
+- **Class `MSHRFile`**: Vector of entries. `allocate(entry)` -> index or -1. `free(index)`. `has_free()`. `has_active()`. `at(index)`. `find_chain_tail(line_addr)` -> index of the chain tail for `line_addr` (entry with `next_in_chain == INVALID_MSHR`) or -1 if no MSHR currently holds this line.
 
 ### `include/gpu_sim/timing/coalescing_unit.h` -- `src/timing/coalescing_unit.cpp`
 

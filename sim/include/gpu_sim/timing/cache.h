@@ -14,6 +14,9 @@ namespace gpu_sim {
 struct CacheTag {
     bool valid = false;
     uint32_t tag = 0;
+    // Set when a primary fill installs a line and has a non-empty dependent
+    // chain. A different-tag miss into a pinned set stalls with LINE_PINNED.
+    bool pinned = false;
 };
 
 struct PendingCacheFill {
@@ -24,7 +27,8 @@ struct PendingCacheFill {
 enum class CacheStallReason {
     NONE,
     MSHR_FULL,
-    WRITE_BUFFER_FULL
+    WRITE_BUFFER_FULL,
+    LINE_PINNED
 };
 
 struct CacheMissTraceEvent {
@@ -34,6 +38,8 @@ struct CacheMissTraceEvent {
     bool is_store = false;
     uint32_t pc = 0;
     uint32_t raw_instruction = 0;
+    // True when this miss was allocated as a secondary MSHR (same-line merge).
+    bool merged_secondary = false;
 };
 
 struct CacheFillTraceEvent {
@@ -43,6 +49,8 @@ struct CacheFillTraceEvent {
     bool is_store = false;
     uint32_t pc = 0;
     uint32_t raw_instruction = 0;
+    // Length of the dependent chain (primary + secondaries) at fill time.
+    uint32_t chain_length_at_fill = 0;
 };
 
 class L1Cache {
@@ -88,6 +96,7 @@ public:
 
 private:
     bool complete_fill(const MemoryResponse& resp);
+    void drain_secondary_chain_head();
     uint32_t get_set(uint32_t addr) const;
     uint32_t get_tag(uint32_t addr) const;
     uint32_t get_line_addr(uint32_t addr) const;
@@ -108,6 +117,13 @@ private:
     PendingCacheFill pending_fill_;
     CacheMissTraceEvent last_miss_event_;
     CacheFillTraceEvent last_fill_event_;
+    // Per-cycle gather-buffer extraction-port bookkeeping. The cache has one
+    // line-to-gather-buffer extraction path per cycle shared by FILL, HIT, and
+    // secondary-drain. Arbitration priority is FILL > secondary > HIT; the
+    // gather file's own per-buffer port flag enforces FILL > HIT already, so
+    // this flag exists specifically to gate the secondary-drain path so it
+    // never competes with a FILL or HIT that already ran this cycle.
+    bool gather_extract_port_used_ = false;
 };
 
 } // namespace gpu_sim

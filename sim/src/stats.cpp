@@ -73,6 +73,10 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "External memory writes:    " << external_memory_writes << "\n";
     out << "Gather buffer stall:       " << gather_buffer_stall_cycles << "\n";
     out << "Gather buffer port conf.:  " << gather_buffer_port_conflict_cycles << "\n";
+    out << "MSHR merged loads:         " << mshr_merged_loads << "\n";
+    out << "MSHR merged stores:        " << mshr_merged_stores << "\n";
+    out << "Line pin stall cycles:     " << line_pin_stall_cycles << "\n";
+    out << "Secondary drain cycles:    " << secondary_drain_cycles << "\n";
     if (total_loads_completed > 0) {
         out << "Avg load latency:          " << std::fixed << std::setprecision(1)
             << static_cast<double>(total_load_latency) / static_cast<double>(total_loads_completed)
@@ -135,6 +139,10 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"total_loads_completed\": " << total_loads_completed << ",\n";
     out << "  \"gather_buffer_stall_cycles\": " << gather_buffer_stall_cycles << ",\n";
     out << "  \"gather_buffer_port_conflict_cycles\": " << gather_buffer_port_conflict_cycles << ",\n";
+    out << "  \"mshr_merged_loads\": " << mshr_merged_loads << ",\n";
+    out << "  \"mshr_merged_stores\": " << mshr_merged_stores << ",\n";
+    out << "  \"line_pin_stall_cycles\": " << line_pin_stall_cycles << ",\n";
+    out << "  \"secondary_drain_cycles\": " << secondary_drain_cycles << ",\n";
 
     // Writeback
     out << "  \"writeback_conflicts\": " << writeback_conflicts << ",\n";

@@ -61,6 +61,10 @@ struct Stats {
     uint64_t total_loads_completed = 0;
     uint64_t gather_buffer_stall_cycles = 0;
     uint64_t gather_buffer_port_conflict_cycles = 0;
+    uint64_t mshr_merged_loads = 0;
+    uint64_t mshr_merged_stores = 0;
+    uint64_t line_pin_stall_cycles = 0;
+    uint64_t secondary_drain_cycles = 0;
 
     // Writeback
     uint64_t writeback_conflicts = 0;
