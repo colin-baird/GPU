@@ -579,3 +579,68 @@ TEST_CASE("MSHR merging: primary and secondary loads produce distinct writebacks
     REQUIRE(wbA.dest_reg != wbB.dest_reg);
     REQUIRE(wbA.warp_id != wbB.warp_id);
 }
+
+// ----------------------------------------------------------------------------
+// Case 11: Same-warp RAW timing -- the secondary load's writeback must not be
+//          observable before the primary's external fill completes, even
+//          though the functional model already has the value in `results` at
+//          issue time. This probes the property that an in-order, same-warp
+//          store-then-load to the same line incurs the full miss latency of
+//          the primary, rather than being shortcut by the pre-populated
+//          functional result leaking into the gather buffer early.
+// ----------------------------------------------------------------------------
+TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency",
+          "[cache][mshr][merging][timing][raw]") {
+    MergeFixture f;
+    auto load_results = make_results(5000);
+
+    // Cycle 0: store miss (primary) and subsequent load (secondary), same warp.
+    REQUIRE(f.cache.process_store(/*line_addr=*/0, /*warp=*/0, /*issue_cycle=*/1, 0, 0));
+    REQUIRE(f.cache.active_mshr_count() == 1);
+    REQUIRE(f.stats.external_memory_reads == 1);
+
+    f.claim(/*warp=*/0, /*dest_reg=*/7);
+    REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/0, FULL_MASK, load_results,
+                                 /*issue_cycle=*/2, 0, 0));
+    REQUIRE(f.stats.mshr_merged_loads == 1);
+    REQUIRE(f.stats.external_memory_reads == 1); // no second external fetch
+    REQUIRE(f.cache.active_mshr_count() == 2);
+    REQUIRE_FALSE(f.gather_file.has_result());
+
+    // Cycles 1 .. MEM_LATENCY-1: fill still in flight. Secondary must not
+    // drain, no writeback must appear, tag must not become pinned, and no
+    // fill event must be observed. If the functional value leaked through
+    // the gather buffer early, one of these would fail.
+    for (uint32_t k = 1; k < MEM_LATENCY; ++k) {
+        f.mem_if.evaluate();
+        f.cache.evaluate();
+        REQUIRE_FALSE(f.cache.last_fill_event().valid);
+        REQUIRE_FALSE(f.gather_file.has_result());
+        REQUIRE(f.cache.active_mshr_count() == 2);
+        REQUIRE(f.stats.secondary_drain_cycles == 0);
+        f.end_cycle();
+    }
+
+    // Cycle MEM_LATENCY: fill response now ready. One cache.evaluate() retires
+    // the store primary (WB push) and drains the load secondary in the same
+    // call (store fill does not claim the gather-extract port). The writeback
+    // appears this cycle -- not before.
+    f.mem_if.evaluate();
+    f.cache.evaluate();
+    REQUIRE(f.cache.last_fill_event().valid);
+    REQUIRE(f.cache.last_fill_event().is_store);
+    REQUIRE(f.cache.last_fill_event().chain_length_at_fill == 2);
+    REQUIRE(f.stats.secondary_drain_cycles == 1);
+    REQUIRE(f.cache.active_mshr_count() == 0);
+
+    REQUIRE(f.gather_file.has_result());
+    WritebackEntry wb = f.gather_file.consume_result();
+    REQUIRE(wb.warp_id == 0);
+    REQUIRE(wb.dest_reg == 7);
+    REQUIRE(wb.values[0] == 5000);
+    REQUIRE(wb.values[31] == 5000 + 31);
+    f.end_cycle();
+
+    REQUIRE_FALSE(f.gather_file.has_result());
+    REQUIRE(f.stats.external_memory_reads == 1);
+}
