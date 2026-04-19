@@ -35,6 +35,7 @@ void WarpScheduler::evaluate() {
 
     bool issued = false;
     bool any_buffer_empty = false;
+    bool any_active = false;
     uint32_t selected_warp = 0;
     BufferEntry selected_entry{};
     bool has_selected_entry = false;
@@ -46,6 +47,7 @@ void WarpScheduler::evaluate() {
             next_diagnostics_[w] = SchedulerIssueOutcome::INACTIVE;
             continue;
         }
+        any_active = true;
 
         if (warps_[w].instr_buffer.is_empty()) {
             stats_.warp_stall_buffer_empty[w]++;
@@ -92,7 +94,10 @@ void WarpScheduler::evaluate() {
 
     if (!issued) {
         stats_.scheduler_idle_cycles++;
-        if (any_buffer_empty) stats_.scheduler_frontend_stall_cycles++;
+        if (any_buffer_empty)
+            stats_.scheduler_frontend_stall_cycles++;
+        else if (any_active)
+            stats_.scheduler_stall_backend_cycles++;
     } else if (has_selected_entry) {
         IssueOutput out;
         out.decoded = selected_entry.decoded;

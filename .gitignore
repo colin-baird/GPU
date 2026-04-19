@@ -24,5 +24,8 @@
 __pycache__/
 *.pyc
 
+# Benchmark history database
+tools/.bench_history.db
+
 # Office temp/lock files
 ~$*

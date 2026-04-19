@@ -36,6 +36,8 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
   include/runner/                # Runner headers
 /tests/                        # Backend-agnostic test suites
   riscv-isa/                     # Official RISC-V ISA compliance tests
+/tools/                        # Developer tooling
+  bench_compare.py               # A/B benchmark comparison and history tracking
 /resources/
   gpu_architectural_spec.md      # Full architectural spec (the source of truth)
   riscv_card.md                  # RISC-V ISA reference card
@@ -66,7 +68,7 @@ Agent prompts live in `.claude/agents/`. Each agent has a focused responsibility
 | Agent | File | Responsibility |
 |-------|------|---------------|
 | **Implementation** | [`.claude/agents/implement.md`](.claude/agents/implement.md) | Writes code and updates the architectural spec. Does not test or benchmark. |
-| **Validation** | [`.claude/agents/validate.md`](.claude/agents/validate.md) | Builds, runs regression suite, runs benchmarks. Reports structured results. Does not modify code. |
+| **Validation** | [`.claude/agents/validate.md`](.claude/agents/validate.md) | Builds, runs regression suite, runs benchmarks, runs A/B benchmark comparisons. Reports structured results. Does not modify code. |
 | **Test Authoring** | [`.claude/agents/test-author.md`](.claude/agents/test-author.md) | Writes targeted Catch2 tests adversarially against the spec. Does not modify implementation code. |
 
 ## Orchestration Model
@@ -96,7 +98,7 @@ User suggests change
          ▼
 ┌─────────────────┐
 │  Validation      │  ← validate.md agent (benchmark phase)
-│  Agent           │  Runs benchmarks, reports numbers
+│  Agent           │  Runs A/B benchmark comparison against baseline
 └────────┬────────┘
          │
          ▼
@@ -167,7 +169,7 @@ Fix loop (max 2 iterations):
 
 ### Decision criteria
 
-- **"Major performance win"**: measurable IPC improvement on a representative workload, or reduction in a critical-path latency. The orchestrator evaluates this from the validation agent's benchmark report.
+- **"Major performance win"**: measurable IPC improvement on a representative workload, or reduction in a critical-path latency. The orchestrator evaluates this from the validation agent's A/B benchmark comparison report (produced by `tools/bench_compare.py`).
 - **Regression hard gate**: if any regression test fails, the workflow stops. The implementation agent fixes the issue or the change is reverted. Benchmarking does not proceed with broken regressions.
 - **Session timeout**: if the user is consulted and does not respond within the session, the default disposition is to shelve (revert or stash).
 - **Fix loop scope**: the implementation agent in a fix loop may only modify the specific code path identified as buggy. It must not refactor surrounding code, add new features, or expand scope beyond the failing test.
@@ -274,3 +276,4 @@ These apply to all agents and the orchestrator:
 - Strictly adhere to the coding standard documentation (`/resources/cpp_coding_standard.md`).
 - When creating new sources of build artifacts, update the global `.gitignore` to exclude them from tracking.
 - Use `bash ./tests/run_workload_benchmarks.sh --build-dir build` as the canonical workload benchmark entry point. Benchmark automation and validation should consume its `RESULT` and `SUMMARY` lines rather than scraping individual benchmark binaries directly.
+- Use `python3 tools/bench_compare.py --baseline <git-ref>` for A/B benchmark comparisons when evaluating architectural changes. The tool builds the baseline in a temporary worktree, runs all benchmarks, computes deltas, and stores results in a local SQLite database for trend analysis. All six benchmark binaries support `--json` for structured output. Key flags: `--bench <name>` to filter, `--threshold <pct>` to control highlighting, `--history <bench>` to view trends.

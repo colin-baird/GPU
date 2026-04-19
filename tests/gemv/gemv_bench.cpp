@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cstdint>
 #include <exception>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,6 +27,7 @@ struct Options {
     uint32_t num_warps = MAX_WARPS;
     uint32_t memory_latency = 100;
     uint64_t max_cycles = 2000000;
+    bool json_output = false;
 };
 
 struct GemvCase {
@@ -74,6 +77,10 @@ Options parse_options(int argc, char* argv[]) {
         }
         if (arg.rfind("--max-cycles=", 0) == 0) {
             options.max_cycles = parse_u64(arg.substr(13), "max-cycles");
+            continue;
+        }
+        if (arg == "--json") {
+            options.json_output = true;
             continue;
         }
         throw std::invalid_argument("unknown argument: " + arg);
@@ -254,8 +261,12 @@ void print_summary(const Options& options, uint32_t rows, const TimingModel& tim
     std::cout << "  external memory latency: " << options.memory_latency << " cycles\n";
     std::cout << "  cycles: " << timing.cycle_count() << "\n";
     std::cout << "  issued instructions: " << stats.total_instructions_issued << "\n";
-    std::cout << "  fetch skips: " << stats.fetch_skip_count << "\n";
-    std::cout << "  frontend stall cycles: " << stats.scheduler_frontend_stall_cycles << "\n";
+    std::cout << "  fetch skips: " << stats.fetch_skip_count
+              << " (backpressure=" << stats.fetch_skip_backpressure
+              << " all_full=" << stats.fetch_skip_all_full << ")\n";
+    std::cout << "  scheduler idle: " << stats.scheduler_idle_cycles
+              << " (frontend=" << stats.scheduler_frontend_stall_cycles
+              << " backend=" << stats.scheduler_stall_backend_cycles << ")\n";
     std::cout << "  MACs/cycle: " << macs_per_cycle << "\n";
     std::cout << "  outputs/cycle: " << outputs_per_cycle << "\n";
     std::cout << "  cache hits/misses: " << stats.cache_hits
@@ -316,7 +327,23 @@ int main(int argc, char* argv[]) {
             return 4;
         }
 
-        print_summary(options, rows, timing, stats);
+        if (options.json_output) {
+            std::ostringstream ss;
+            stats.report_json(ss, config.num_warps);
+            std::string json = ss.str();
+            const double cycles = static_cast<double>(timing.cycle_count());
+            const double macs = static_cast<double>(rows) * static_cast<double>(kCols);
+            auto pos = json.rfind('}');
+            std::ostringstream derived;
+            derived << std::setprecision(6)
+                    << ",\n  \"benchmark\": \"gemv\""
+                    << ",\n  \"macs_per_cycle\": " << macs / cycles
+                    << ",\n  \"outputs_per_cycle\": " << static_cast<double>(rows) / cycles;
+            json.insert(pos, derived.str());
+            std::cout << json;
+        } else {
+            print_summary(options, rows, timing, stats);
+        }
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "gemv_bench error: " << e.what() << "\n";

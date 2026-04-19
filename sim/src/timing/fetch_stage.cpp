@@ -12,6 +12,7 @@ void FetchStage::evaluate() {
     // Backpressure: don't produce if decode hasn't consumed previous output
     if (current_output_.has_value() && !output_consumed_) {
         stats_.fetch_skip_count++;
+        stats_.fetch_skip_backpressure++;
         rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
         return;
     }
@@ -41,6 +42,7 @@ void FetchStage::evaluate() {
 
     if (!fetched) {
         stats_.fetch_skip_count++;
+        stats_.fetch_skip_all_full++;
     }
 
     // Pointer always advances to (original + 1), regardless of which warp was fetched

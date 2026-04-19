@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(cmake -B build)",
+      "Bash(cmake --build build -j8)",
+      "Bash(cmake --build build -j8 --target gpu_sim_tests)",
+      "Bash(cmake -B /workspace/build)",
+      "Bash(cmake --build /workspace/build -j8)",
+      "Bash(./sim/tests/test_coalescing)",
+      "Bash(./sim/tests/test_load_gather_buffer)"
     ]
   }
 }

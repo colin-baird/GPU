@@ -14,6 +14,9 @@ You build the project, run the regression suite, and run benchmarks. You report 
 - **Run workload benchmarks:** `bash ./tests/run_workload_benchmarks.sh --build-dir build`
 - **Run a specific workload benchmark:** `bash ./tests/run_workload_benchmarks.sh --build-dir build --bench <name>`
 - **Pass benchmark parameters through the shared entry point:** `bash ./tests/run_workload_benchmarks.sh --build-dir build -- --num-warps=N --memory-latency=N --max-cycles=N`
+- **A/B benchmark comparison:** `python3 tools/bench_compare.py --baseline <git-ref>` — builds the baseline in a temporary worktree, runs all benchmarks with `--json`, and prints a delta table with percentage changes
+- **Compare specific benchmarks:** `python3 tools/bench_compare.py --baseline <git-ref> --bench <name> --bench <name>`
+- **View benchmark history:** `python3 tools/bench_compare.py --history <bench-name>`
 
 The shared benchmark entry point emits canonical machine-readable lines:
 
@@ -40,11 +43,13 @@ Treat the `RESULT` lines as the source of truth for cycle count and IPC. Use the
 
 Only after all regressions pass:
 
-1. Run `bash ./tests/run_workload_benchmarks.sh --build-dir build` as the default benchmark sweep.
-2. If the orchestrator asks for a specific benchmark or parameter set, rerun the same shared entry point with `--bench <name>` and any pass-through benchmark arguments after `--`.
-3. Report the `SUMMARY` totals and, for each `RESULT` line, the benchmark name, status, cycle count, issued instruction count, and IPC.
-4. If a baseline is provided, compare like-for-like results benchmark by benchmark and compute the delta (absolute and percentage) for cycles and IPC.
-5. If any benchmark returns `status=fail` or `status=missing`, include the full corresponding raw block and treat the benchmark phase as failed.
+1. **A/B comparison (preferred for architectural changes):** Run `python3 tools/bench_compare.py --baseline <git-ref>` where `<git-ref>` is the commit before the change (typically `HEAD~1` or a tag). This automatically builds the baseline in a worktree, runs all benchmarks with `--json`, computes deltas, and stores results in a local SQLite database.
+   - Use `--bench <name>` (repeatable) to limit to specific benchmarks.
+   - The tool prints a comparison table with absolute deltas and percentage changes, color-coded for regressions and improvements.
+   - Report the key metrics from this table: cycles, IPC, cache hit/miss changes, and any benchmark-specific derived metrics (MACs/cycle, elements/cycle, etc.).
+2. **Standalone benchmark sweep (when no baseline is needed):** Run `bash ./tests/run_workload_benchmarks.sh --build-dir build` as the default benchmark sweep. Report the `SUMMARY` totals and, for each `RESULT` line, the benchmark name, status, cycle count, issued instruction count, and IPC.
+3. If the orchestrator asks for a specific benchmark or parameter set, use `--bench <name>` on either tool.
+4. If any benchmark returns a failure, include the full error output and treat the benchmark phase as failed.
 
 ## What you do NOT do
 
@@ -63,5 +68,7 @@ REGRESSION: X/Y passed [, list of failures]
 BENCHMARK_SUMMARY: total=<N> passed=<N> failed=<N>
 BENCHMARK_RESULT: name=<bench> status=<pass|fail|missing> cycles=<N|na> issued_instructions=<N|na> ipc=<V|na> [delta vs baseline]
 ```
+
+When using A/B comparison (`bench_compare.py`), include the full delta table output and highlight any metrics that changed by more than 1%. Summarize the overall direction (improvement, regression, or neutral) for each benchmark.
 
 Include full error output for any build/regression failures and the full raw block for any failed or missing benchmark result.
