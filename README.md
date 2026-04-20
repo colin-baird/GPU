@@ -176,12 +176,13 @@ The simulator configuration lives in `SimConfig` and can be supplied from JSON p
 - `--arg0=<N>` through `--arg3=<N>`
 - `--start-pc=<N>`
 
-Structured trace output written via `--trace-file` is suitable for Chrome trace viewers and Perfetto.
+Structured trace output written via `--trace-file` is suitable for Chrome trace viewers and Perfetto. For a complete reference — track layout, slice coalescing, instant-event schema, counter track catalog, and the `Stats` performance-counter fields — see [`resources/trace_and_perf_counters.md`](resources/trace_and_perf_counters.md).
 
 ## Documentation
 
 - [Architectural specification](resources/gpu_architectural_spec.md)
 - [Performance simulator file reference](resources/perf_sim_arch.md)
+- [Trace generation and performance counters](resources/trace_and_perf_counters.md)
 - [C++ coding standard](resources/cpp_coding_standard.md)
 - [RISC-V ISA reference card](resources/riscv_card.md)
 - [Untested changes log](UNTESTED.md)

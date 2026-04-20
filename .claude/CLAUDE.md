@@ -1,5 +1,7 @@
 # FPGA GPU Accelerator Project
 
+> **Note on this file:** `CLAUDE.md` is the single source of truth; `/AGENTS.md` at the repository root is a symlink to this file. Edit this file; the other view updates automatically. Any agent prompt or document that references `/AGENTS.md` is reading this exact content.
+
 ## What This Is
 
 A from-scratch GPU design in Verilog targeting FPGA synthesis and simulation. The goal is a single streaming multiprocessor (SM) that executes SIMT warps of 32 threads using the RISC-V RV32IM ISA with custom extensions, ultimately running quantized LLM inference (INT8×INT8 → INT32 accumulate).
@@ -20,6 +22,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Architectural specification:** [/resources/gpu_architectural_spec.md](/resources/gpu_architectural_spec.md) — the fully specified architectural spec covering ISA, pipeline, memory system, host interface, register file, scoreboard, and all design decisions.
 - **RISC-V ISA reference:** [/resources/riscv_card.md](/resources/riscv_card.md) — reference card for the RISC-V instruction set. The base ISA for this project is RV32IM (integer base + multiply/divide extension).
 - **Performance Sim Documentation:** [/resources/perf_sim_arch.md](/resources/perf_sim_arch.md) — a single reference sheet covering every file in the simulator
+- **Trace & Performance Counters:** [/resources/trace_and_perf_counters.md](/resources/trace_and_perf_counters.md) — operator-facing reference for `--trace`, `--trace-file`, the Chrome/Perfetto track layout and event schema, and the `Stats` counter catalog
 - **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
 - **Untested Changes Log:** [/UNTESTED.md](/UNTESTED.md) — tracker for changes that passed regression but lack targeted test coverage
 - **Onboarding Guide:** [/resources/onboarding.md](/resources/onboarding.md) — introduction to the project, codebase map, build/test/run instructions, and workflow overview for new contributors
@@ -42,6 +45,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
   gpu_architectural_spec.md      # Full architectural spec (the source of truth)
   riscv_card.md                  # RISC-V ISA reference card
   perf_sim_arch.md               # Documentation for the simulator and runner
+  trace_and_perf_counters.md     # Trace generation and performance-counter reference
   cpp_coding_standard.md         # C++ style and conventions for the simulator
 ```
 
@@ -73,120 +77,17 @@ Agent prompts live in `.claude/agents/`. Each agent has a focused responsibility
 
 ## Orchestration Model
 
-The main conversation agent (the orchestrator) owns the workflow state machine and all user-facing decisions. Sub-agents are dispatched sequentially — each phase must complete before the next begins.
+**Default: single-agent.** Handle user requests directly in the main conversation. Do not dispatch sub-agents unless the user explicitly asks for the multi-agent workflow (e.g., "use the multi-agent workflow", "run this through the orchestrator", "use implement/validate/test-author").
+
+When the user invokes the multi-agent workflow, follow the `multi-agent-workflow` skill (`.claude/skills/multi-agent-workflow/SKILL.md`). It defines the implementation → validation → test-author sequence, the regression hard gate, the adversarial fix loop, decision criteria, and commit integration rules.
+
+The rules below (documentation verification, commit ownership, doc sync) apply in **both** single-agent and multi-agent modes.
 
 ### Architectural Change Workflow
 
-When the user suggests an architectural change:
+See `.claude/skills/multi-agent-workflow/SKILL.md` for the full state machine, adversarial fix loop, decision criteria, and orchestrator dispatch rules. Invoke it only when the user explicitly asks for the multi-agent workflow.
 
-```
-User suggests change
-        │
-        ▼
-┌─────────────────┐
-│  Implementation  │  ← implement.md agent
-│  Agent           │  Writes code + spec update
-└────────┬────────┘
-         │ build must succeed
-         ▼
-┌─────────────────┐
-│  Validation      │  ← validate.md agent
-│  Agent           │  Runs regression suite
-└────────┬────────┘
-         │ HARD GATE: all regressions must pass
-         │ If failures → fix or revert, do not proceed
-         ▼
-┌─────────────────┐
-│  Validation      │  ← validate.md agent (benchmark phase)
-│  Agent           │  Runs A/B benchmark comparison against baseline
-└────────┬────────┘
-         │
-         ▼
-    ┌────────────┐
-    │ Major perf  │──── Yes ──→ Test Authoring Agent writes targeted tests
-    │ win?        │             → If adversarial tests pass: commit impl + spec + tests
-    └────┬───────┘             → If adversarial tests fail: see Adversarial Test Failure loop
-         │ No / Unclear
-         ▼
-    Orchestrator consults user with regression + benchmark data
-         │
-    ┌────┴────┐
-    │ Keep?   │──── Yes ──→ Test Authoring Agent writes tests
-    │         │             → If adversarial tests pass: commit everything together
-    └────┬────┘             → If adversarial tests fail: see Adversarial Test Failure loop
-         │ No / No response within session
-         ▼
-    Revert or stash the change
-```
-
-### Adversarial Test Failure Loop
-
-When the test-author agent's adversarial tests expose a bug in the implementation:
-
-```
-Adversarial test finds bug
-         │
-         ▼
-   ┌─────────────────────────────────────────────────┐
-   │ Orchestrator classifies the bug                  │
-   │                                                  │
-   │  Major / architectural? ──────────────────────── │──→ Escalate to user immediately
-   │  (wrong spec, design flaw, wrong abstraction)    │    with test + failure summary
-   │                                                  │
-   │  Localized bug? (off-by-one, wrong signal,       │
-   │  missed edge case, encoding error, etc.)  ───────│──→ Enter fix loop (below)
-   └─────────────────────────────────────────────────┘
-
-Fix loop (max 2 iterations):
-
-  [Loop counter: 1 of 2]
-         │
-         ▼
-  Implementation Agent  ← bug-fix only, no refactoring or feature changes
-         │ build must succeed
-         ▼
-  Validation Agent      ← re-run full regression suite + new adversarial tests
-         │
-    ┌────┴──────────────┐
-    │ All tests pass?    │──── Yes ──→ Commit impl + spec + tests together
-    └────┬──────────────┘
-         │ No — still failing
-         ▼
-  [Loop counter: 2 of 2] — repeat fix loop once more
-         │
-    ┌────┴──────────────┐
-    │ All tests pass?    │──── Yes ──→ Commit
-    └────┬──────────────┘
-         │ No — still failing after 2 attempts
-         ▼
-  Escalate to user: present both failing tests, both fix attempts,
-  and a diagnosis. Do not attempt a third fix autonomously.
-```
-
-**Bug classification criteria** (orchestrator decides before entering fix loop):
-- **Escalate immediately** if the fix would require changing the architectural spec, redesigning an interface, changing pipeline semantics, or if the root cause is ambiguous after reading the code.
-- **Enter fix loop** if the bug is self-contained: wrong constant, missed case in a switch, incorrect bit-field extraction, logic error in a single function.
-
-### Decision criteria
-
-- **"Major performance win"**: measurable IPC improvement on a representative workload, or reduction in a critical-path latency. The orchestrator evaluates this from the validation agent's A/B benchmark comparison report (produced by `tools/bench_compare.py`).
-- **Regression hard gate**: if any regression test fails, the workflow stops. The implementation agent fixes the issue or the change is reverted. Benchmarking does not proceed with broken regressions.
-- **Session timeout**: if the user is consulted and does not respond within the session, the default disposition is to shelve (revert or stash).
-- **Fix loop scope**: the implementation agent in a fix loop may only modify the specific code path identified as buggy. It must not refactor surrounding code, add new features, or expand scope beyond the failing test.
-
-### Untested change logging
-
-If a change is kept but targeted tests are deferred (e.g., user decides to keep it but skip testing for now), the orchestrator logs it in [`/UNTESTED.md`](/UNTESTED.md). The entry is removed when targeted tests are committed or the change is reverted.
-
-### Orchestrator Responsibilities
-
-The orchestrator is the main conversation agent. It owns the workflow state machine, all user-facing decisions, git commits, and final documentation completeness. Sub-agents implement, test, and validate — the orchestrator integrates and ships.
-
-**Workflow and decisions:**
-- Dispatch sub-agents in the correct sequence and enforce all hard gates.
-- Classify bugs (architectural vs. localized) before entering the fix loop.
-- Consult the user at every decision point that sub-agents cannot resolve autonomously.
-- Never proceed past a failed regression gate or past the fix loop limit without user input.
+### Orchestrator Responsibilities (always apply)
 
 **Documentation verification before every commit:**
 Before committing any changeset, the orchestrator must verify that all documentation is consistent with the code. This is a hard requirement — do not skip it. Check each of the following:
@@ -195,6 +96,7 @@ Before committing any changeset, the orchestrator must verify that all documenta
 |----------|----------------------|
 | `resources/gpu_architectural_spec.md` | Any architectural change: new behavior, changed semantics, modified interfaces, new instructions |
 | `resources/perf_sim_arch.md` | Any source file added, removed, renamed, or with changed responsibilities |
+| `resources/trace_and_perf_counters.md` | Any change to logging, tracing, or performance counters — new/changed trace events, counter tracks, `WarpTraceState` / `WarpRestReason` values, CLI trace flags, `Stats` fields, report formats, or Perfetto schema |
 | `AGENTS.md` — Key References | A new documentation artifact is created |
 | `AGENTS.md` — Project Structure map | Top-level directories or major layout changes |
 | `AGENTS.md` — Agent Definitions / Workflow | Agent prompts or orchestration rules change |
@@ -231,6 +133,7 @@ This rule applies in every context — multi-agent workflow, direct implementati
 |----------|------------------|-------|
 | `resources/gpu_architectural_spec.md` | Authoritative architecture: ISA, pipeline, memory, interfaces, all design decisions | Implementation agent (writes); orchestrator (verifies) |
 | `resources/perf_sim_arch.md` | Every source file in the simulator and runner: purpose, key types, relationships | Implementation agent (writes); orchestrator (verifies) |
+| `resources/trace_and_perf_counters.md` | Operator/tooling reference for `--trace`, `--trace-file`, the Chrome/Perfetto schema, and the `Stats` counter catalog | Implementation agent (writes); orchestrator (verifies) |
 | `resources/onboarding.md` | Repository layout, key concepts, build/test/run instructions for new contributors | Orchestrator |
 | `README.md` | Quick-start reference: features, layout, build, run, test, benchmark instructions | Orchestrator |
 | `AGENTS.md` | Project context, agent definitions, orchestration workflow, documentation rules | Orchestrator |
@@ -243,6 +146,7 @@ This rule applies in every context — multi-agent workflow, direct implementati
 | New or changed architectural behavior (pipeline, ISA, memory, interfaces) | `gpu_architectural_spec.md` (in-place edit, not a changelog entry) |
 | Source file added, removed, or renamed | `perf_sim_arch.md` |
 | Source file with significantly changed responsibilities | `perf_sim_arch.md` |
+| New/changed trace event, counter track, `WarpTraceState`/`WarpRestReason`, CLI trace flag, or `Stats` field | `trace_and_perf_counters.md` |
 | New top-level directory or major restructuring of the repo | `AGENTS.md` Project Structure, `README.md` Repository Layout, `resources/onboarding.md` Repository Layout |
 | New feature or capability visible to users (new CLI flags, new execution mode, new benchmark) | `README.md`, `resources/onboarding.md` if it affects workflow |
 | New documentation artifact created | `AGENTS.md` Key References |

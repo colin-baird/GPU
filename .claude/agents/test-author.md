@@ -19,6 +19,16 @@ Tests live in `sim/tests/` as `test_<component>.cpp` files. They use Catch2 (v2,
    - Test tags: `[lowercase]` (e.g., `[cache]`, `[integration]`)
 4. The relevant header files for the interfaces being tested.
 5. Existing test files for the same component -- understand the testing patterns already established and avoid duplicating existing coverage.
+6. `/resources/trace_and_perf_counters.md` when the change touches logging, tracing, or `Stats` — it enumerates every `WarpTraceState`, rest reason, counter track, instant event, and counter field. This is the spec to test against for observability surfaces.
+
+## Logging and performance-counter coverage
+
+When the implementation diff adds or changes a trace event, counter track, `WarpTraceState`/`WarpRestReason`, CLI trace flag, or `Stats` field, write tests that exercise the new observability surface:
+
+- For new `WarpTraceState` / `WarpRestReason` classifications, construct a scenario that provably hits the state and assert `TimingModel::last_cycle_snapshot()` classifies the warp correctly.
+- For new instant events or counter tracks, run a short scenario with `TimingTraceOptions::output_path` set to a temp file and assert the emitted JSON contains the expected event name or counter key (the existing `test_integration.cpp` trace-file smoke test is the template).
+- For new `Stats` fields, assert the counter increments exactly when the underlying event occurs, not on unrelated activity.
+- If the implementation claims to have updated `trace_and_perf_counters.md`, read the updated section and use it as the spec for these tests. If the doc was not updated when it should have been, flag it in your report.
 
 ## What you do
 
@@ -47,3 +57,4 @@ Report back to the orchestrator with:
 - A summary of what each test case covers and why (what corner case or spec requirement it targets).
 - Whether the build succeeded with the new tests.
 - Any suspected bugs discovered (tests that fail against the current implementation but appear correct per the spec).
+- If the change touched logging, tracing, or perf counters: whether `trace_and_perf_counters.md` appears to be in sync with the implementation. If it's stale, flag the specific mismatches so the orchestrator can route them back to the implementation agent.

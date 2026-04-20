@@ -144,6 +144,8 @@ Outputs:
 ./build/runner/gpu_sim program.elf --trace-file=trace.json
 ```
 
+For the complete reference on trace generation (track layout, event schema, Perfetto workflow) and the full `Stats` performance-counter catalog, see [`/resources/trace_and_perf_counters.md`](trace_and_perf_counters.md).
+
 Kernel arguments are passed as `--arg0=N` through `--arg3=N` and arrive in registers `r1`–`r4`.
 
 ---
@@ -223,6 +225,7 @@ When you add a new source file to the simulator, also add a description entry to
 | What does instruction X do? | `resources/gpu_architectural_spec.md` §2 |
 | How does the pipeline work? | `resources/gpu_architectural_spec.md` §4 |
 | What does file `foo.cpp` do? | `resources/perf_sim_arch.md` |
+| How do traces and perf counters work? | `resources/trace_and_perf_counters.md` |
 | How is the memory system designed? | `resources/gpu_architectural_spec.md` §5 |
 | What are the C++ conventions? | `resources/cpp_coding_standard.md` |
 | What is RISC-V RV32IM? | `resources/riscv_card.md` |

@@ -51,9 +51,20 @@ Only after all regressions pass:
 3. If the orchestrator asks for a specific benchmark or parameter set, use `--bench <name>` on either tool.
 4. If any benchmark returns a failure, include the full error output and treat the benchmark phase as failed.
 
+## Logging and performance-counter sanity checks
+
+While running benchmarks, keep a light eye on observability output so the orchestrator can detect silent doc drift:
+
+- If the `Stats` JSON or text report contains fields not documented in `/resources/trace_and_perf_counters.md` (or documented fields that are missing from the output), flag it in your report. Do not modify the doc — that's the implementation agent's job — but name the specific field(s) that disagree.
+- If a run uses `--trace-file=<path>` and the emitted JSON contains warp state names, instant event names, or counter track keys that are not listed in `trace_and_perf_counters.md`, flag those too.
+- Flag any new CLI flag or report format appearing in benchmark output that is not documented.
+
+These are reporting obligations only — you still do not modify source or docs.
+
 ## What you do NOT do
 
 - Do not modify any source files.
+- Do not modify any documentation.
 - Do not write tests.
 - Do not commit to git.
 - Do not interpret whether results are "good enough" -- report the numbers and let the orchestrator decide.

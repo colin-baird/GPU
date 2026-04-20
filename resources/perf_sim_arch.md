@@ -1,6 +1,6 @@
 # GPU Simulator -- File Reference
 
-This document describes every file in the simulator, what it does, and where to find the interfaces it exposes. For the full architectural specification, see [`/resources/gpu_architectural_spec.md`](/resources/gpu_architectural_spec.md).
+This document describes every file in the simulator, what it does, and where to find the interfaces it exposes. For the full architectural specification, see [`/resources/gpu_architectural_spec.md`](/resources/gpu_architectural_spec.md). For the operator-facing reference on trace generation (`--trace`, `--trace-file`) and performance counters (`Stats`, `--json`), see [`/resources/trace_and_perf_counters.md`](/resources/trace_and_perf_counters.md) — this file describes the types and wiring; that file documents user-visible formats, the Perfetto track schema, and the full counter catalog.
 
 ---
 
@@ -75,15 +75,10 @@ Binary loading utilities. Provides both model-independent parsing and convenienc
 
 Statistics collection and reporting.
 
-- **Struct `Stats`**: All counters default to 0. Categories:
-  - Global: `total_cycles`, `total_instructions_issued`
-  - Per-warp: `warp_instructions[8]`, `warp_cycles_active[8]`, `warp_stall_scoreboard[8]`, `warp_stall_buffer_empty[8]`, `warp_stall_branch_shadow[8]`, `warp_stall_unit_busy[8]`
-  - Pipeline: `fetch_skip_count`, `scheduler_idle_cycles`, `operand_collector_busy_cycles`, `branch_predictions`, `branch_mispredictions`, `branch_flushes`
-  - Per-unit (`UnitStats`): `busy_cycles`, `instructions` -- for ALU, MUL, DIV, LD/ST, TLOOKUP
-  - Memory: `cache_hits/misses`, `load_hits/misses`, `store_hits/misses`, `mshr_stall_cycles`, `write_buffer_stall_cycles`, `coalesced_requests`, `serialized_requests`, `external_memory_reads/writes`, `total_load_latency`, `total_loads_completed`, `gather_buffer_stall_cycles`, `gather_buffer_port_conflict_cycles`
-  - Writeback: `writeback_conflicts`
+- **Struct `Stats`**: All counters default to 0. Grouped into Global, Per-warp, Pipeline, Per-unit (`UnitStats`), Memory system, and Writeback sections.
 - **`report(ostream, num_warps)`**: Human-readable text summary.
 - **`report_json(ostream, num_warps)`**: Machine-parseable JSON.
+- For the full field catalog, report formats, and the relationship between Stats counters and structured-trace counter tracks, see [`/resources/trace_and_perf_counters.md`](/resources/trace_and_perf_counters.md) §5.
 
 ### `include/gpu_sim/timing/branch_predictor.h` -- `src/timing/branch_predictor.cpp`
 
@@ -102,6 +97,7 @@ Structured timing-trace types and Chrome trace writer.
 - **Enums `WarpTraceState` / `WarpRestReason`**: Canonical per-cycle warp classification for structured traces and tests.
 - **Structs `WarpTraceSnapshot` / `CycleTraceSnapshot`**: Post-commit per-cycle summaries used for trace emission and test assertions.
 - **Class `ChromeTraceWriter`**: Dependency-free Chrome trace JSON emitter supporting metadata, complete events, instant events, and counters.
+- Full semantics of every state, rest reason, slice, instant event, and counter are documented in [`/resources/trace_and_perf_counters.md`](/resources/trace_and_perf_counters.md) §3.
 
 ---
 
@@ -408,10 +404,7 @@ Top-level cycle stepper wiring everything together.
 
 ### Structured Trace Workflow
 
-- Run the simulator with `--trace-file=/tmp/gpu_trace.json` to emit Chrome trace JSON while preserving the simulator's normal stdout/stderr reporting.
-- Open the file in Perfetto using its legacy Chrome-trace import path.
-- Warp tracks show coalesced state slices; hardware tracks show occupancy/state slices; counter tracks expose active warps, unit occupancy, LD/ST FIFO depth, active MSHRs, secondary MSHRs, pinned cache lines, and write-buffer depth.
-- Helper analysis queries live in [`/resources/perfetto_trace_queries.sql`](/Users/colinbaird/Projects/GPU/resources/perfetto_trace_queries.sql).
+See [`/resources/trace_and_perf_counters.md`](/resources/trace_and_perf_counters.md) for the complete operator-facing reference (CLI flags, Perfetto track layout, slice/counter/instant-event schema, viewer workflow). Helper SQL queries live in [`/resources/perfetto_trace_queries.sql`](/resources/perfetto_trace_queries.sql).
 
 ---
 

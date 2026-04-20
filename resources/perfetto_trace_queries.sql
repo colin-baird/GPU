@@ -1,5 +1,6 @@
 -- Example PerfettoSQL queries for traces emitted by --trace-file.
 -- Load the JSON trace in Perfetto first, then run these queries in the SQL pane.
+-- For the full track/event/counter schema, see resources/trace_and_perf_counters.md.
 
 -- Stall breakdown by warp.
 select
