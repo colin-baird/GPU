@@ -347,6 +347,56 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
     REQUIRE(mul.is_ready());
 }
 
+TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
+          "[timing]") {
+    // Spec §4.5: multiply/VDOT8 is "pipelined; accepts new op every cycle" with
+    // parameterizable STAGES (default 3). A unit that accepted every cycle but
+    // was not actually pipelined would serialize — the second op's result would
+    // appear at cycle 2*STAGES instead of STAGES+1. This binds both the II=1
+    // acceptance and the multi-stage fill/drain shape.
+    Stats stats;
+    MultiplyUnit mul(3, stats);
+    auto op0 = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_MUL, 5,
+                                        isa::OP_ALU_R));
+    auto op1 = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_MUL, 6,
+                                        isa::OP_ALU_R));
+    auto op2 = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_MUL, 7,
+                                        isa::OP_ALU_R));
+
+    // Accept 3 ops back-to-back — pipeline must accept on every cycle.
+    REQUIRE(mul.is_ready());
+    mul.accept(DispatchInput{op0.decoded, op0.trace, op0.warp_id, op0.pc}, 0);
+    REQUIRE(mul.is_ready());
+    mul.evaluate();  // advance cycle 0→1
+    mul.accept(DispatchInput{op1.decoded, op1.trace, op1.warp_id, op1.pc}, 1);
+    REQUIRE(mul.is_ready());
+    mul.evaluate();  // advance cycle 1→2
+    mul.accept(DispatchInput{op2.decoded, op2.trace, op2.warp_id, op2.pc}, 2);
+    REQUIRE(mul.is_ready());
+
+    // No result yet — op0 was accepted at cycle 0 with 3 cycles remaining, so
+    // after 2 evaluates it still has 1 cycle to go.
+    REQUIRE_FALSE(mul.has_result());
+    mul.evaluate();  // cycle 2→3: op0 drains
+    REQUIRE(mul.has_result());
+    auto wb0 = mul.consume_result();
+    REQUIRE(wb0.dest_reg == 5);
+
+    // op1 drains on the very next cycle (II=1 means staggered output).
+    mul.evaluate();
+    REQUIRE(mul.has_result());
+    auto wb1 = mul.consume_result();
+    REQUIRE(wb1.dest_reg == 6);
+
+    // op2 drains one cycle after that.
+    mul.evaluate();
+    REQUIRE(mul.has_result());
+    auto wb2 = mul.consume_result();
+    REQUIRE(wb2.dest_reg == 7);
+
+    REQUIRE(stats.mul_stats.instructions == 3);
+}
+
 TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
     Stats stats;
     DivideUnit div(stats);
@@ -361,6 +411,33 @@ TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
     REQUIRE_FALSE(div.has_result());
     div.evaluate();
     REQUIRE(div.has_result());
+}
+
+TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle window",
+          "[timing]") {
+    // Spec §4.5: divide is "iterative (radix-2); busy until complete". A
+    // concurrent accept mid-flight must be impossible — is_ready() must stay
+    // false for every cycle of the 32-cycle latency and remain false afterward
+    // until the result is consumed.
+    Stats stats;
+    DivideUnit div(stats);
+    auto issue = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_DIV, 5,
+                                          isa::OP_ALU_R));
+
+    REQUIRE(div.is_ready());
+    div.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+
+    for (int i = 0; i < 32; ++i) {
+        REQUIRE_FALSE(div.is_ready());
+        div.evaluate();
+    }
+
+    // Latency completed but result unconsumed — must still refuse accept.
+    REQUIRE(div.has_result());
+    REQUIRE_FALSE(div.is_ready());
+
+    div.consume_result();
+    REQUIRE(div.is_ready());
 }
 
 // Binds claim #1 (TLOOKUP latency = 17 cycles, spec §2.3 / §4.5).
