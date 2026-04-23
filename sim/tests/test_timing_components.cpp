@@ -13,7 +13,9 @@
 #include "gpu_sim/timing/memory_interface.h"
 #include "gpu_sim/timing/multiply_unit.h"
 #include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/scoreboard.h"
 #include "gpu_sim/timing/tlookup_unit.h"
+#include "gpu_sim/timing/warp_scheduler.h"
 #include "gpu_sim/timing/writeback_arbiter.h"
 
 using namespace gpu_sim;
@@ -952,3 +954,120 @@ TEST_CASE("WarpState: explicit depth override still works", "[ibuffer]") {
     ws1.instr_buffer.push(BufferEntry{});
     REQUIRE(ws1.instr_buffer.is_full());
 }
+
+// ---------------------------------------------------------------------------
+// Buffer-depth -> scheduler stall-tolerance binding
+//
+// Spec §4.2: "A depth of 3 provides more tolerance for fetch stalls and branch
+// shadow periods, keeping the warp scheduler fed even when the frontend
+// experiences transient disruptions."
+//
+// The container-plumbing tests above would still pass if the architectural
+// default depth were silently reduced (e.g., to 1). These tests bind the
+// depth value to an observable timing outcome: with fetch totally stalled,
+// the scheduler can sustain exactly `capacity` back-to-back issues from a
+// pre-filled warp before reporting BUFFER_EMPTY.
+// ---------------------------------------------------------------------------
+
+namespace {
+void push_addi(WarpState& ws, uint32_t pc, uint32_t rd) {
+    BufferEntry e;
+    e.decoded = Decoder::decode(i_type(1, 0, isa::FUNCT3_ADD_SUB, rd, isa::OP_ALU_I));
+    e.warp_id = 0;
+    e.pc = pc;
+    ws.instr_buffer.push(e);
+}
+} // namespace
+
+TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
+          "[ibuffer][timing]") {
+    // With fetch producing nothing (no refill), a depth-N buffer that starts
+    // full lets the scheduler issue exactly N instructions before starving.
+    // This directly binds the depth-3 architectural default to shadow-tolerance
+    // behavior — if depth were changed to 1, only 1 issue would occur before
+    // BUFFER_EMPTY and this test would fail.
+    SimConfig config;
+    config.num_warps = 1;
+    config.start_pc = 0;
+    FunctionalModel func_model(config);
+    Stats stats;
+    Scoreboard scoreboard;
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(3);  // depth 3 — matches SimConfig default
+    warps[0].reset(0);
+
+    push_addi(warps[0], 0x0, 5);
+    push_addi(warps[0], 0x4, 6);
+    push_addi(warps[0], 0x8, 7);
+    REQUIRE(warps[0].instr_buffer.is_full());
+
+    // Mirror the in-memory image so FunctionalModel::execute doesn't trap.
+    func_model.instruction_memory().write(0, i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+    func_model.instruction_memory().write(1, i_type(1, 0, isa::FUNCT3_ADD_SUB, 6, isa::OP_ALU_I));
+    func_model.instruction_memory().write(2, i_type(1, 0, isa::FUNCT3_ADD_SUB, 7, isa::OP_ALU_I));
+
+    WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
+    scheduler.set_unit_ready_fn([](ExecUnit) { return true; });
+    scheduler.set_opcoll_free(true);
+
+    // No fetch is running — buffer will not be refilled. Three evaluate()
+    // cycles must each produce an ISSUED, and the fourth must report
+    // BUFFER_EMPTY with no issue.
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        scoreboard.seed_next();
+        scheduler.evaluate();
+        scheduler.commit();
+        REQUIRE(scheduler.current_output().has_value());
+        REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::ISSUED);
+    }
+    REQUIRE(stats.total_instructions_issued == 3);
+    REQUIRE(stats.warp_stall_buffer_empty[0] == 0);
+
+    scoreboard.seed_next();
+    scheduler.evaluate();
+    scheduler.commit();
+    REQUIRE_FALSE(scheduler.current_output().has_value());
+    REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::BUFFER_EMPTY);
+    REQUIRE(stats.warp_stall_buffer_empty[0] == 1);
+}
+
+TEST_CASE("Depth-1 buffer starves immediately after one issue under fetch stall",
+          "[ibuffer][timing]") {
+    // Control case: with depth 1 and fetch stalled, the scheduler starves
+    // after a single issue. Paired with the depth-3 test above, this proves
+    // that shadow tolerance is a direct function of buffer depth.
+    SimConfig config;
+    config.num_warps = 1;
+    config.start_pc = 0;
+    FunctionalModel func_model(config);
+    Stats stats;
+    Scoreboard scoreboard;
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(1);  // depth 1 — single-entry buffer
+    warps[0].reset(0);
+
+    push_addi(warps[0], 0x0, 5);
+    REQUIRE(warps[0].instr_buffer.is_full());
+
+    func_model.instruction_memory().write(0, i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
+
+    WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
+    scheduler.set_unit_ready_fn([](ExecUnit) { return true; });
+    scheduler.set_opcoll_free(true);
+
+    scoreboard.seed_next();
+    scheduler.evaluate();
+    scheduler.commit();
+    REQUIRE(scheduler.current_output().has_value());
+    REQUIRE(stats.total_instructions_issued == 1);
+
+    scoreboard.seed_next();
+    scheduler.evaluate();
+    scheduler.commit();
+    REQUIRE_FALSE(scheduler.current_output().has_value());
+    REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::BUFFER_EMPTY);
+    REQUIRE(stats.warp_stall_buffer_empty[0] == 1);
+}
+
