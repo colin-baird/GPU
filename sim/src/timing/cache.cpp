@@ -34,7 +34,15 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
 
     if (tags_[set].valid && tags_[set].tag == tag) {
         // Cache hit: attempt to deposit lane values into the gather buffer.
-        // FILL path runs first each cycle; if it won the port we must retry.
+        // Per §5.3 port model (FILL > secondary drain > HIT), the HIT path
+        // must lose to any in-cycle FILL or secondary-drain extraction on the
+        // single cache gather-extract port. The gather-file try_write already
+        // enforces the per-buffer FILL-vs-HIT edge; the cache-level flag here
+        // covers the secondary-drain-vs-HIT edge when the drain and hit
+        // target different gather buffers.
+        if (gather_extract_port_used_) {
+            return false;
+        }
         if (!gather_file_.try_write(warp_id, lane_mask, results,
                                     LoadGatherBufferFile::GatherWriteSource::HIT)) {
             return false;
@@ -379,7 +387,6 @@ void L1Cache::evaluate() {
     last_fill_event_.deferred = false;
     last_drain_event_.valid = false;
     last_pin_stall_event_.valid = false;
-    gather_extract_port_used_ = false;
 
     // FILL takes priority over HIT for the gather-buffer write port: run the
     // fill path first so a same-cycle hit-path write sees port_used_this_cycle
@@ -392,7 +399,13 @@ void L1Cache::evaluate() {
     drain_secondary_chain_head();
 }
 
-void L1Cache::commit() {}
+void L1Cache::commit() {
+    // Per-cycle reset: the gather-extract port is a one-extraction-per-cycle
+    // resource shared by FILL, secondary drain, and HIT. It is set inside
+    // evaluate() and consulted by process_load() within the same cycle; we
+    // clear it in commit() so the next cycle starts with the port free.
+    gather_extract_port_used_ = false;
+}
 
 bool L1Cache::is_idle() const {
     return !pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty();

@@ -33,6 +33,7 @@ struct CacheFixture {
 
     // Tick the gather buffer's per-cycle scratch (clears port_used_this_cycle).
     void end_cycle() {
+        cache.commit();
         gather_file.commit();
     }
 

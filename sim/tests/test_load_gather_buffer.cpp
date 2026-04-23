@@ -121,6 +121,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
     cache.handle_responses();
     (void)gather_file.consume_result();
+    cache.commit();
     gather_file.commit();
 
     // Now issue a serialized load on warp 0: lane 0 hits line 0, lanes 1..31

@@ -38,6 +38,7 @@ struct MergeFixture {
     }
 
     void end_cycle() {
+        cache.commit();
         gather_file.commit();
     }
 
@@ -643,4 +644,197 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
 
     REQUIRE_FALSE(f.gather_file.has_result());
     REQUIRE(f.stats.external_memory_reads == 1);
+}
+
+// ----------------------------------------------------------------------------
+// Case 12: Arbitration edge -- secondary drain beats HIT on the cache
+//          gather-extract port when no FILL is present.
+//          Spec §5.3 "Port model": FILL > secondary drain > HIT. A HIT issued
+//          in the same cycle a secondary drain uses the single extraction port
+//          must be rejected and retry next cycle, REGARDLESS of whether the
+//          HIT targets the same warp's gather buffer as the drain or a
+//          different one. This is the "secondary > HIT" edge (the dual of
+//          Case 7, which covers FILL > secondary).
+//
+//          Self-check: if the cache-level gather_extract_port gate were
+//          removed, the HIT would succeed this cycle -> load_hits would
+//          increment and process_load would return true. The assertions below
+//          fail in that case.
+// ----------------------------------------------------------------------------
+TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
+          "[cache][mshr][merging][port]") {
+    MergeFixture f;
+    auto r = make_results(3000);
+    auto r_hit = make_results(8000);
+
+    // Step 1: Pre-install a DIFFERENT line L1 (set 1) as resident. Bring it
+    // in via a plain load miss+fill, consume the writeback so the warp-0
+    // gather buffer is free for reuse later. After this, line L1 is resident
+    // and its chain is empty (no pin).
+    f.claim(/*warp=*/0, /*dest_reg=*/9);
+    REQUIRE(f.cache.process_load(LINE_SIZE, /*warp=*/0, FULL_MASK, r_hit, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.evaluate();
+    REQUIRE(f.gather_file.has_result());
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+    REQUIRE(f.cache.active_mshr_count() == 0);
+
+    // Step 2: Build a primary+secondary load chain on line L0 (set 0) between
+    // two DIFFERENT warps, so warp-0's gather buffer stays free for the hit.
+    f.claim(/*warp=*/1, /*dest_reg=*/4);
+    REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/1, FULL_MASK, r, 2, 0, 0));
+    f.claim(/*warp=*/2, /*dest_reg=*/5);
+    REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/2, FULL_MASK, r, 3, 0, 0));
+    REQUIRE(f.cache.active_mshr_count() == 2);
+    REQUIRE(f.stats.external_memory_reads == 2); // L1 + L0
+
+    // Step 3: Deliver the L0 fill. Cycle A retires the primary into warp 1's
+    // buffer (FILL consumes the port), warp-2 secondary defers. Consume warp 1.
+    f.tick_mem(MEM_LATENCY);
+    f.cache.evaluate();
+    REQUIRE(f.gather_file.has_result());
+    WritebackEntry wb1 = f.gather_file.consume_result();
+    REQUIRE(wb1.warp_id == 1);
+    f.end_cycle();
+    // Warp-2 secondary still pending; set 0 still pinned.
+    REQUIRE(f.cache.active_mshr_count() == 1);
+    REQUIRE(f.cache.pinned_line_count() == 1);
+
+    // Step 4: Cycle B. No pending fill (handle_responses is empty). The
+    // drain_secondary_chain_head path will drain warp-2's secondary and claim
+    // the single cache gather-extract port. In the SAME cycle, issue a hit to
+    // the pre-installed line L1 on warp 0 (a different buffer). Per spec,
+    // secondary beats HIT on the shared extraction port -> HIT must be
+    // rejected this cycle.
+    auto drains_before = f.stats.secondary_drain_cycles;
+    auto hits_before = f.stats.load_hits;
+    f.cache.evaluate();
+    // The drain took the port this cycle.
+    REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
+    // Warp 2 is about to get its writeback. Do NOT consume yet.
+    REQUIRE(f.gather_file.has_result());
+
+    // Now issue the HIT on a DIFFERENT warp (warp 0, whose buffer is free).
+    // The hit targets line L1 which IS resident, so tag matches -> normally
+    // a hit. But the cache gather-extract port is already used by the
+    // secondary drain, so process_load must return false and NOT bump
+    // load_hits.
+    f.claim(/*warp=*/0, /*dest_reg=*/7);
+    auto r_hit2 = make_results(9000);
+    bool hit_accepted = f.cache.process_load(LINE_SIZE, /*warp=*/0, FULL_MASK,
+                                             r_hit2, /*issue_cycle=*/99, 0, 0);
+    REQUIRE_FALSE(hit_accepted);
+    REQUIRE(f.stats.load_hits == hits_before);
+    // The loser's side effects must be absent: no writeback should be
+    // produced into warp 0's buffer this cycle. has_result() may still be
+    // true from warp 2's drained secondary, but warp 0 must not be ready.
+    // Consume warp 2's drained result first; then assert warp 0 is NOT ready.
+    WritebackEntry wb2 = f.gather_file.consume_result();
+    REQUIRE(wb2.warp_id == 2);
+    REQUIRE_FALSE(f.gather_file.has_result());
+    f.end_cycle();
+
+    // Step 5: Next cycle, the HIT retries. Port reset, no drain pending, no
+    // fill pending -> hit succeeds.
+    f.cache.evaluate();
+    bool hit_accepted2 = f.cache.process_load(LINE_SIZE, /*warp=*/0, FULL_MASK,
+                                              r_hit2, /*issue_cycle=*/100, 0, 0);
+    REQUIRE(hit_accepted2);
+    REQUIRE(f.stats.load_hits == hits_before + 1);
+    REQUIRE(f.gather_file.has_result());
+    WritebackEntry wb0 = f.gather_file.consume_result();
+    REQUIRE(wb0.warp_id == 0);
+    REQUIRE(wb0.dest_reg == 7);
+    REQUIRE(wb0.values[0] == 9000);
+    f.end_cycle();
+}
+
+// ----------------------------------------------------------------------------
+// Case 13: Companion to Case 6 -- secondary-store drain stalls on write-
+//          buffer full, but unblock via the NATURAL drain path (WB entries
+//          draining to external memory through mem_if cycles) rather than
+//          via the direct drain_write_buffer() sidechannel being called at
+//          test scope alone. This asserts the same §5.3.2 invariants end-
+//          to-end through the public cache+mem_if surface: during WB-full
+//          stall cycles `secondary_drain_cycles` does not increment, the
+//          pin stays set, the MSHR stays allocated; once the WB naturally
+//          drains, the secondary drain proceeds.
+//
+//          Self-check: if the WB-full gate in drain_secondary_chain_head
+//          were removed, the secondary would retire in the first cycle
+//          after primary fill even while the WB is full -- the assertions
+//          on `secondary_drain_cycles` and `active_mshr_count` during the
+//          stall window would fail.
+// ----------------------------------------------------------------------------
+TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natural drain",
+          "[cache][mshr][merging][writebuffer]") {
+    MergeFixture f;
+    auto r = make_results();
+
+    // Install line 0 so we can pre-fill the write buffer with hit stores.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Fill write buffer to WB_DEPTH-1 with hit stores.
+    for (uint32_t i = 0; i < WB_DEPTH - 1; ++i) {
+        REQUIRE(f.cache.process_store(0, 0, 2 + i, 0, 0));
+    }
+    REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);
+
+    // Primary store miss to a new line on set 1 + secondary store to it.
+    REQUIRE(f.cache.process_store(1, 0, 20, 0, 0));
+    REQUIRE(f.cache.process_store(1, 0, 21, 0, 0));
+    REQUIRE(f.stats.mshr_merged_stores == 1);
+
+    f.tick_mem(MEM_LATENCY);
+
+    // Cycle: primary retires -> WB now full; secondary stalls, pin remains.
+    f.cache.evaluate();
+    REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
+    REQUIRE(f.cache.active_mshr_count() == 1);
+    REQUIRE(f.cache.pinned_line_count() == 1);
+    auto drains_before = f.stats.secondary_drain_cycles;
+    f.end_cycle();
+
+    // Natural drain path: each timing-model tick calls drain_write_buffer()
+    // after mem_if.evaluate(). Here we simulate that cadence: tick mem_if
+    // (advances in-flight writes toward completion) and call
+    // drain_write_buffer() once per "cycle" -- this is NOT a test-only
+    // sidechannel, it's exactly what TimingModel::evaluate does in
+    // timing_model.cpp L328. Each iteration submits one WB entry to mem_if
+    // and frees a WB slot.
+    //
+    // During this process, call cache.evaluate() each cycle to let the
+    // secondary drain retry. Assert that while WB is full at cycle start,
+    // secondary_drain_cycles does NOT increment and the MSHR stays live.
+    // The secondary must only retire on a cycle where WB started with a
+    // free slot.
+
+    // Cycle 1: at start, WB size == WB_DEPTH (full). evaluate() sees full
+    // WB -> drain stalls. Then drain_write_buffer() submits one entry and
+    // frees a slot.
+    REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
+    f.cache.evaluate();
+    REQUIRE(f.stats.secondary_drain_cycles == drains_before); // stalled
+    REQUIRE(f.cache.active_mshr_count() == 1);                // still pending
+    REQUIRE(f.cache.pinned_line_count() == 1);                // pin intact
+    f.mem_if.evaluate();
+    f.cache.drain_write_buffer();
+    REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);     // one freed
+    f.end_cycle();
+
+    // Cycle 2: WB started with a free slot; secondary drain succeeds.
+    f.cache.evaluate();
+    REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
+    REQUIRE(f.cache.active_mshr_count() == 0); // secondary retired
+    REQUIRE(f.cache.pinned_line_count() == 0); // pin cleared
+    // WB grew by 1 (secondary pushed its line) but also loses any mem_if
+    // completion -- we just assert it's within depth.
+    REQUIRE(f.cache.write_buffer_size() <= WB_DEPTH);
+    f.end_cycle();
 }
