@@ -722,6 +722,83 @@ TEST_CASE("WritebackArbiter: queued memory sources preserve simultaneous hit and
     REQUIRE_FALSE(fill_source.has_result());
 }
 
+TEST_CASE("WritebackArbiter: 3-source sustained contention rotates fairly", "[timing]") {
+    // Spec §4.7: "Round-robin among execution units ... the round-robin pointer
+    // advances past the selected unit, ensuring fairness." With 2 sources, you
+    // cannot distinguish "advance past winner" from "unconditional +1"; with 3
+    // sources saturated every cycle, unfair rotation would re-pick the same
+    // source and leave one starved across the window.
+    Stats stats;
+    Scoreboard scoreboard;
+    WritebackArbiter arbiter(scoreboard, stats);
+    StubExecutionUnit alu(ExecUnit::ALU);
+    StubExecutionUnit mul(ExecUnit::MULTIPLY);
+    StubExecutionUnit div(ExecUnit::DIVIDE);
+    arbiter.add_source(&alu);
+    arbiter.add_source(&mul);
+    arbiter.add_source(&div);
+
+    scoreboard.seed_next();
+    scoreboard.set_pending(0, 10);
+    scoreboard.set_pending(0, 11);
+    scoreboard.set_pending(0, 12);
+    scoreboard.commit();
+
+    std::array<ExecUnit, 3> picked{};
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        alu.set_result(0, 10);
+        mul.set_result(0, 11);
+        div.set_result(0, 12);
+
+        scoreboard.seed_next();
+        arbiter.evaluate();
+        arbiter.commit();
+        scoreboard.commit();
+
+        REQUIRE(arbiter.committed_entry().has_value());
+        picked[cycle] = arbiter.committed_entry()->source_unit;
+    }
+
+    // Each source selected exactly once across the 3-cycle window.
+    REQUIRE(picked[0] == ExecUnit::ALU);
+    REQUIRE(picked[1] == ExecUnit::MULTIPLY);
+    REQUIRE(picked[2] == ExecUnit::DIVIDE);
+    REQUIRE(stats.writeback_conflicts == 3);
+}
+
+TEST_CASE("WritebackArbiter: scan-from-pointer skips unready sources", "[timing]") {
+    // The arbiter must pick the *first ready* source starting from the
+    // round-robin pointer, not just the source at the pointer. Without this,
+    // an unready source at the pointer would stall the arbiter for a cycle.
+    Stats stats;
+    Scoreboard scoreboard;
+    WritebackArbiter arbiter(scoreboard, stats);
+    StubExecutionUnit alu(ExecUnit::ALU);
+    StubExecutionUnit mul(ExecUnit::MULTIPLY);
+    StubExecutionUnit div(ExecUnit::DIVIDE);
+    arbiter.add_source(&alu);
+    arbiter.add_source(&mul);
+    arbiter.add_source(&div);
+
+    scoreboard.seed_next();
+    scoreboard.set_pending(0, 20);
+    scoreboard.commit();
+
+    // Pointer starts at 0 (ALU). Only DIVIDE has a result — arbiter must
+    // scan forward and pick DIVIDE on this cycle, not idle.
+    div.set_result(0, 20);
+
+    scoreboard.seed_next();
+    arbiter.evaluate();
+    arbiter.commit();
+    scoreboard.commit();
+
+    REQUIRE(arbiter.committed_entry().has_value());
+    REQUIRE(arbiter.committed_entry()->source_unit == ExecUnit::DIVIDE);
+    REQUIRE_FALSE(scoreboard.is_pending(0, 20));
+    REQUIRE(stats.writeback_conflicts == 0);  // only one source was ready
+}
+
 // ---------------------------------------------------------------------------
 // Instruction buffer depth-3 default: adversarial tests
 // ---------------------------------------------------------------------------
