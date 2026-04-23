@@ -240,3 +240,42 @@ TEST_CASE("WarpScheduler: RR pointer advances even when idle", "[scheduler]") {
     REQUIRE(f.scheduler->output().has_value());
     REQUIRE(f.scheduler->output()->warp_id == 1);
 }
+
+TEST_CASE("WarpScheduler: scoreboard-stalled warp becomes eligible next cycle when hazard clears",
+          "[scheduler][timing]") {
+    // Binds issue-stage eligibility to scoreboard state transitions. Existing
+    // tests verify the initial stall in isolation — nothing asserts that the
+    // *same* warp issues on the very next cycle once the hazard clears.
+    // Without this binding, a scheduler that cached an "ineligible" verdict
+    // across cycles would still pass every other scheduler test.
+    SchedulerFixture f(1);
+
+    // Cycle 0: warp 0 reads x5 which is pending → SCOREBOARD stall.
+    f.scoreboard.seed_next();
+    f.scoreboard.set_pending(0, 5);
+    f.scoreboard.commit();
+
+    f.load_and_push(0, 0, encode_addi(6, 5, 1));
+
+    f.scoreboard.seed_next();
+    f.scheduler->set_opcoll_free(true);
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_diagnostics()[0] == SchedulerIssueOutcome::SCOREBOARD);
+    REQUIRE(f.stats.total_instructions_issued == 0);
+
+    // Between cycles: writeback clears the hazard.
+    f.scoreboard.seed_next();
+    f.scoreboard.clear_pending(0, 5);
+    f.scoreboard.commit();
+
+    // Cycle 1: same warp, same instruction at head — must now issue.
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+    REQUIRE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_output()->warp_id == 0);
+    REQUIRE(f.scheduler->current_diagnostics()[0] == SchedulerIssueOutcome::ISSUED);
+    REQUIRE(f.stats.total_instructions_issued == 1);
+}
