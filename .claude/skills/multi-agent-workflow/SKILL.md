@@ -85,3 +85,20 @@ If a change is kept but targeted tests are deferred, log it in `/UNTESTED.md`. R
 - Never proceed past a failed regression gate or past the fix-loop limit without user input.
 - Create all commits — sub-agents do not commit. Bundle implementation, spec, and tests in one atomic commit.
 - Before committing, verify documentation per the Documentation Sync rules in `CLAUDE.md` (the trigger table there is authoritative and applies to both workflow and single-agent changes).
+
+### Timing-claim enumeration (hand-off to test-author)
+
+Before dispatching the test-author, read the implementation diff and the spec diff and produce an explicit enumeration of the **timing claims** the change makes or modifies. Include this enumeration verbatim in the test-author prompt. This is how the orchestrator prevents timing regressions from slipping past the oracle.
+
+Enumerate every:
+
+- **Latency change** — e.g., "TLOOKUP: 64 → 17 cycle latency"
+- **Throughput / pipelining claim** — e.g., "TLOOKUP is pipelined dual-port BRAM; back-to-back accepts allowed with II < 17"
+- **Priority / arbitration rule added or changed** — e.g., "cache gather-extract port: FILL > secondary drain > HIT"
+- **Ordering / sequencing rule** — e.g., "chain drains in allocation order; pin clears only when the last secondary retires"
+- **Stall / eligibility gate added or changed** — e.g., "warp ineligible while `branch_in_flight` set", "fetch blocked when decode buffer is one slot from full"
+- **Counter / stall-reason whose increment timing is itself a spec claim** — e.g., "`line_pin_stall_cycles` increments once per cycle a different-tag miss is rejected while the set is pinned"
+
+For each entry, state: (a) the claim in one sentence, (b) the spec section or line(s) it lives in, (c) the file/function where the timing logic lives. The test-author uses this list as its primary test target — a missing entry will usually mean a missing test.
+
+If the change makes no timing claims (pure functional bug fix, doc change, refactor with identical cycle behavior), say so explicitly. Do not pass an empty list implicitly.

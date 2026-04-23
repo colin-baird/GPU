@@ -107,6 +107,8 @@ Structured timing-trace types and Chrome trace writer.
 
 Backend routing system. Decouples program loading from execution so multiple backends can consume the same `ProgramImage`.
 
+- **Scope:** This backend interface lives only under `runner/include/runner/`; the simulator library does not expose duplicate backend declarations under `sim/include/gpu_sim/`.
+
 - **Class `Backend`** (abstract): `run(image, config, argc, argv)` -> exit code, `name()` -> string.
 - **`create_backend(name)`** -> `unique_ptr<Backend>`. Factory function; returns `nullptr` for unknown names. Currently supports `"perf_sim"`.
 
