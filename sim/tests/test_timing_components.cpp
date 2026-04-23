@@ -361,71 +361,33 @@ TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
     REQUIRE(div.has_result());
 }
 
-TEST_CASE("TLookupUnit: result appears after 17 cycles", "[timing]") {
+// Binds claim #1 (TLOOKUP latency = 17 cycles, spec §2.3 / §4.5).
+// Negative-space assertion across cycles 0..16, positive assertion at cycle 17.
+// A stub that completed in 0 cycles -- or any off-by-one -- would trip one of
+// the interior REQUIRE_FALSE calls or the final REQUIRE.
+TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]") {
     Stats stats;
     TLookupUnit tlookup(stats);
     auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
 
+    REQUIRE_FALSE(tlookup.busy());
+    REQUIRE_FALSE(tlookup.has_result());
+
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 4);
-    for (int i = 0; i < 16; ++i) {
+    REQUIRE(tlookup.busy());
+
+    // Cycles 0..16 post-accept: no result, still busy. Every intermediate cycle
+    // must be checked -- a single boundary assertion would miss mid-flight leaks.
+    for (uint32_t i = 0; i < 17; ++i) {
+        REQUIRE(tlookup.busy());
         REQUIRE_FALSE(tlookup.has_result());
         tlookup.evaluate();
     }
-    REQUIRE_FALSE(tlookup.has_result());
-    tlookup.evaluate();
-    REQUIRE(tlookup.has_result());
-}
 
-TEST_CASE("TLookupUnit: busy signal true for exactly 17 cycles", "[timing][tlookup]") {
-    Stats stats;
-    TLookupUnit tlookup(stats);
-    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
-
+    // Exactly at the 17th evaluate the result materialises and the unit
+    // transitions busy -> result-buffered.
     REQUIRE_FALSE(tlookup.busy());
-
-    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-    REQUIRE(tlookup.busy());
-
-    // busy must remain true for all 17 evaluate calls
-    for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE(tlookup.busy());
-        tlookup.evaluate();
-    }
-    // After 17 evaluations, busy must be false
-    REQUIRE_FALSE(tlookup.busy());
-}
-
-TEST_CASE("TLookupUnit: result not available at cycle 16, available at 17", "[timing][tlookup]") {
-    Stats stats;
-    TLookupUnit tlookup(stats);
-    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
-
-    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-
-    // Advance 16 evaluations -- result must NOT be ready
-    for (uint32_t i = 0; i < 16; ++i) {
-        tlookup.evaluate();
-    }
-    REQUIRE_FALSE(tlookup.has_result());
-
-    // One more evaluation (17th) -- result must appear
-    tlookup.evaluate();
     REQUIRE(tlookup.has_result());
-}
-
-TEST_CASE("TLookupUnit: cycles_remaining counts down from 17 to 0", "[timing][tlookup]") {
-    Stats stats;
-    TLookupUnit tlookup(stats);
-    auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
-
-    tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-    REQUIRE(tlookup.cycles_remaining() == 17);
-
-    for (uint32_t i = 17; i > 0; --i) {
-        REQUIRE(tlookup.cycles_remaining() == i);
-        tlookup.evaluate();
-    }
-    REQUIRE(tlookup.cycles_remaining() == 0);
 }
 
 TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed", "[timing][tlookup]") {
@@ -454,39 +416,66 @@ TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed",
     REQUIRE(tlookup.is_ready());
 }
 
-TEST_CASE("TLookupUnit: back-to-back dispatch completes in 17 cycles each", "[timing][tlookup]") {
+// Binds claim #2: per-warp initiation interval.
+//
+// The spec's "pipelined dual-port BRAM, 2 lanes/cycle" is an *intra-warp*
+// structural claim internal to the TLOOKUP unit -- the timing model lumps the
+// 32 lanes into a single 17-cycle countdown, so intra-warp pipelining is not
+// exposed at the unit interface. What IS observable at this interface is the
+// warp-level II: the unit has a single accept slot gated by
+//     is_ready() = !busy_ && !result_buffer_.valid
+// so a second warp cannot be accepted until (a) the prior 17-cycle countdown
+// has completed AND (b) the result has been consumed. Minimum per-warp II is
+// therefore 17 compute cycles + 1 consume cycle = 18 cycles.
+//
+// Self-check: this test fails if the `busy_` arm of is_ready() is removed
+// (the in-flight loop would see is_ready() == true), and fails if the
+// `!result_buffer_.valid` arm is removed (the post-completion block would see
+// is_ready() == true before consume_result()). A 0-cycle stub would also
+// trip the in-flight loop on the very first iteration.
+TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
+          "[timing][tlookup]") {
     Stats stats;
     TLookupUnit tlookup(stats);
-    auto first = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
+    auto first = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP), 0);
     auto second = make_issue_output(i_type(16, 1, 0, 6, isa::OP_TLOOKUP), 1);
 
-    // First TLOOKUP
+    REQUIRE(tlookup.is_ready());
     tlookup.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 0);
+
+    // In-flight window: is_ready() must be false every cycle of the 17-cycle
+    // countdown. This binds the `busy_` arm of the ready gate.
     for (uint32_t i = 0; i < 17; ++i) {
+        REQUIRE_FALSE(tlookup.is_ready());
         tlookup.evaluate();
     }
+
+    // Countdown complete but result not yet consumed: is_ready() must still be
+    // false. This binds the `!result_buffer_.valid` arm of the ready gate --
+    // the unit cannot accept warp B while warp A's result sits unclaimed.
     REQUIRE(tlookup.has_result());
+    REQUIRE_FALSE(tlookup.is_ready());
+
+    // Consume drain cycle unblocks the next accept; this is the "+1 consume
+    // cycle" component of the warp-level II.
     auto wb1 = tlookup.consume_result();
-    REQUIRE(wb1.dest_reg == 5);
     REQUIRE(wb1.warp_id == 0);
+    REQUIRE(wb1.dest_reg == 5);
     REQUIRE(tlookup.is_ready());
 
-    // Second TLOOKUP immediately after consuming
-    tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 17);
-
-    // Must not produce result before 17 evaluations
-    for (uint32_t i = 0; i < 16; ++i) {
+    // Second accept now succeeds and runs its own independent 17-cycle
+    // countdown -- confirming II is finite and the slot recycles cleanly.
+    tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 18);
+    for (uint32_t i = 0; i < 17; ++i) {
+        REQUIRE_FALSE(tlookup.is_ready());
         REQUIRE_FALSE(tlookup.has_result());
         tlookup.evaluate();
     }
-    REQUIRE_FALSE(tlookup.has_result());
-    tlookup.evaluate();
     REQUIRE(tlookup.has_result());
-
     auto wb2 = tlookup.consume_result();
-    REQUIRE(wb2.dest_reg == 6);
     REQUIRE(wb2.warp_id == 1);
-    REQUIRE(wb2.issue_cycle == 17);
+    REQUIRE(wb2.dest_reg == 6);
+    REQUIRE(wb2.issue_cycle == 18);
 }
 
 TEST_CASE("TLookupUnit: stats track busy_cycles=17 and instructions=1 per dispatch", "[timing][tlookup]") {
