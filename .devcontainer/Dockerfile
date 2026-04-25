@@ -68,7 +68,8 @@ ENV VISUAL=nano
 
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
   sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="clean"/' /home/$USERNAME/.zshrc && \
-  echo 'export HISTFILE=/commandhistory/.bash_history' >> /home/$USERNAME/.zshrc
+  echo 'export HISTFILE=/commandhistory/.bash_history' >> /home/$USERNAME/.zshrc && \
+  echo "alias dangerclaude='claude --dangerously-skip-permissions'" >> /home/$USERNAME/.zshrc
 
 ENV NPM_CONFIG_PREFIX=/home/$USERNAME/.npm-global
 ENV PATH=$PATH:/home/$USERNAME/.npm-global/bin
