@@ -136,8 +136,8 @@ last column is responsible for fixing it.
 |---|---|---|---|---|---|---|---|
 | 1 | `DecodeStage::ready_to_consume_fetch()` (computed in `compute_ready()`) | `FetchStage::evaluate` | `bool` decode-ready signal | **READY/STALL** | tick order: `decode_.compute_ready` -> `fetch_.evaluate` -> `decode_.evaluate` | compliant (Phase 3) | 3 |
 | 2 | `DecodeStage::pending_warp()` | `FetchStage::evaluate` (direct accessor read; the `set_decode_pending_warp` setter has been deleted) | optional warp id of decode's pending entry | **READY/STALL** | same tick order as row 1; fetch holds a `DecodeStage*` wired by `TimingModel` | compliant (Phase 3) | 3 |
-| 3 | `OperandCollector::is_free()` | `WarpScheduler` (via `set_opcoll_free` setter called before `scheduler.evaluate`) | `bool` opcoll-free flag | should be **READY/STALL** via `opcoll.ready_out()` | currently pre-evaluate setter | non-compliant | 4 |
-| 4 | Each `ExecutionUnit::is_ready()` | `WarpScheduler` (via `unit_ready_fn_` callback queried during `scheduler.evaluate`) | per-unit ready bit | should be **READY/STALL** via `unit.ready_out()` | callback reads live state mid-tick | non-compliant | 4 |
+| 3 | `OperandCollector::ready_out()` (computed in `compute_ready()` from `current_busy_`) | `WarpScheduler::evaluate` (reads `opcoll_->ready_out()` directly via wired pointer) | `bool` opcoll-free flag | **READY/STALL** | tick order: `opcoll_.compute_ready` -> `scheduler_.evaluate`; `set_opcoll_free` setter deleted | compliant (Phase 4) | 4 |
+| 4 | Each `ExecutionUnit::ready_out()` (added to base interface; computed in each unit's `compute_ready()` from committed state) | `WarpScheduler::evaluate` (reads `unit->ready_out()` via typed pointers wired by `set_consumers`) | per-unit ready bit | **READY/STALL** | tick order: each unit's `compute_ready` -> `scheduler_.evaluate`; `unit_ready_fn_` callback deleted | compliant (Phase 4) | 4 |
 | 5 | `WarpScheduler` issue (sets `warps_[w].branch_in_flight = true` mid-evaluate) and `OperandCollector` branch resolution (clears `warps_[w].branch_in_flight = false` via direct mutation in `timing_model.cpp` ~line 403) | `WarpScheduler::evaluate` (next cycle) reads `warps_[w].branch_in_flight` | per-warp branch-shadow bit | should be **REGISTERED** per-warp pair (`next_branch_in_flight_[w]` / `current_branch_in_flight_[w]`) | mid-tick mutation of shared `WarpState` field | non-compliant | 5 |
 | 6 | `OperandCollector::accept()` writes only `next_busy_`/`next_cycles_remaining_`/`next_instr_` | `OperandCollector::evaluate` (reads `next_*` after the prior commit, so equal to committed values until accept overrides) and `OperandCollector::is_free()` (reads `current_busy_`) | opcoll busy/cycles/instr | **REGISTERED** next/current | `accept()` only mutates `next_*`; `commit()` flips next/current for busy, cycles_remaining, instr, and output | compliant (Phase 2) | 2 |
 | 7 | `ALUUnit`/`MultiplyUnit`/`DivideUnit`/`TLookupUnit`/`LdStUnit::accept()` (writes only `next_*`); `WritebackArbiter::evaluate` calls `consume_result()` which writes `next_result_buffer_.valid = false` | downstream `evaluate()` (writeback arbiter sees `has_result()` reading live `next_*` for the COMBINATIONAL same-tick edge); `is_ready()` consumed by scheduler reads `current_*` (committed) | per-unit `pending_input_`/`pending_result_`/`pending_entry_`, `pipeline_`, `addr_gen_fifo_`, `result_buffer_` | mixed: cross-cycle state is **REGISTERED** (`next_*`/`current_*` with `commit()` flip); the wb-arbiter and ldst→coalescing edges are **COMBINATIONAL** (live `next_*` reads to preserve zero cycle delta) | every unit's `commit()` flips next/current for all double-buffered fields; `accept()` and `consume_result()` write only `next_*` | compliant (Phase 1) | 1 |
@@ -199,9 +199,20 @@ The full refactor plan lives in
   output is now strictly REGISTERED (`current_output_ = next_output_` in
   `commit()`); evaluate encodes the hold-vs-advance decision into
   `next_output_`. Inventory rows: 1, 2.
-- **Phase 4**: Scheduler ready signals. Remove `set_opcoll_free` and
-  `unit_ready_fn_`; add `ready_out()` on opcoll and each unit.
-  Inventory rows: 3, 4.
+- **Phase 4** (landed): Scheduler ready signals. Removed `set_opcoll_free`
+  setter and the `UnitReadyFn` callback / `unit_ready_fn_` slot. Added
+  `compute_ready()` (default no-op) and pure-virtual `ready_out()` to the
+  `ExecutionUnit` base interface; each of ALU/MUL/DIV/TLOOKUP/LDST and
+  `OperandCollector` overrides them, writing a `ready_out_` slot from
+  committed `current_*` state. `WarpScheduler::set_consumers` wires the
+  opcoll plus five typed unit pointers at construction; `evaluate()` reads
+  `opcoll_->ready_out()` and each unit's `ready_out()` directly. Tick order
+  in `TimingModel::tick()` adds a backward sweep
+  (`opcoll/alu/mul/div/tlookup/ldst/decode .compute_ready()`) before
+  `fetch_->evaluate()`. Test override hooks (`set_opcoll_ready_override`,
+  `set_unit_ready_override`) replace the deleted setters in
+  `test_warp_scheduler.cpp`, `test_timing_components.cpp`, and
+  `test_branch.cpp`. Inventory rows: 3, 4.
 - **Phase 5**: Branch redirect and `branch_in_flight` as REGISTERED state.
   Per-warp next/current pair; opcoll publishes a `next_redirect_request_`
   signal; fetch/decode flush at their own commit. Inventory rows: 5, 12.

@@ -19,15 +19,23 @@ class OperandCollector : public PipelineStage {
 public:
     explicit OperandCollector(Stats& stats) : stats_(stats) {}
 
+    // Phase 4 READY/STALL discipline: compute_ready() reads only committed
+    // (current_busy_) state and updates ready_out_. WarpScheduler::evaluate()
+    // queries ready_out() during the same tick; TimingModel::tick() invokes
+    // compute_ready() before scheduler_->evaluate() so the signal is stable
+    // and derived from end-of-last-cycle state.
+    void compute_ready();
+    bool ready_out() const { return ready_out_; }
+
     void evaluate() override;
     void commit() override;
     void reset() override;
 
-    // Queried by the scheduler BEFORE this tick's accept()/evaluate(). Reads
-    // committed (current_*) state — last cycle's end-of-cycle busy bit. The
-    // scheduler's pre-evaluate read at timing_model.cpp ~line 390 must see
-    // the same value the cycle would have shown under the prior single-buffer
-    // implementation.
+    // Alias of ready_out() retained for post-commit observers and tests:
+    // pipeline_drained() / execution_units_drained() / trace_cycle() / unit
+    // tests query "is operand collector idle?" after commit and need to read
+    // committed (current_busy_) state directly. Functionally identical to
+    // ready_out() because both derive from current_busy_.
     bool is_free() const { return !current_busy_; }
 
     // Phase 2 discipline: writes only into next_* slots. evaluate() runs
@@ -72,6 +80,12 @@ private:
     // committed copy used by post-commit observers (branch_redirect tracing).
     std::optional<DispatchInput> current_output_;
     std::optional<DispatchInput> next_output_;
+
+    // Phase 4 READY/STALL slot: written by compute_ready() at the top of the
+    // tick from current_busy_; read by WarpScheduler::evaluate() the same
+    // cycle. Initial value matches pre-tick "free" so the very first cycle
+    // matches the prior pre-evaluate setter behavior.
+    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

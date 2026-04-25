@@ -2,6 +2,14 @@
 
 namespace gpu_sim {
 
+void OperandCollector::compute_ready() {
+    // Phase 4 READY/STALL: read only committed (current_busy_) state. The
+    // scheduler reads ready_out() during its evaluate() this same cycle.
+    // Mirrors the prior pre-evaluate set_opcoll_free(opcoll_->is_free())
+    // setter exactly.
+    ready_out_ = !current_busy_;
+}
+
 void OperandCollector::accept(const IssueOutput& issue) {
     // Phase 2 discipline: writes only into next_* slots. The scheduler's
     // pre-evaluate is_free() check (which reads current_busy_) gates calling
@@ -54,6 +62,7 @@ void OperandCollector::reset() {
     next_cycles_remaining_ = 0;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
+    ready_out_ = true;
 }
 
 } // namespace gpu_sim

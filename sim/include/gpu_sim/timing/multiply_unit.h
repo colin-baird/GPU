@@ -19,6 +19,8 @@ public:
     MultiplyUnit(uint32_t pipeline_stages, Stats& stats)
         : pipeline_stages_(pipeline_stages), stats_(stats) {}
 
+    void compute_ready() override;
+    bool ready_out() const override { return ready_out_; }
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -57,6 +59,9 @@ private:
     std::deque<PipelineEntry> next_pipeline_;
     WritebackEntry current_result_buffer_;
     WritebackEntry next_result_buffer_;
+    // Phase 4 READY/STALL slot: derived from committed state by
+    // compute_ready(); read by the scheduler this same cycle.
+    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

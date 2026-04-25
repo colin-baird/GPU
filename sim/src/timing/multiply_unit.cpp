@@ -2,6 +2,16 @@
 
 namespace gpu_sim {
 
+void MultiplyUnit::compute_ready() {
+    // Phase 4 READY/STALL: read only committed (current_*) state. Mirrors
+    // is_ready(): pipeline is "stalled" when last cycle's head reached zero
+    // but the result buffer was already occupied.
+    bool head_blocked = current_result_buffer_.valid &&
+                        !current_pipeline_.empty() &&
+                        current_pipeline_.front().cycles_remaining == 0;
+    ready_out_ = !head_blocked;
+}
+
 void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: writes only into next_* slots. The newly-pushed
     // entry is visible to this same tick's evaluate() through next_pipeline_.
@@ -69,6 +79,7 @@ void MultiplyUnit::reset() {
     next_pipeline_.clear();
     current_result_buffer_.valid = false;
     next_result_buffer_.valid = false;
+    ready_out_ = true;
 }
 
 bool MultiplyUnit::is_ready() const {

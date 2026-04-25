@@ -185,7 +185,7 @@ Abstract base for pipeline stages. Header-only.
 Abstract base for execution units plus the writeback data structure. Header-only.
 
 - **Struct `WritebackEntry`**: `valid`, `warp_id`, `dest_reg`, `values[WARP_SIZE]`, `source_unit`, `pc`, `raw_instruction`, `issue_cycle`.
-- **Class `ExecutionUnit`**: Extends pipeline stage interface with `is_ready()`, `has_result()`, `consume_result()`, `get_type()`.
+- **Class `ExecutionUnit`**: Extends pipeline stage interface with `compute_ready()` (default no-op), pure-virtual `ready_out()`, `is_ready()`, `has_result()`, `consume_result()`, and `get_type()`. Phase 4 READY/STALL discipline: each concrete unit overrides `compute_ready()` to read only its committed `current_*` state and write its `ready_out_` slot; `WarpScheduler::evaluate()` reads each unit's `ready_out()` directly, replacing the prior `unit_ready_fn_` callback. `is_ready()` is retained for post-commit drain checks (`pipeline_drained` / `execution_units_drained` / `trace_cycle`) and reads the same committed state.
 
 ### `include/gpu_sim/timing/warp_state.h`
 
@@ -244,20 +244,22 @@ Issue stage with round-robin scheduling and 4-way eligibility check.
 
 - **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `BRANCH_SHADOW`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
 - **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, func_model_ref, stats_ref)`**
-- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) no branch in flight for this warp, (3) scoreboard clear for source registers, (4) operand collector free, (5) target execution unit ready. First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, sets scoreboard pending for `rd`, and sets `branch_in_flight` on the warp if the issued instruction is a branch/JAL/JALR. Pointer advances unconditionally. Stall counters: branch shadow stalls increment `warp_stall_branch_shadow`, scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
-- **`set_opcoll_free(bool)`**, **`set_unit_ready_fn(fn)`**: External readiness inputs.
+- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) no branch in flight for this warp, (3) scoreboard clear for source registers, (4) operand collector free (`opcoll_->ready_out()`), (5) target execution unit ready (`unit->ready_out()` for the routed `ExecUnit`). First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, sets scoreboard pending for `rd`, and sets `branch_in_flight` on the warp if the issued instruction is a branch/JAL/JALR. Pointer advances unconditionally. Stall counters: branch shadow stalls increment `warp_stall_branch_shadow`, scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
+- **`set_consumers(opcoll, alu, mul, div, tlookup, ldst)`**: Phase 4 wiring. Called once during `TimingModel` construction with the owned opcoll and five typed execution units. Replaces the prior `set_opcoll_free(bool)` setter and the `UnitReadyFn` callback (`set_unit_ready_fn`) — those have been removed. Inside `evaluate()`, the scheduler reads `opcoll_->ready_out()` and each unit's `ready_out()` directly; both signals are computed earlier in the same tick by the corresponding `compute_ready()` (see Phase 4 in `resources/timing_discipline.md`).
+- **`set_opcoll_ready_override(optional<bool>)`** / **`set_unit_ready_override(ExecUnit, optional<bool>)`**: Test-only hooks that override the wired opcoll/unit `ready_out()` for a unit-level test that constructs a `WarpScheduler` without real consumers. With no override and no wired consumer, the scheduler defaults to "ready", matching the prior pre-Phase-4 fixture default.
 - **`current_diagnostics()`**: Returns the committed per-warp `SchedulerIssueOutcome` array.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `IssueOutput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/operand_collector.h` -- `src/timing/operand_collector.cpp`
 
-Models operand read timing (no actual data movement -- values are in TraceEvent). Phase 2 cross-stage signaling discipline: `busy_`, `cycles_remaining_`, `current_instr_`, and `current_output_` are next/current double-buffered. `accept()` writes only `next_busy_` / `next_cycles_remaining_` / `next_instr_`; `evaluate()` operates on the `next_*` slot (which equals `current_*` after the prior `commit()` for in-flight carry-forward, or holds the freshly-issued payload when accept ran earlier this tick); `commit()` flips every double-buffered field. `is_free()` reads committed (`current_*`) state for the scheduler's pre-evaluate query, while `output()` returns the live `next_output_` for the COMBINATIONAL same-tick edge to `dispatch_to_unit` and each execution unit's `accept()`.
+Models operand read timing (no actual data movement -- values are in TraceEvent). Phase 2 cross-stage signaling discipline: `busy_`, `cycles_remaining_`, `current_instr_`, and `current_output_` are next/current double-buffered. `accept()` writes only `next_busy_` / `next_cycles_remaining_` / `next_instr_`; `evaluate()` operates on the `next_*` slot (which equals `current_*` after the prior `commit()` for in-flight carry-forward, or holds the freshly-issued payload when accept ran earlier this tick); `commit()` flips every double-buffered field. Phase 4 READY/STALL discipline: `compute_ready()` reads only `current_busy_` and writes `ready_out_`, which `WarpScheduler::evaluate()` consumes the same cycle.
 
 - **`OperandCollector(stats_ref)`**
+- **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. `compute_ready()` writes `ready_out_ = !current_busy_`; `ready_out()` returns the latched signal. Called by `TimingModel::tick()` before `scheduler_->evaluate()` so the scheduler sees a stable, committed-state-derived signal. Replaces the prior `scheduler_->set_opcoll_free(opcoll_->is_free())` pre-evaluate setter call.
 - **`accept(IssueOutput)`**: Writes only `next_*`. Sets `next_cycles_remaining_` to 1 (2-operand) or 2 (VDOT8/3-operand).
 - **`evaluate()`**: Decrements `next_cycles_remaining_`. When 0, produces `next_output_` and clears `next_busy_`.
 - **`commit()`**: Flips `next_* -> current_*` for busy, cycles_remaining, instr, and output.
-- **`is_free()`**: Reads `current_busy_` (committed end-of-last-cycle state). The scheduler's pre-evaluate `set_opcoll_free` query depends on this contract.
+- **`is_free()`**: Alias of `ready_out()` for post-commit observers (`pipeline_drained()`, `execution_units_drained()`, `trace_cycle()`, unit tests). Reads `current_busy_` directly.
 - **Snapshot helpers**: `busy()`, `cycles_remaining()`, `resident_warp()`, `current_instruction()` -- all read committed (`current_*`) state and are consumed by `build_cycle_snapshot()` after the tick's full commit phase.
 - **Outputs**: Struct `DispatchInput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
 
@@ -266,6 +268,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 1-cycle ALU execution unit. Phase 1 cross-stage signaling discipline: `result_buffer_`, `has_pending_`, `pending_input_`, and `pending_cycle_` are next/current double-buffered. `accept()`, `evaluate()`, and `consume_result()` write only `next_*`; `commit()` flips `next_* -> current_*` at the cycle boundary. `is_ready()` reads committed (`current_*`) state for the scheduler; `has_result()` reads the live (`next_*`) result buffer for the COMBINATIONAL same-tick edge with the writeback arbiter.
 
 - **`ALUUnit(stats_ref)`**
+- **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. Mirrors `is_ready()` exactly (`!current_result_buffer_.valid && !current_has_pending_`) and is the value the scheduler queries this cycle.
 - **`accept(DispatchInput, cycle)`**: Stores pending input.
 - **`evaluate()`**: Produces result in `result_buffer_` in 1 cycle.
 - **`is_ready()`**: True when result buffer is empty and no pending input.
@@ -277,6 +280,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 Pipelined multiply/VDOT8 unit with configurable depth. Phase 1 discipline: `pipeline_` and `result_buffer_` are next/current double-buffered; `commit()` flips `next_* -> current_*`. The `head_blocked` check inside `evaluate()` reads `next_result_buffer_.valid` so any same-tick mid-evaluate updates remain visible.
 
 - **`MultiplyUnit(pipeline_stages, stats_ref)`**
+- **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. Mirrors `is_ready()` from committed state: pipeline is "stalled" iff `current_result_buffer_.valid && !current_pipeline_.empty() && current_pipeline_.front().cycles_remaining == 0`.
 - **`accept()`**: Pushes entry into pipeline shift register with `pipeline_stages` cycles remaining.
 - **`evaluate()`**: Decrements pipeline entries toward completion. If the head is ready but `result_buffer_` is occupied, the ready head is held at 0 until writeback consumes the buffer, then it resumes cleanly instead of underflowing.
 - **`is_ready()`**: True when result buffer is empty (can accept into pipeline every cycle).
@@ -287,6 +291,7 @@ Pipelined multiply/VDOT8 unit with configurable depth. Phase 1 discipline: `pipe
 Iterative divide unit, 32-cycle latency. Phase 1 discipline: `busy_`, `cycles_remaining_`, `pending_result_`, and `result_buffer_` are next/current double-buffered; `commit()` flips `next_* -> current_*`.
 
 - **`DivideUnit(stats_ref)`**. Constant `DIVIDE_LATENCY = 32`.
+- **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. Mirrors `is_ready()`: `!current_busy_ && !current_result_buffer_.valid`.
 - **`accept()`**: Starts countdown. Busy until complete.
 - **`is_ready()`**: True when not busy and result buffer empty.
 - **Snapshot helpers**: `busy()`, `cycles_remaining()`, `pending_entry()`, `result_entry()`.
@@ -296,6 +301,7 @@ Iterative divide unit, 32-cycle latency. Phase 1 discipline: `busy_`, `cycles_re
 Pipelined dual-port BRAM table lookup, 17-cycle latency (2 lanes/cycle, ceil(32/2)+1 = 17 cycles). Phase 1 discipline: `busy_`, `cycles_remaining_`, `pending_result_`, and `result_buffer_` are next/current double-buffered; `commit()` flips `next_* -> current_*`.
 
 - **`TLookupUnit(stats_ref)`**. Constant `TLOOKUP_LATENCY = 17`.
+- **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. Mirrors `is_ready()`: `!current_busy_ && !current_result_buffer_.valid`.
 - Same interface pattern as DivideUnit, plus snapshot helpers `busy()`, `cycles_remaining()`, `pending_entry()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/ldst_unit.h` -- `src/timing/ldst_unit.cpp`
@@ -304,6 +310,7 @@ Address generation unit with output FIFO. Phase 1 discipline: `busy_`, `cycles_r
 
 - **Struct `AddrGenFIFOEntry`**: `valid`, `warp_id`, `dest_reg`, `is_load`, `is_store`, `trace`, `issue_cycle`.
 - **`LdStUnit(num_ldst_units, fifo_depth, stats_ref)`**
+- **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. Mirrors `is_ready()`: `!current_busy_`.
 - **`accept()`**: Begins address generation. Latency = `ceil(32 / num_ldst_units)` cycles.
 - **`evaluate()`**: When address gen completes, pushes entry to FIFO. If the FIFO is full, the completed entry is held at 0 cycles remaining until space opens instead of underflowing and disappearing.
 - **`fifo_empty()`**, **`fifo_front()`**, **`fifo_pop()`**: Interface consumed by `CoalescingUnit`.
@@ -449,12 +456,13 @@ EBREAK state machine.
 
 Top-level cycle stepper wiring everything together.
 
-- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Sets up scheduler's unit readiness callback. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
+- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Wires the scheduler's READY/STALL consumers via `scheduler_->set_consumers(opcoll_, alu_, mul_, div_, tlookup_, ldst_)` (Phase 4): the scheduler reads each consumer's `ready_out()` directly, replacing the prior `set_unit_ready_fn` callback registration. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. Forward-order evaluation:
   1. `scoreboard_.seed_next()` and `cache_.evaluate()`
-  2. `decode_.compute_ready` -> `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`. Phase 3 READY/STALL discipline: `decode_.compute_ready()` reads only its committed `pending_` slot and exposes `ready_to_consume_fetch()`; `fetch_.evaluate()` reads that committed-state-derived signal as its backpressure gate; `decode_.evaluate()` then runs and pulls `fetch.current_output()` into `pending_` when ready. This restores "fetch evaluates before decode" in tick order while preserving the post-`0383f04` bug fix structurally — fetch's backpressure decision is based on decode's committed-state ready signal, not on a same-cycle mutated flag.
-  3. All `.commit()`
-  4. Termination check: `all_warps_done() && pipeline_drained()`
+  2. **READY/STALL backward sweep** (Phase 3 + Phase 4): `opcoll_.compute_ready` -> `alu_.compute_ready` -> `mul_.compute_ready` -> `div_.compute_ready` -> `tlookup_.compute_ready` -> `ldst_.compute_ready` -> `decode_.compute_ready`. Each consumer reads only its own committed (`current_*`) state and writes its `ready_out_` slot; producers (scheduler, fetch) read those signals during their own `evaluate()` later this cycle. Within this group no `compute_ready()` reads another stage's `ready_out_`, so order does not matter for correctness today; scheduler-consumed signals come first by convention.
+  3. **Forward sweep**: `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`. The Phase-3 fetch/decode READY/STALL boundary is structural: `fetch_.evaluate()` reads `decode_.ready_to_consume_fetch()` (committed-state-derived) as its backpressure gate; `decode_.evaluate()` then pulls `fetch.current_output()` into `pending_` when ready. The Phase-4 scheduler boundaries are structural: `scheduler_.evaluate()` reads `opcoll_->ready_out()` and each unit's `ready_out()` directly — the prior `set_opcoll_free` / `set_unit_ready_fn` setter calls are gone.
+  4. All `.commit()`
+  5. Termination check: `all_warps_done() && pipeline_drained()`
 - **`run(max_cycles)`**: Calls `tick()` in a loop.
 - **`dispatch_to_unit(DispatchInput)`**: Routes to appropriate execution unit. ECALL (via SYSTEM case) marks warp inactive. CSR reads are routed to ALU by the decoder (`target_unit = ExecUnit::ALU`), so they match the ALU case directly.
 - **`pipeline_drained()`**: Includes operand collector, execution units, coalescer, cache, memory interface, and buffered writeback state. Used for normal DONE detection to ensure all stores reach memory.

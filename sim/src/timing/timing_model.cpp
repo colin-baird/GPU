@@ -183,17 +183,12 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
 
     panic_ = std::make_unique<PanicController>(config.num_warps, warps_.data(), func_model);
 
-    scheduler_->set_unit_ready_fn([this](ExecUnit unit) -> bool {
-        switch (unit) {
-            case ExecUnit::ALU:      return alu_->is_ready();
-            case ExecUnit::MULTIPLY: return mul_->is_ready();
-            case ExecUnit::DIVIDE:   return div_->is_ready();
-            case ExecUnit::TLOOKUP:  return tlookup_->is_ready();
-            case ExecUnit::LDST:     return ldst_->is_ready();
-            case ExecUnit::SYSTEM:   return true;
-            default:                 return false;
-        }
-    });
+    // Phase 4 wiring: scheduler reads each consumer's ready_out() directly.
+    // Each consumer's compute_ready() runs at the top of tick() to populate
+    // ready_out_ from committed state, replacing the prior pre-evaluate
+    // setter pair (set_opcoll_free / set_unit_ready_fn).
+    scheduler_->set_consumers(opcoll_.get(), alu_.get(), mul_.get(), div_.get(),
+                              tlookup_.get(), ldst_.get());
 
     warp_trace_slices_.resize(config.num_warps);
     hardware_trace_slices_.resize(kHardwareTrackCount);
@@ -369,15 +364,21 @@ bool TimingModel::tick() {
     scoreboard_.seed_next();
     cache_->evaluate();
 
-    // Phase 3 READY/STALL discipline (formerly the post-`0383f04` reorder).
-    // decode.compute_ready() reads only its committed pending_ slot and
-    // exposes ready_to_consume_fetch(); fetch.evaluate() reads that
-    // committed-state-derived signal as its backpressure gate.
-    // decode.evaluate() then runs and pulls fetch.current_output() into
-    // pending_ when ready. The structural form preserves the bug fix
-    // without depending on a same-cycle mutated flag (output_consumed_)
-    // or pre-evaluate setter (set_decode_pending_warp).
+    // Phase 4 READY/STALL discipline: each consumer reads only its own
+    // committed (current_*) state and writes its ready_out_ slot. Producers
+    // (scheduler / fetch) then read those signals during their evaluate()
+    // this same cycle. Within this group, no compute_ready() reads another
+    // stage's ready_out_, so the order does not matter for correctness;
+    // scheduler-consumed signals (opcoll, units) come first for readability,
+    // followed by decode (consumed by fetch) per Phase 3.
+    opcoll_->compute_ready();
+    alu_->compute_ready();
+    mul_->compute_ready();
+    div_->compute_ready();
+    tlookup_->compute_ready();
+    ldst_->compute_ready();
     decode_->compute_ready();
+
     fetch_->evaluate();
     decode_->evaluate();
 
@@ -393,7 +394,9 @@ bool TimingModel::tick() {
         return true;
     }
 
-    scheduler_->set_opcoll_free(opcoll_->is_free());
+    // Phase 4: scheduler reads opcoll_->ready_out() and each unit's ready_out()
+    // directly inside evaluate(); the prior pre-evaluate set_opcoll_free
+    // setter is gone.
     scheduler_->evaluate();
 
     if (scheduler_->output()) {

@@ -2,6 +2,11 @@
 
 namespace gpu_sim {
 
+void DivideUnit::compute_ready() {
+    // Phase 4 READY/STALL: read only committed state. Mirrors is_ready().
+    ready_out_ = !current_busy_ && !current_result_buffer_.valid;
+}
+
 void DivideUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: writes only into next_* slots.
     next_busy_ = true;
@@ -47,6 +52,7 @@ void DivideUnit::reset() {
     next_result_buffer_.valid = false;
     current_pending_result_.valid = false;
     next_pending_result_.valid = false;
+    ready_out_ = true;
 }
 
 bool DivideUnit::is_ready() const {

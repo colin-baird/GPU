@@ -21,6 +21,8 @@ class LdStUnit : public ExecutionUnit {
 public:
     LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats);
 
+    void compute_ready() override;
+    bool ready_out() const override { return ready_out_; }
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -65,6 +67,8 @@ private:
     AddrGenFIFOEntry next_pending_entry_;
     std::deque<AddrGenFIFOEntry> current_addr_gen_fifo_;
     std::deque<AddrGenFIFOEntry> next_addr_gen_fifo_;
+    // Phase 4 READY/STALL slot.
+    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

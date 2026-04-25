@@ -50,7 +50,9 @@ struct SchedulerFixture {
 
         scheduler = std::make_unique<WarpScheduler>(
             num_warps, warps.data(), scoreboard, func_model, stats);
-        scheduler->set_unit_ready_fn([](ExecUnit) { return true; });
+        // Phase 4: no consumers wired -> default "all ready". Tests that
+        // need to gate opcoll or a specific unit busy use the override hooks
+        // (set_opcoll_ready_override / set_unit_ready_override) below.
     }
 
     // Push a decoded instruction into a warp's buffer
@@ -74,7 +76,6 @@ TEST_CASE("WarpScheduler: issues from non-empty buffer", "[scheduler]") {
     f.load_and_push(0, 0, encode_addi(5, 0, 42));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE(f.scheduler->output().has_value());
@@ -88,7 +89,6 @@ TEST_CASE("WarpScheduler: skips warp with empty buffer", "[scheduler]") {
     f.load_and_push(1, 0, encode_addi(5, 0, 42));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE(f.scheduler->output().has_value());
@@ -108,7 +108,6 @@ TEST_CASE("WarpScheduler: stalls on scoreboard hazard", "[scheduler]") {
     f.load_and_push(0, 0, encode_addi(6, 5, 1));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE_FALSE(f.scheduler->output().has_value());
@@ -125,7 +124,6 @@ TEST_CASE("WarpScheduler: VDOT8 checks rd as a source hazard", "[scheduler]") {
     f.load_and_push(0, 0, encode_vdot8(7, 5, 6));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE_FALSE(f.scheduler->output().has_value());
@@ -137,7 +135,7 @@ TEST_CASE("WarpScheduler: stalls when opcoll busy", "[scheduler]") {
     f.load_and_push(0, 0, encode_addi(5, 0, 42));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(false); // OpColl is busy
+    f.scheduler->set_opcoll_ready_override(false); // OpColl is busy
     f.scheduler->evaluate();
 
     // Should not issue
@@ -148,12 +146,9 @@ TEST_CASE("WarpScheduler: stalls when target unit busy", "[scheduler]") {
     SchedulerFixture f(1);
     f.load_and_push(0, 0, encode_addi(5, 0, 42));
 
-    f.scheduler->set_unit_ready_fn([](ExecUnit unit) {
-        return unit != ExecUnit::ALU; // ALU not ready
-    });
+    f.scheduler->set_unit_ready_override(ExecUnit::ALU, false); // ALU not ready
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE_FALSE(f.scheduler->output().has_value());
@@ -172,7 +167,6 @@ TEST_CASE("WarpScheduler: round-robin fairness across warps", "[scheduler]") {
     uint32_t issued_warps[4];
     for (int i = 0; i < 4; ++i) {
         f.scoreboard.seed_next();
-        f.scheduler->set_opcoll_free(true);
         f.scheduler->evaluate();
         REQUIRE(f.scheduler->output().has_value());
         issued_warps[i] = f.scheduler->output()->warp_id;
@@ -196,7 +190,6 @@ TEST_CASE("WarpScheduler: diagnostics mark issued and ready_not_selected warps",
     f.load_and_push(1, 0, encode_addi(6, 0, 2));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
     f.scheduler->commit();
 
@@ -210,7 +203,6 @@ TEST_CASE("WarpScheduler: sets scoreboard pending on issue", "[scheduler]") {
     f.load_and_push(0, 0, encode_addi(5, 0, 42)); // rd=5
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
     f.scoreboard.commit();
 
@@ -223,7 +215,6 @@ TEST_CASE("WarpScheduler: RR pointer advances even when idle", "[scheduler]") {
     // No instructions in any buffer
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE_FALSE(f.scheduler->output().has_value());
@@ -234,7 +225,6 @@ TEST_CASE("WarpScheduler: RR pointer advances even when idle", "[scheduler]") {
     f.load_and_push(1, 0, encode_addi(5, 0, 42));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
 
     REQUIRE(f.scheduler->output().has_value());
@@ -258,7 +248,6 @@ TEST_CASE("WarpScheduler: scoreboard-stalled warp becomes eligible next cycle wh
     f.load_and_push(0, 0, encode_addi(6, 5, 1));
 
     f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_free(true);
     f.scheduler->evaluate();
     f.scheduler->commit();
     REQUIRE_FALSE(f.scheduler->current_output().has_value());

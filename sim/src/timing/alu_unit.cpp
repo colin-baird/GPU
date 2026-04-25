@@ -2,6 +2,13 @@
 
 namespace gpu_sim {
 
+void ALUUnit::compute_ready() {
+    // Phase 4 READY/STALL: read only committed (current_*) state. Mirrors
+    // is_ready() exactly; the latter is retained for post-commit drain
+    // checks (pipeline_drained / execution_units_drained / trace_cycle).
+    ready_out_ = !current_result_buffer_.valid && !current_has_pending_;
+}
+
 void ALUUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: accept() writes only the next_* slot. The unit's
     // own evaluate() runs after accept() in the same tick and treats the
@@ -49,6 +56,7 @@ void ALUUnit::reset() {
     next_result_buffer_.valid = false;
     current_has_pending_ = false;
     next_has_pending_ = false;
+    ready_out_ = true;
 }
 
 bool ALUUnit::is_ready() const {

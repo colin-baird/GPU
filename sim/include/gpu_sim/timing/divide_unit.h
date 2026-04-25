@@ -10,6 +10,8 @@ class DivideUnit : public ExecutionUnit {
 public:
     explicit DivideUnit(Stats& stats) : stats_(stats) {}
 
+    void compute_ready() override;
+    bool ready_out() const override { return ready_out_; }
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -47,6 +49,8 @@ private:
     WritebackEntry next_pending_result_;
     WritebackEntry current_result_buffer_;
     WritebackEntry next_result_buffer_;
+    // Phase 4 READY/STALL slot.
+    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

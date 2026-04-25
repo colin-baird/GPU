@@ -5,6 +5,11 @@ namespace gpu_sim {
 LdStUnit::LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats)
     : num_ldst_units_(num_ldst_units), fifo_depth_(fifo_depth), stats_(stats) {}
 
+void LdStUnit::compute_ready() {
+    // Phase 4 READY/STALL: read only committed state. Mirrors is_ready().
+    ready_out_ = !current_busy_;
+}
+
 void LdStUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: writes only into next_* slots. ceil(32 / num_ldst_units)
     // cycles for address generation.
@@ -58,6 +63,7 @@ void LdStUnit::reset() {
     next_pending_entry_.valid = false;
     current_addr_gen_fifo_.clear();
     next_addr_gen_fifo_.clear();
+    ready_out_ = true;
 }
 
 bool LdStUnit::is_ready() const {

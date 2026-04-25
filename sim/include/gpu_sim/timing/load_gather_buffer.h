@@ -54,6 +54,11 @@ public:
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
+    // Phase 4: LoadGatherBufferFile is a writeback source (consumed by the
+    // writeback arbiter), never a scheduler dispatch target. The scheduler
+    // routes LDST instructions to LdStUnit. Default no-op compute_ready()
+    // suffices; ready_out() returns true since the scheduler never queries it.
+    bool ready_out() const override { return true; }
 
     uint32_t num_buffers() const { return num_warps_; }
     const LoadGatherBuffer& buffer(uint32_t warp_id) const { return buffers_[warp_id]; }

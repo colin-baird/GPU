@@ -244,8 +244,9 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     warps[0].branch_in_flight = true;
 
     WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
-    scheduler.set_unit_ready_fn([](ExecUnit) { return true; });
-    scheduler.set_opcoll_free(true);
+    // Phase 4: with no consumers wired the scheduler defaults to "all ready",
+    // matching the prior behavior of these explicit setters. Overrides remain
+    // available if a test wants to gate ALU/opcoll explicitly.
 
     scoreboard.seed_next();
     scheduler.evaluate();

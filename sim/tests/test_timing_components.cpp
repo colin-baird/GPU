@@ -72,6 +72,7 @@ public:
     void commit() override {}
     void reset() override { result_.valid = false; }
     bool is_ready() const override { return true; }
+    bool ready_out() const override { return true; }
     bool has_result() const override { return result_.valid; }
     WritebackEntry consume_result() override {
         WritebackEntry entry = result_;
@@ -1208,8 +1209,8 @@ TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
     func_model.instruction_memory().write(2, i_type(1, 0, isa::FUNCT3_ADD_SUB, 7, isa::OP_ALU_I));
 
     WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
-    scheduler.set_unit_ready_fn([](ExecUnit) { return true; });
-    scheduler.set_opcoll_free(true);
+    // Phase 4: no consumers wired -> default "all ready" matches the prior
+    // explicit setters.
 
     // No fetch is running — buffer will not be refilled. Three evaluate()
     // cycles must each produce an ISSUED, and the fourth must report
@@ -1254,8 +1255,7 @@ TEST_CASE("Depth-1 buffer starves immediately after one issue under fetch stall"
     func_model.instruction_memory().write(0, i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
     WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
-    scheduler.set_unit_ready_fn([](ExecUnit) { return true; });
-    scheduler.set_opcoll_free(true);
+    // Phase 4: no consumers wired -> default "all ready".
 
     scoreboard.seed_next();
     scheduler.evaluate();

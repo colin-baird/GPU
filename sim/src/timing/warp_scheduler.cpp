@@ -1,5 +1,12 @@
 #include "gpu_sim/timing/warp_scheduler.h"
 
+#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/alu_unit.h"
+#include "gpu_sim/timing/multiply_unit.h"
+#include "gpu_sim/timing/divide_unit.h"
+#include "gpu_sim/timing/tlookup_unit.h"
+#include "gpu_sim/timing/ldst_unit.h"
+
 namespace gpu_sim {
 
 SchedulerIssueOutcome WarpScheduler::unit_busy_outcome(ExecUnit unit) {
@@ -29,6 +36,33 @@ bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d
     return true;
 }
 
+bool WarpScheduler::query_opcoll_ready() const {
+    // Phase 4 READY/STALL: prefer test override, then wired opcoll's
+    // ready_out() (set by opcoll.compute_ready() before scheduler.evaluate()
+    // in TimingModel::tick()). Fallback for tests that wire neither: free.
+    if (opcoll_ready_override_) return *opcoll_ready_override_;
+    if (opcoll_) return opcoll_->ready_out();
+    return true;
+}
+
+bool WarpScheduler::query_unit_ready(ExecUnit unit) const {
+    auto resolve = [](const std::optional<bool>& override_,
+                      const ExecutionUnit* wired) -> bool {
+        if (override_) return *override_;
+        if (wired) return wired->ready_out();
+        return true;
+    };
+    switch (unit) {
+        case ExecUnit::ALU:      return resolve(alu_ready_override_, alu_);
+        case ExecUnit::MULTIPLY: return resolve(mul_ready_override_, mul_);
+        case ExecUnit::DIVIDE:   return resolve(div_ready_override_, div_);
+        case ExecUnit::TLOOKUP:  return resolve(tlookup_ready_override_, tlookup_);
+        case ExecUnit::LDST:     return resolve(ldst_ready_override_, ldst_);
+        case ExecUnit::SYSTEM:   return true;
+        default:                 return false;
+    }
+}
+
 void WarpScheduler::evaluate() {
     next_output_ = std::nullopt;
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
@@ -39,6 +73,11 @@ void WarpScheduler::evaluate() {
     uint32_t selected_warp = 0;
     BufferEntry selected_entry{};
     bool has_selected_entry = false;
+
+    // Phase 4 READY/STALL: query opcoll once per evaluate. ready_out() is
+    // derived from committed (current_busy_) state by opcoll.compute_ready(),
+    // which TimingModel::tick() invokes earlier in the same cycle.
+    const bool opcoll_ready = query_opcoll_ready();
 
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
@@ -70,13 +109,13 @@ void WarpScheduler::evaluate() {
             continue;
         }
 
-        if (!opcoll_free_) {
+        if (!opcoll_ready) {
             stats_.warp_stall_unit_busy[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
             continue;
         }
 
-        if (unit_ready_fn_ && !unit_ready_fn_(entry.decoded.target_unit)) {
+        if (!query_unit_ready(entry.decoded.target_unit)) {
             stats_.warp_stall_unit_busy[w]++;
             next_diagnostics_[w] = unit_busy_outcome(entry.decoded.target_unit);
             continue;
@@ -136,7 +175,6 @@ void WarpScheduler::reset() {
     rr_pointer_ = 0;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
-    opcoll_free_ = true;
     current_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
 }
