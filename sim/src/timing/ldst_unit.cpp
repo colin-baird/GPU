@@ -6,49 +6,64 @@ LdStUnit::LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats)
     : num_ldst_units_(num_ldst_units), fifo_depth_(fifo_depth), stats_(stats) {}
 
 void LdStUnit::accept(const DispatchInput& input, uint64_t cycle) {
-    busy_ = true;
-    // ceil(32 / num_ldst_units) cycles for address generation
-    cycles_remaining_ = (WARP_SIZE + num_ldst_units_ - 1) / num_ldst_units_;
+    // Phase 1 discipline: writes only into next_* slots. ceil(32 / num_ldst_units)
+    // cycles for address generation.
+    next_busy_ = true;
+    next_cycles_remaining_ = (WARP_SIZE + num_ldst_units_ - 1) / num_ldst_units_;
 
-    pending_entry_.valid = true;
-    pending_entry_.warp_id = input.warp_id;
-    pending_entry_.dest_reg = input.decoded.rd;
-    pending_entry_.is_load = input.trace.is_load;
-    pending_entry_.is_store = input.trace.is_store;
-    pending_entry_.trace = input.trace;
-    pending_entry_.issue_cycle = cycle;
+    next_pending_entry_.valid = true;
+    next_pending_entry_.warp_id = input.warp_id;
+    next_pending_entry_.dest_reg = input.decoded.rd;
+    next_pending_entry_.is_load = input.trace.is_load;
+    next_pending_entry_.is_store = input.trace.is_store;
+    next_pending_entry_.trace = input.trace;
+    next_pending_entry_.issue_cycle = cycle;
     stats_.ldst_stats.instructions++;
 }
 
 void LdStUnit::evaluate() {
-    if (busy_) {
+    // Operates on next_* (seeded equal to current_* by commit() at the end
+    // of the prior tick, possibly updated by accept() earlier this tick).
+    if (next_busy_) {
         stats_.ldst_stats.busy_cycles++;
-        if (cycles_remaining_ > 0) {
-            cycles_remaining_--;
+        if (next_cycles_remaining_ > 0) {
+            next_cycles_remaining_--;
         }
-        if (cycles_remaining_ == 0) {
-            // Try to push to FIFO
-            if (addr_gen_fifo_.size() < fifo_depth_) {
-                addr_gen_fifo_.push_back(pending_entry_);
-                pending_entry_.valid = false;
-                busy_ = false;
+        if (next_cycles_remaining_ == 0) {
+            // Try to push to FIFO. The FIFO write is observable to the
+            // coalescing unit's same-tick evaluate (COMBINATIONAL edge).
+            if (next_addr_gen_fifo_.size() < fifo_depth_) {
+                next_addr_gen_fifo_.push_back(next_pending_entry_);
+                next_pending_entry_.valid = false;
+                next_busy_ = false;
             }
             // If FIFO full, stay busy (stall) until a slot opens
         }
     }
 }
 
-void LdStUnit::commit() {}
+void LdStUnit::commit() {
+    current_busy_ = next_busy_;
+    current_cycles_remaining_ = next_cycles_remaining_;
+    current_pending_entry_ = next_pending_entry_;
+    current_addr_gen_fifo_ = next_addr_gen_fifo_;
+}
 
 void LdStUnit::reset() {
-    busy_ = false;
-    cycles_remaining_ = 0;
-    pending_entry_.valid = false;
-    addr_gen_fifo_.clear();
+    current_busy_ = false;
+    next_busy_ = false;
+    current_cycles_remaining_ = 0;
+    next_cycles_remaining_ = 0;
+    current_pending_entry_.valid = false;
+    next_pending_entry_.valid = false;
+    current_addr_gen_fifo_.clear();
+    next_addr_gen_fifo_.clear();
 }
 
 bool LdStUnit::is_ready() const {
-    return !busy_;
+    // Queried by scheduler before this tick's evaluate; reads committed
+    // end-of-last-cycle state.
+    return !current_busy_;
 }
 
 bool LdStUnit::has_result() const {

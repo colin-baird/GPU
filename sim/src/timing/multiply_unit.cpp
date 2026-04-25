@@ -3,6 +3,8 @@
 namespace gpu_sim {
 
 void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
+    // Phase 1 discipline: writes only into next_* slots. The newly-pushed
+    // entry is visible to this same tick's evaluate() through next_pipeline_.
     PipelineEntry entry;
     entry.wb.valid = true;
     entry.wb.warp_id = input.warp_id;
@@ -13,18 +15,30 @@ void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
     entry.wb.raw_instruction = input.decoded.raw;
     entry.wb.issue_cycle = cycle;
     entry.cycles_remaining = pipeline_stages_;
-    pipeline_.push_back(entry);
+    next_pipeline_.push_back(entry);
     stats_.mul_stats.instructions++;
 }
 
 void MultiplyUnit::evaluate() {
-    stats_.mul_stats.busy_cycles += pipeline_.empty() ? 0 : 1;
+    // At entry, next_pipeline_ already contains all prior committed entries
+    // (seeded by commit() via current_=next_) plus any entry just pushed by
+    // accept() this tick. We mutate next_pipeline_ in place: decrement
+    // cycles_remaining, and pop the head into next_result_buffer_ when ready.
+    stats_.mul_stats.busy_cycles += next_pipeline_.empty() ? 0 : 1;
 
-    bool head_blocked = result_buffer_.valid && !pipeline_.empty() &&
-                        pipeline_.front().cycles_remaining == 0;
+    // Intra-stage same-cycle read: head_blocked needs the live, this-cycle
+    // value of next_result_buffer_.valid. The hint from Phase 0 explicitly
+    // forbids reading current_result_buffer_.valid here -- if a prior
+    // mid-evaluate write had set next_result_buffer_, current_ would still
+    // be stale and we'd issue an extra entry into a blocked head. (Today the
+    // single set point is the pop below, which has not yet run, so current_
+    // and next_ happen to be equal at this point; reading next_ keeps the
+    // invariant correct under future intra-evaluate mutations as well.)
+    bool head_blocked = next_result_buffer_.valid && !next_pipeline_.empty() &&
+                        next_pipeline_.front().cycles_remaining == 0;
 
-    for (auto& entry : pipeline_) {
-        if (head_blocked && &entry == &pipeline_.front()) {
+    for (auto& entry : next_pipeline_) {
+        if (head_blocked && &entry == &next_pipeline_.front()) {
             continue;
         }
         if (entry.cycles_remaining > 0) {
@@ -33,46 +47,60 @@ void MultiplyUnit::evaluate() {
     }
 
     // Check if head of pipeline is done
-    if (!pipeline_.empty() && pipeline_.front().cycles_remaining == 0) {
-        if (!result_buffer_.valid) {
-            result_buffer_ = pipeline_.front().wb;
-            pipeline_.pop_front();
+    if (!next_pipeline_.empty() && next_pipeline_.front().cycles_remaining == 0) {
+        if (!next_result_buffer_.valid) {
+            next_result_buffer_ = next_pipeline_.front().wb;
+            next_pipeline_.pop_front();
         }
         // If result buffer is occupied, pipeline stalls (head entry stays)
     }
 }
 
-void MultiplyUnit::commit() {}
+void MultiplyUnit::commit() {
+    // Flip next_* -> current_*. After this, next_ and current_ are equal,
+    // which "seeds" next_ for the upcoming tick's accept()/evaluate() to
+    // mutate without losing committed state.
+    current_pipeline_ = next_pipeline_;
+    current_result_buffer_ = next_result_buffer_;
+}
 
 void MultiplyUnit::reset() {
-    pipeline_.clear();
-    result_buffer_.valid = false;
+    current_pipeline_.clear();
+    next_pipeline_.clear();
+    current_result_buffer_.valid = false;
+    next_result_buffer_.valid = false;
 }
 
 bool MultiplyUnit::is_ready() const {
-    // Can accept if pipeline isn't stalling (result buffer not blocking)
-    // and pipeline has room. For simplicity: always ready unless result buffer
-    // is occupied and pipeline head is ready to exit
-    if (result_buffer_.valid && !pipeline_.empty() && pipeline_.front().cycles_remaining == 0) {
-        return false;  // Pipeline is stalled
+    // Queried by scheduler BEFORE this tick's evaluate; reads committed
+    // end-of-last-cycle state. Pipeline is "stalled" if last cycle the head
+    // was ready but the result buffer was occupied.
+    if (current_result_buffer_.valid && !current_pipeline_.empty() &&
+        current_pipeline_.front().cycles_remaining == 0) {
+        return false;
     }
     return true;
 }
 
 bool MultiplyUnit::has_result() const {
-    return result_buffer_.valid;
+    // COMBINATIONAL edge with the writeback arbiter: it queries has_result()
+    // AFTER this unit's evaluate in the same tick, and must see the
+    // freshly-popped result. Reading next_* preserves zero cycle-count delta.
+    return next_result_buffer_.valid;
 }
 
 WritebackEntry MultiplyUnit::consume_result() {
-    WritebackEntry entry = result_buffer_;
-    result_buffer_.valid = false;
+    // Return the live entry; invalidate only the next_* slot. commit() at
+    // tick-end latches the empty buffer into current_*.
+    WritebackEntry entry = next_result_buffer_;
+    next_result_buffer_.valid = false;
     return entry;
 }
 
 std::vector<uint32_t> MultiplyUnit::active_warps() const {
     std::vector<uint32_t> warps;
-    warps.reserve(pipeline_.size());
-    for (const auto& entry : pipeline_) {
+    warps.reserve(current_pipeline_.size());
+    for (const auto& entry : current_pipeline_) {
         warps.push_back(entry.wb.warp_id);
     }
     return warps;
@@ -80,8 +108,8 @@ std::vector<uint32_t> MultiplyUnit::active_warps() const {
 
 std::vector<MultiplyUnit::PipelineSnapshot> MultiplyUnit::pipeline_snapshot() const {
     std::vector<PipelineSnapshot> snapshot;
-    snapshot.reserve(pipeline_.size());
-    for (const auto& entry : pipeline_) {
+    snapshot.reserve(current_pipeline_.size());
+    for (const auto& entry : current_pipeline_) {
         PipelineSnapshot item;
         item.warp_id = entry.wb.warp_id;
         item.pc = entry.wb.pc;

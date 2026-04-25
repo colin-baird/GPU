@@ -259,7 +259,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 
 ### `include/gpu_sim/timing/alu_unit.h` -- `src/timing/alu_unit.cpp`
 
-1-cycle ALU execution unit.
+1-cycle ALU execution unit. Phase 1 cross-stage signaling discipline: `result_buffer_`, `has_pending_`, `pending_input_`, and `pending_cycle_` are next/current double-buffered. `accept()`, `evaluate()`, and `consume_result()` write only `next_*`; `commit()` flips `next_* -> current_*` at the cycle boundary. `is_ready()` reads committed (`current_*`) state for the scheduler; `has_result()` reads the live (`next_*`) result buffer for the COMBINATIONAL same-tick edge with the writeback arbiter.
 
 - **`ALUUnit(stats_ref)`**
 - **`accept(DispatchInput, cycle)`**: Stores pending input.
@@ -270,7 +270,7 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 
 ### `include/gpu_sim/timing/multiply_unit.h` -- `src/timing/multiply_unit.cpp`
 
-Pipelined multiply/VDOT8 unit with configurable depth.
+Pipelined multiply/VDOT8 unit with configurable depth. Phase 1 discipline: `pipeline_` and `result_buffer_` are next/current double-buffered; `commit()` flips `next_* -> current_*`. The `head_blocked` check inside `evaluate()` reads `next_result_buffer_.valid` so any same-tick mid-evaluate updates remain visible.
 
 - **`MultiplyUnit(pipeline_stages, stats_ref)`**
 - **`accept()`**: Pushes entry into pipeline shift register with `pipeline_stages` cycles remaining.
@@ -280,7 +280,7 @@ Pipelined multiply/VDOT8 unit with configurable depth.
 
 ### `include/gpu_sim/timing/divide_unit.h` -- `src/timing/divide_unit.cpp`
 
-Iterative divide unit, 32-cycle latency.
+Iterative divide unit, 32-cycle latency. Phase 1 discipline: `busy_`, `cycles_remaining_`, `pending_result_`, and `result_buffer_` are next/current double-buffered; `commit()` flips `next_* -> current_*`.
 
 - **`DivideUnit(stats_ref)`**. Constant `DIVIDE_LATENCY = 32`.
 - **`accept()`**: Starts countdown. Busy until complete.
@@ -289,14 +289,14 @@ Iterative divide unit, 32-cycle latency.
 
 ### `include/gpu_sim/timing/tlookup_unit.h` -- `src/timing/tlookup_unit.cpp`
 
-Pipelined dual-port BRAM table lookup, 17-cycle latency (2 lanes/cycle, ceil(32/2)+1 = 17 cycles).
+Pipelined dual-port BRAM table lookup, 17-cycle latency (2 lanes/cycle, ceil(32/2)+1 = 17 cycles). Phase 1 discipline: `busy_`, `cycles_remaining_`, `pending_result_`, and `result_buffer_` are next/current double-buffered; `commit()` flips `next_* -> current_*`.
 
 - **`TLookupUnit(stats_ref)`**. Constant `TLOOKUP_LATENCY = 17`.
 - Same interface pattern as DivideUnit, plus snapshot helpers `busy()`, `cycles_remaining()`, `pending_entry()`, `result_entry()`.
 
 ### `include/gpu_sim/timing/ldst_unit.h` -- `src/timing/ldst_unit.cpp`
 
-Address generation unit with output FIFO.
+Address generation unit with output FIFO. Phase 1 discipline: `busy_`, `cycles_remaining_`, `pending_entry_`, and `addr_gen_fifo_` are next/current double-buffered; `commit()` flips `next_* -> current_*`. The FIFO accessors used by `CoalescingUnit` (`fifo_empty()`, `fifo_front()`, `fifo_pop()`, `fifo_entries()`) read/mutate the live `next_*` queue, modeling a COMBINATIONAL same-tick edge between the LD/ST unit's `evaluate()` (push) and the coalescing unit's `evaluate()` (pop) so a fresh entry is visible in the same cycle it completes address generation.
 
 - **Struct `AddrGenFIFOEntry`**: `valid`, `warp_id`, `dest_reg`, `is_load`, `is_store`, `trace`, `issue_cycle`.
 - **`LdStUnit(num_ldst_units, fifo_depth, stats_ref)`**

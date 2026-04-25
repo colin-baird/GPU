@@ -309,6 +309,9 @@ TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
     auto issue = make_issue_output(i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
     alu.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 12);
+    // Phase 1 discipline: is_ready() reads committed state, so latch the
+    // post-accept state before observing.
+    alu.commit();
     REQUIRE_FALSE(alu.is_ready());
     alu.evaluate();
     REQUIRE(alu.has_result());
@@ -317,6 +320,7 @@ TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
     REQUIRE(wb.valid);
     REQUIRE(wb.dest_reg == 5);
     REQUIRE(wb.issue_cycle == 12);
+    alu.commit();
     REQUIRE(alu.is_ready());
 }
 
@@ -328,13 +332,19 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
     auto second = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_MUL, 6,
                                            isa::OP_ALU_R));
 
+    // Phase 1 discipline: each cycle is accept/evaluate followed by commit.
+    // is_ready() reads committed state; has_result() / consume_result() read
+    // and write next_*, so they observe live in-tick state.
     mul.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     mul.evaluate();
     REQUIRE(mul.has_result());
+    mul.commit();
 
     mul.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
     mul.evaluate();
     REQUIRE(mul.has_result());
+    mul.commit();
+    // Pipeline head ready but result buffer occupied -> committed-state stall.
     REQUIRE_FALSE(mul.is_ready());
 
     auto first_wb = mul.consume_result();
@@ -344,6 +354,7 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
     REQUIRE(mul.has_result());
     auto second_wb = mul.consume_result();
     REQUIRE(second_wb.dest_reg == 6);
+    mul.commit();
     REQUIRE(mul.is_ready());
 }
 
@@ -407,6 +418,7 @@ TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
     for (int i = 0; i < 31; ++i) {
         REQUIRE_FALSE(div.has_result());
         div.evaluate();
+        div.commit();  // Phase 1: latch per-cycle state for next iteration.
     }
     REQUIRE_FALSE(div.has_result());
     div.evaluate();
@@ -426,10 +438,13 @@ TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle w
 
     REQUIRE(div.is_ready());
     div.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    // Phase 1: is_ready() reads committed state; latch the post-accept state.
+    div.commit();
 
     for (int i = 0; i < 32; ++i) {
         REQUIRE_FALSE(div.is_ready());
         div.evaluate();
+        div.commit();
     }
 
     // Latency completed but result unconsumed — must still refuse accept.
@@ -437,6 +452,7 @@ TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle w
     REQUIRE_FALSE(div.is_ready());
 
     div.consume_result();
+    div.commit();
     REQUIRE(div.is_ready());
 }
 
@@ -453,6 +469,8 @@ TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]
     REQUIRE_FALSE(tlookup.has_result());
 
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 4);
+    // Phase 1: busy() reads committed state; latch the post-accept state.
+    tlookup.commit();
     REQUIRE(tlookup.busy());
 
     // Cycles 0..16 post-accept: no result, still busy. Every intermediate cycle
@@ -461,6 +479,7 @@ TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]
         REQUIRE(tlookup.busy());
         REQUIRE_FALSE(tlookup.has_result());
         tlookup.evaluate();
+        tlookup.commit();
     }
 
     // Exactly at the 17th evaluate the result materialises and the unit
@@ -479,11 +498,14 @@ TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed",
 
     // Not ready while busy
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    // Phase 1: is_ready() reads committed state; latch the post-accept state.
+    tlookup.commit();
     REQUIRE_FALSE(tlookup.is_ready());
 
     for (uint32_t i = 0; i < 17; ++i) {
         REQUIRE_FALSE(tlookup.is_ready());
         tlookup.evaluate();
+        tlookup.commit();
     }
 
     // Result is available but unconsumed -- still not ready
@@ -492,6 +514,7 @@ TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed",
 
     // After consuming, should be ready again
     tlookup.consume_result();
+    tlookup.commit();
     REQUIRE(tlookup.is_ready());
 }
 
@@ -521,12 +544,14 @@ TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
 
     REQUIRE(tlookup.is_ready());
     tlookup.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 0);
+    tlookup.commit();  // Phase 1: latch post-accept state for is_ready() reads.
 
     // In-flight window: is_ready() must be false every cycle of the 17-cycle
     // countdown. This binds the `busy_` arm of the ready gate.
     for (uint32_t i = 0; i < 17; ++i) {
         REQUIRE_FALSE(tlookup.is_ready());
         tlookup.evaluate();
+        tlookup.commit();
     }
 
     // Countdown complete but result not yet consumed: is_ready() must still be
@@ -540,15 +565,18 @@ TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
     auto wb1 = tlookup.consume_result();
     REQUIRE(wb1.warp_id == 0);
     REQUIRE(wb1.dest_reg == 5);
+    tlookup.commit();
     REQUIRE(tlookup.is_ready());
 
     // Second accept now succeeds and runs its own independent 17-cycle
     // countdown -- confirming II is finite and the slot recycles cleanly.
     tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 18);
+    tlookup.commit();
     for (uint32_t i = 0; i < 17; ++i) {
         REQUIRE_FALSE(tlookup.is_ready());
         REQUIRE_FALSE(tlookup.has_result());
         tlookup.evaluate();
+        tlookup.commit();
     }
     REQUIRE(tlookup.has_result());
     auto wb2 = tlookup.consume_result();
@@ -594,8 +622,10 @@ TEST_CASE("TLookupUnit: reset clears all state", "[timing][tlookup]") {
 
     // Put unit in the middle of processing
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    tlookup.commit();
     for (uint32_t i = 0; i < 8; ++i) {
         tlookup.evaluate();
+        tlookup.commit();
     }
     REQUIRE(tlookup.busy());
 
@@ -638,6 +668,8 @@ TEST_CASE("TLookupUnit: active_warp and pending_entry accessors", "[timing][tloo
     REQUIRE(tlookup.result_entry() == nullptr);
 
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    // Phase 1: active_warp() / pending_entry() read committed state.
+    tlookup.commit();
     REQUIRE(tlookup.active_warp().has_value());
     REQUIRE(tlookup.active_warp().value() == 2);
     REQUIRE(tlookup.pending_entry() != nullptr);
@@ -646,6 +678,7 @@ TEST_CASE("TLookupUnit: active_warp and pending_entry accessors", "[timing][tloo
     // Complete the operation
     for (uint32_t i = 0; i < 17; ++i) {
         tlookup.evaluate();
+        tlookup.commit();
     }
 
     // No longer busy, so active_warp and pending_entry should be cleared
@@ -674,17 +707,21 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
     auto second = make_issue_output(i_type(4, 1, isa::FUNCT3_LW, 6, isa::OP_LOAD));
     second.trace.is_load = true;
 
+    // Phase 1: is_ready() reads committed state, so commit between cycles.
     ldst.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     ldst.evaluate();
+    ldst.commit();
     REQUIRE_FALSE(ldst.fifo_empty());
     REQUIRE(ldst.is_ready());
 
     ldst.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
     ldst.evaluate();
+    ldst.commit();
     REQUIRE_FALSE(ldst.is_ready());
 
     ldst.fifo_pop();
     ldst.evaluate();
+    ldst.commit();
     REQUIRE_FALSE(ldst.fifo_empty());
     REQUIRE(ldst.is_ready());
 }

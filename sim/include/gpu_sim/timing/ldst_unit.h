@@ -31,30 +31,40 @@ public:
 
     void accept(const DispatchInput& input, uint64_t cycle);
 
-    // Coalescing/cache interface pulls entries from the FIFO
-    bool fifo_empty() const { return addr_gen_fifo_.empty(); }
-    const AddrGenFIFOEntry& fifo_front() const { return addr_gen_fifo_.front(); }
-    void fifo_pop() { addr_gen_fifo_.pop_front(); }
-    bool busy() const { return busy_; }
-    uint32_t cycles_remaining() const { return cycles_remaining_; }
+    // Coalescing/cache interface pulls entries from the FIFO same-tick after
+    // LdStUnit::evaluate -- COMBINATIONAL edge. These accessors expose the
+    // live (next_*) FIFO so a freshly-pushed entry is visible to coalescing
+    // in the same tick (preserving zero cycle delta with pre-Phase-1 code).
+    bool fifo_empty() const { return next_addr_gen_fifo_.empty(); }
+    const AddrGenFIFOEntry& fifo_front() const { return next_addr_gen_fifo_.front(); }
+    void fifo_pop() { next_addr_gen_fifo_.pop_front(); }
+    bool busy() const { return current_busy_; }
+    uint32_t cycles_remaining() const { return current_cycles_remaining_; }
     std::optional<uint32_t> active_warp() const {
-        if (!busy_) return std::nullopt;
-        return pending_entry_.warp_id;
+        if (!current_busy_) return std::nullopt;
+        return current_pending_entry_.warp_id;
     }
     const AddrGenFIFOEntry* pending_entry() const {
-        return pending_entry_.valid ? &pending_entry_ : nullptr;
+        return current_pending_entry_.valid ? &current_pending_entry_ : nullptr;
     }
-    const std::deque<AddrGenFIFOEntry>& fifo_entries() const { return addr_gen_fifo_; }
+    // Live FIFO view for coalescing-related trace dumps. Reads next_* so the
+    // entry just pushed by this tick's evaluate is visible alongside the rest.
+    const std::deque<AddrGenFIFOEntry>& fifo_entries() const { return next_addr_gen_fifo_; }
 
 private:
     uint32_t num_ldst_units_;
     uint32_t fifo_depth_;
     Stats& stats_;
 
-    bool busy_ = false;
-    uint32_t cycles_remaining_ = 0;
-    AddrGenFIFOEntry pending_entry_;
-    std::deque<AddrGenFIFOEntry> addr_gen_fifo_;
+    // Phase 1 discipline: every cross-cycle field is double-buffered.
+    bool current_busy_ = false;
+    bool next_busy_ = false;
+    uint32_t current_cycles_remaining_ = 0;
+    uint32_t next_cycles_remaining_ = 0;
+    AddrGenFIFOEntry current_pending_entry_;
+    AddrGenFIFOEntry next_pending_entry_;
+    std::deque<AddrGenFIFOEntry> current_addr_gen_fifo_;
+    std::deque<AddrGenFIFOEntry> next_addr_gen_fifo_;
 };
 
 } // namespace gpu_sim

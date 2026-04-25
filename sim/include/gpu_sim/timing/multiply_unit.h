@@ -28,12 +28,15 @@ public:
     ExecUnit get_type() const override { return ExecUnit::MULTIPLY; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool busy() const { return !pipeline_.empty(); }
-    uint32_t pipeline_occupancy() const { return static_cast<uint32_t>(pipeline_.size()); }
+    bool busy() const { return !current_pipeline_.empty(); }
+    uint32_t pipeline_occupancy() const { return static_cast<uint32_t>(current_pipeline_.size()); }
     std::vector<uint32_t> active_warps() const;
     std::vector<PipelineSnapshot> pipeline_snapshot() const;
     const WritebackEntry* result_entry() const {
-        return result_buffer_.valid ? &result_buffer_ : nullptr;
+        // Result-buffer accessor used by snapshots (tracing) which run after
+        // the unit's evaluate but also after commit. Read next_* so that
+        // same-tick popped results are visible alongside has_result().
+        return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
     }
 
 private:
@@ -44,8 +47,16 @@ private:
 
     uint32_t pipeline_stages_;
     Stats& stats_;
-    std::deque<PipelineEntry> pipeline_;
-    WritebackEntry result_buffer_;
+    // Phase 1 discipline: pipeline_ and result_buffer_ are double-buffered.
+    // accept() / evaluate() / consume_result() write only next_*; commit()
+    // flips next_* -> current_*. has_result() and result_entry() read next_*
+    // (COMBINATIONAL same-tick edge with the writeback arbiter to preserve
+    // zero cycle delta); is_ready() reads current_* (queried by scheduler
+    // before unit evaluate, sees committed end-of-last-cycle state).
+    std::deque<PipelineEntry> current_pipeline_;
+    std::deque<PipelineEntry> next_pipeline_;
+    WritebackEntry current_result_buffer_;
+    WritebackEntry next_result_buffer_;
 };
 
 } // namespace gpu_sim

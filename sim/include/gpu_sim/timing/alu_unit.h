@@ -20,24 +20,33 @@ public:
     ExecUnit get_type() const override { return ExecUnit::ALU; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool busy() const { return has_pending_; }
+    bool busy() const { return current_has_pending_; }
     std::optional<uint32_t> active_warp() const {
-        if (!has_pending_) return std::nullopt;
-        return pending_input_.warp_id;
+        if (!current_has_pending_) return std::nullopt;
+        return current_pending_input_.warp_id;
     }
     const DispatchInput* pending_input() const {
-        return has_pending_ ? &pending_input_ : nullptr;
+        return current_has_pending_ ? &current_pending_input_ : nullptr;
     }
     const WritebackEntry* result_entry() const {
-        return result_buffer_.valid ? &result_buffer_ : nullptr;
+        // Matches has_result(): read next_* so same-tick popped results are
+        // visible to the writeback arbiter and the post-evaluate trace path.
+        return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
     }
 
 private:
     Stats& stats_;
-    WritebackEntry result_buffer_;
-    bool has_pending_ = false;
-    DispatchInput pending_input_;
-    uint64_t pending_cycle_ = 0;
+    // Double-buffered cross-cycle state. accept() / evaluate() / consume_result()
+    // write only next_*; commit() flips next_* -> current_*. External readers
+    // (writeback arbiter, scheduler, panic drain, snapshot) see current_*.
+    WritebackEntry current_result_buffer_;
+    WritebackEntry next_result_buffer_;
+    bool current_has_pending_ = false;
+    bool next_has_pending_ = false;
+    DispatchInput current_pending_input_;
+    DispatchInput next_pending_input_;
+    uint64_t current_pending_cycle_ = 0;
+    uint64_t next_pending_cycle_ = 0;
 };
 
 } // namespace gpu_sim

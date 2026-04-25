@@ -19,17 +19,19 @@ public:
     ExecUnit get_type() const override { return ExecUnit::TLOOKUP; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool busy() const { return busy_; }
-    uint32_t cycles_remaining() const { return cycles_remaining_; }
+    bool busy() const { return current_busy_; }
+    uint32_t cycles_remaining() const { return current_cycles_remaining_; }
     std::optional<uint32_t> active_warp() const {
-        if (!busy_) return std::nullopt;
-        return pending_result_.warp_id;
+        if (!current_busy_) return std::nullopt;
+        return current_pending_result_.warp_id;
     }
     const WritebackEntry* pending_entry() const {
-        return busy_ ? &pending_result_ : nullptr;
+        return current_busy_ ? &current_pending_result_ : nullptr;
     }
     const WritebackEntry* result_entry() const {
-        return result_buffer_.valid ? &result_buffer_ : nullptr;
+        // Matches has_result(): read next_* so same-tick produced results
+        // are visible to the writeback arbiter and the post-evaluate trace.
+        return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
     }
 
 private:
@@ -37,10 +39,15 @@ private:
     static constexpr uint32_t TLOOKUP_LATENCY = 17;
 
     Stats& stats_;
-    bool busy_ = false;
-    uint32_t cycles_remaining_ = 0;
-    WritebackEntry pending_result_;
-    WritebackEntry result_buffer_;
+    // Phase 1 discipline: every cross-cycle field is double-buffered.
+    bool current_busy_ = false;
+    bool next_busy_ = false;
+    uint32_t current_cycles_remaining_ = 0;
+    uint32_t next_cycles_remaining_ = 0;
+    WritebackEntry current_pending_result_;
+    WritebackEntry next_pending_result_;
+    WritebackEntry current_result_buffer_;
+    WritebackEntry next_result_buffer_;
 };
 
 } // namespace gpu_sim
