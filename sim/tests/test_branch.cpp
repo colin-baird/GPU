@@ -462,7 +462,7 @@ TEST_CASE("Fetch: will_be_full gate skips warp when decode-pending + buf near fu
     REQUIRE_FALSE(warps[0].instr_buffer.is_full());
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
-    fetch.set_decode_pending_warp(0);  // decode holds a pending entry for warp 0
+    fetch.set_decode_pending_warp_override(0);  // decode holds a pending entry for warp 0
 
     uint64_t skip_all_full_before = stats.fetch_skip_all_full;
     uint32_t pc_before = warps[0].pc;
@@ -481,13 +481,13 @@ TEST_CASE("Fetch: will_be_full gate skips warp when decode-pending + buf near fu
     // Clear decode-pending — same buffer occupancy is now eligible, so fetch
     // succeeds.  This flips the gate condition and demonstrates the gate is
     // specifically responsible for the earlier skip.
-    fetch.set_decode_pending_warp(std::nullopt);
+    fetch.set_decode_pending_warp_override(std::nullopt);
     fetch.evaluate();
     fetch.commit();
     REQUIRE(fetch.current_output().has_value());
     REQUIRE(warps[0].pc == pc_before + 4);  // fetched => PC advanced
 
-    // Self-check: if the `decode_pending_warp_` arm of the `will_be_full`
+    // Self-check: if the decode-pending-warp arm of the `will_be_full`
     // expression in fetch_stage.cpp:25-28 were removed (so will_be_full
     // reduced to `buf.is_full()`), the first fetch would have succeeded and
     // the REQUIRE_FALSE above would fail.

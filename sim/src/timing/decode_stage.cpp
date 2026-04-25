@@ -5,6 +5,16 @@ namespace gpu_sim {
 DecodeStage::DecodeStage(WarpState* warps, FetchStage& fetch)
     : warps_(warps), fetch_(fetch) {}
 
+void DecodeStage::compute_ready() {
+    // Read only committed state. pending_ at this point reflects what last
+    // cycle's commit() left behind (commit pushes to instr_buffer when
+    // possible; otherwise pending_ persists). evaluate() runs after
+    // compute_ready() this cycle and will only consume a new fetch output
+    // when pending_.valid is false at that point — which equals committed
+    // state. Hence the ready signal is just !pending_.valid.
+    ready_to_consume_fetch_ = !pending_.valid;
+}
+
 void DecodeStage::evaluate() {
     ebreak_detected_ = false;
 
@@ -19,7 +29,6 @@ void DecodeStage::evaluate() {
         ebreak_detected_ = true;
         ebreak_warp_id_ = fetch_out->warp_id;
         ebreak_pc_ = fetch_out->pc;
-        fetch_.consume_output();
         return;
     }
 
@@ -32,7 +41,6 @@ void DecodeStage::evaluate() {
     pending_.entry = entry;
     pending_.target_warp = fetch_out->warp_id;
     pending_.valid = true;
-    fetch_.consume_output();
 }
 
 void DecodeStage::commit() {
@@ -47,6 +55,7 @@ void DecodeStage::commit() {
 void DecodeStage::reset() {
     ebreak_detected_ = false;
     pending_.valid = false;
+    ready_to_consume_fetch_ = true;
 }
 
 void DecodeStage::invalidate_warp(uint32_t warp_id) {

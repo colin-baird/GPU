@@ -134,8 +134,8 @@ last column is responsible for fixing it.
 
 | # | Producer | Consumer | Payload | Classification | Tick-order constraint | Current state | Refactor phase |
 |---|---|---|---|---|---|---|---|
-| 1 | `DecodeStage` (`consume_output()`) | `FetchStage::evaluate` | `fetch_.output_consumed_` (plain `bool`) | should be **READY/STALL** via `decode.ready_out()` | post-`0383f04`, decode evaluates before fetch so the read sees fresh state, but the bool is not double-buffered | non-compliant | 3 |
-| 2 | `DecodeStage::pending_warp()` | `FetchStage` (via `set_decode_pending_warp` setter called from `timing_model.cpp` before `fetch.evaluate`) | optional warp id of decode's pending entry | should be **READY/STALL** | currently pre-evaluate setter | non-compliant | 3 |
+| 1 | `DecodeStage::ready_to_consume_fetch()` (computed in `compute_ready()`) | `FetchStage::evaluate` | `bool` decode-ready signal | **READY/STALL** | tick order: `decode_.compute_ready` -> `fetch_.evaluate` -> `decode_.evaluate` | compliant (Phase 3) | 3 |
+| 2 | `DecodeStage::pending_warp()` | `FetchStage::evaluate` (direct accessor read; the `set_decode_pending_warp` setter has been deleted) | optional warp id of decode's pending entry | **READY/STALL** | same tick order as row 1; fetch holds a `DecodeStage*` wired by `TimingModel` | compliant (Phase 3) | 3 |
 | 3 | `OperandCollector::is_free()` | `WarpScheduler` (via `set_opcoll_free` setter called before `scheduler.evaluate`) | `bool` opcoll-free flag | should be **READY/STALL** via `opcoll.ready_out()` | currently pre-evaluate setter | non-compliant | 4 |
 | 4 | Each `ExecutionUnit::is_ready()` | `WarpScheduler` (via `unit_ready_fn_` callback queried during `scheduler.evaluate`) | per-unit ready bit | should be **READY/STALL** via `unit.ready_out()` | callback reads live state mid-tick | non-compliant | 4 |
 | 5 | `WarpScheduler` issue (sets `warps_[w].branch_in_flight = true` mid-evaluate) and `OperandCollector` branch resolution (clears `warps_[w].branch_in_flight = false` via direct mutation in `timing_model.cpp` ~line 403) | `WarpScheduler::evaluate` (next cycle) reads `warps_[w].branch_in_flight` | per-warp branch-shadow bit | should be **REGISTERED** per-warp pair (`next_branch_in_flight_[w]` / `current_branch_in_flight_[w]`) | mid-tick mutation of shared `WarpState` field | non-compliant | 5 |
@@ -190,10 +190,15 @@ The full refactor plan lives in
 - **Phase 2**: `OperandCollector` double-buffering. `accept()` writes
   `next_busy_`/`next_cycles_remaining_`/`next_current_instr_`; `evaluate()`
   reads `current_*`. Inventory rows: 6.
-- **Phase 3**: Fetch/decode `ready_out` boundary. Replace
-  `output_consumed_` and `set_decode_pending_warp` with
-  `DecodeStage::ready_out()` computed in `compute_ready()`.
-  Inventory rows: 1, 2.
+- **Phase 3** (landed): Fetch/decode `ready_out` boundary. Replaced
+  `output_consumed_` (plain bool round-trip) and `set_decode_pending_warp`
+  (pre-evaluate setter) with `DecodeStage::ready_to_consume_fetch()`
+  computed in `DecodeStage::compute_ready()` and a direct
+  `decode->pending_warp()` accessor read by fetch. Tick order is now
+  `decode_.compute_ready -> fetch_.evaluate -> decode_.evaluate`. Fetch's
+  output is now strictly REGISTERED (`current_output_ = next_output_` in
+  `commit()`); evaluate encodes the hold-vs-advance decision into
+  `next_output_`. Inventory rows: 1, 2.
 - **Phase 4**: Scheduler ready signals. Remove `set_opcoll_free` and
   `unit_ready_fn_`; add `ready_out()` on opcoll and each unit.
   Inventory rows: 3, 4.

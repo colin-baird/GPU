@@ -199,8 +199,10 @@ TEST_CASE("Fetch skips warp with full buffer", "[timing]") {
     fetch.commit();
     REQUIRE(fetch.current_output().has_value());
 
-    // Simulate decode consuming the output
-    fetch.consume_output();
+    // Simulate decode consuming the output by leaving decode "ready" (the
+    // FetchStage default when no DecodeStage is wired). Phase 3 replaces
+    // the explicit consume_output() handshake with decode.ready_to_consume_fetch().
+    fetch.set_decode_ready_override(true);
 
     // Fill the buffer so the warp becomes ineligible for fetch
     warps[0].instr_buffer.push(BufferEntry{});
@@ -238,15 +240,16 @@ TEST_CASE("Fetch stalls when decode has unconsumed output", "[timing]") {
     uint32_t pc_after_first = warps[0].pc;
     REQUIRE(pc_after_first == 4);
 
-    // Do NOT consume — simulate decode being blocked
-    // Second fetch should stall (backpressure) — PC must not advance
+    // Simulate decode being blocked via the Phase 3 READY/STALL signal.
+    // Second fetch should stall (backpressure) — PC must not advance.
+    fetch.set_decode_ready_override(false);
     fetch.evaluate();
     fetch.commit();
     REQUIRE(fetch.current_output().has_value());  // retains first output
     REQUIRE(warps[0].pc == pc_after_first);       // PC unchanged
 
-    // Now consume — next fetch should proceed
-    fetch.consume_output();
+    // Decode becomes ready — next fetch should proceed.
+    fetch.set_decode_ready_override(true);
     fetch.evaluate();
     fetch.commit();
     REQUIRE(fetch.current_output().has_value());
@@ -1086,7 +1089,7 @@ TEST_CASE("Fetch: decode-pending warp with 2 of 3 slots treated as full", "[ibuf
     REQUIRE(warps[0].instr_buffer.size() == 2);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
-    fetch.set_decode_pending_warp(0);
+    fetch.set_decode_pending_warp_override(0);
 
     fetch.evaluate();
     fetch.commit();
@@ -1108,7 +1111,7 @@ TEST_CASE("Fetch: decode-pending warp with 1 of 3 slots is still eligible", "[ib
     REQUIRE(warps[0].instr_buffer.size() == 1);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
-    fetch.set_decode_pending_warp(0);
+    fetch.set_decode_pending_warp_override(0);
 
     fetch.evaluate();
     fetch.commit();

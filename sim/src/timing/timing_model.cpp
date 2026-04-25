@@ -140,6 +140,11 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
                                           func_model.instruction_memory(),
                                           *branch_predictor_, stats);
     decode_ = std::make_unique<DecodeStage>(warps_.data(), *fetch_);
+    // Phase 3: wire decode into fetch so fetch.evaluate() can query
+    // decode->ready_to_consume_fetch() and decode->pending_warp() directly,
+    // replacing the pre-evaluate set_decode_pending_warp setter and the
+    // output_consumed_ round-trip.
+    fetch_->set_decode(decode_.get());
     scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
                                                  scoreboard_, func_model, stats);
     opcoll_ = std::make_unique<OperandCollector>(stats);
@@ -364,16 +369,17 @@ bool TimingModel::tick() {
     scoreboard_.seed_next();
     cache_->evaluate();
 
-    fetch_->set_decode_pending_warp(decode_->pending_warp());
-    // Decode evaluates BEFORE fetch in the same tick: decode pulls last
-    // cycle's fetch result (held in fetch.current_output_) into its pending
-    // slot AND flips fetch.output_consumed_ before fetch checks backpressure.
-    // The reverse order silently lost half the frontend throughput because
-    // fetch always observed output_consumed_=false (decode hadn't run yet)
-    // and backpressured every cycle a previous instruction was in flight.
-    decode_->evaluate();
-
+    // Phase 3 READY/STALL discipline (formerly the post-`0383f04` reorder).
+    // decode.compute_ready() reads only its committed pending_ slot and
+    // exposes ready_to_consume_fetch(); fetch.evaluate() reads that
+    // committed-state-derived signal as its backpressure gate.
+    // decode.evaluate() then runs and pulls fetch.current_output() into
+    // pending_ when ready. The structural form preserves the bug fix
+    // without depending on a same-cycle mutated flag (output_consumed_)
+    // or pre-evaluate setter (set_decode_pending_warp).
+    decode_->compute_ready();
     fetch_->evaluate();
+    decode_->evaluate();
 
     if (decode_->ebreak_detected()) {
         panic_->trigger(decode_->ebreak_warp(), decode_->ebreak_pc());

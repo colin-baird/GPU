@@ -1,4 +1,5 @@
 #include "gpu_sim/timing/fetch_stage.h"
+#include "gpu_sim/timing/decode_stage.h"
 
 namespace gpu_sim {
 
@@ -6,16 +7,34 @@ FetchStage::FetchStage(uint32_t num_warps, WarpState* warps,
                        const InstructionMemory& imem, BranchPredictor& predictor, Stats& stats)
     : num_warps_(num_warps), warps_(warps), imem_(imem), predictor_(predictor), stats_(stats) {}
 
-void FetchStage::evaluate() {
-    next_output_ = std::nullopt;
+bool FetchStage::query_decode_ready() const {
+    if (has_ready_override_) return decode_ready_override_;
+    if (decode_) return decode_->ready_to_consume_fetch();
+    return true;  // no decode wired (unit-test default): never backpressure
+}
 
-    // Backpressure: don't produce if decode hasn't consumed previous output
-    if (current_output_.has_value() && !output_consumed_) {
+std::optional<uint32_t> FetchStage::query_decode_pending_warp() const {
+    if (has_pending_override_) return decode_pending_warp_override_;
+    if (decode_) return decode_->pending_warp();
+    return std::nullopt;
+}
+
+void FetchStage::evaluate() {
+    // READY/STALL gate: if last cycle's output is still in current_output_
+    // and decode is not ready to consume it this cycle, hold the output
+    // (carry into next_output_) and do not fetch a new instruction.
+    const bool decode_ready = query_decode_ready();
+    if (current_output_.has_value() && !decode_ready) {
+        next_output_ = current_output_;  // retain — REGISTERED hold
         stats_.fetch_skip_count++;
         stats_.fetch_skip_backpressure++;
         rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
         return;
     }
+
+    next_output_ = std::nullopt;
+
+    const std::optional<uint32_t> decode_pending_warp = query_decode_pending_warp();
 
     // Scan forward from the RR pointer to find the first eligible warp
     bool fetched = false;
@@ -23,7 +42,7 @@ void FetchStage::evaluate() {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
         auto& buf = warps_[w].instr_buffer;
         bool will_be_full = buf.is_full() ||
-            (decode_pending_warp_.has_value() && *decode_pending_warp_ == w &&
+            (decode_pending_warp.has_value() && *decode_pending_warp == w &&
              buf.size() + 1 >= buf.capacity());
         if (warps_[w].active && !will_be_full) {
             uint32_t pc = warps_[w].pc;
@@ -50,21 +69,20 @@ void FetchStage::evaluate() {
 }
 
 void FetchStage::commit() {
-    if (next_output_.has_value()) {
-        current_output_ = next_output_;
-        output_consumed_ = false;
-    } else if (output_consumed_) {
-        current_output_ = std::nullopt;
-    }
-    // else: retain current_output_ for decode to consume
+    // current_output_ is REGISTERED: evaluate() has already encoded the
+    // hold-vs-advance decision into next_output_ (carrying current forward
+    // when backpressured, producing nullopt or a fresh fetch otherwise).
+    current_output_ = next_output_;
 }
 
 void FetchStage::reset() {
     rr_pointer_ = 0;
-    output_consumed_ = true;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
-    decode_pending_warp_ = std::nullopt;
+    has_pending_override_ = false;
+    decode_pending_warp_override_ = std::nullopt;
+    has_ready_override_ = false;
+    decode_ready_override_ = true;
 }
 
 void FetchStage::redirect_warp(uint32_t warp_id, uint32_t target_pc) {
@@ -73,7 +91,6 @@ void FetchStage::redirect_warp(uint32_t warp_id, uint32_t target_pc) {
     // Invalidate any in-flight fetch for this warp
     if (current_output_ && current_output_->warp_id == warp_id) {
         current_output_ = std::nullopt;
-        output_consumed_ = true;
     }
     if (next_output_ && next_output_->warp_id == warp_id) {
         next_output_ = std::nullopt;
