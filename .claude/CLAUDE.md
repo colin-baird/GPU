@@ -176,6 +176,7 @@ When making changes directly (outside the multi-agent workflow) — bug fixes, c
 
 These apply to all agents and the orchestrator:
 
+- When user instructions are ambiguous, surface the options under consideration and ask for clarification rather than silently picking one.
 - Don't make assumptions about any interfaces — consult the documentation and implementation files.
 - When creating a new documentation artifact, use Markdown, place it in `./resources`, and add a pointer to the Key References section of `AGENTS.md`.
 - Strictly adhere to the architectural spec. Ask before making assumptions or deviations.

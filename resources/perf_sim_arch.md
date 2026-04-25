@@ -248,13 +248,14 @@ Issue stage with round-robin scheduling and 4-way eligibility check.
 
 ### `include/gpu_sim/timing/operand_collector.h` -- `src/timing/operand_collector.cpp`
 
-Models operand read timing (no actual data movement -- values are in TraceEvent).
+Models operand read timing (no actual data movement -- values are in TraceEvent). Phase 2 cross-stage signaling discipline: `busy_`, `cycles_remaining_`, `current_instr_`, and `current_output_` are next/current double-buffered. `accept()` writes only `next_busy_` / `next_cycles_remaining_` / `next_instr_`; `evaluate()` operates on the `next_*` slot (which equals `current_*` after the prior `commit()` for in-flight carry-forward, or holds the freshly-issued payload when accept ran earlier this tick); `commit()` flips every double-buffered field. `is_free()` reads committed (`current_*`) state for the scheduler's pre-evaluate query, while `output()` returns the live `next_output_` for the COMBINATIONAL same-tick edge to `dispatch_to_unit` and each execution unit's `accept()`.
 
 - **`OperandCollector(stats_ref)`**
-- **`accept(IssueOutput)`**: Sets `cycles_remaining` to 1 (2-operand) or 2 (VDOT8/3-operand).
-- **`evaluate()`**: Decrements counter. When 0, produces output.
-- **`is_free()`**: True when not busy.
-- **Snapshot helpers**: `busy()`, `cycles_remaining()`, `resident_warp()`, `current_instruction()`.
+- **`accept(IssueOutput)`**: Writes only `next_*`. Sets `next_cycles_remaining_` to 1 (2-operand) or 2 (VDOT8/3-operand).
+- **`evaluate()`**: Decrements `next_cycles_remaining_`. When 0, produces `next_output_` and clears `next_busy_`.
+- **`commit()`**: Flips `next_* -> current_*` for busy, cycles_remaining, instr, and output.
+- **`is_free()`**: Reads `current_busy_` (committed end-of-last-cycle state). The scheduler's pre-evaluate `set_opcoll_free` query depends on this contract.
+- **Snapshot helpers**: `busy()`, `cycles_remaining()`, `resident_warp()`, `current_instruction()` -- all read committed (`current_*`) state and are consumed by `build_cycle_snapshot()` after the tick's full commit phase.
 - **Outputs**: Struct `DispatchInput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/alu_unit.h` -- `src/timing/alu_unit.cpp`

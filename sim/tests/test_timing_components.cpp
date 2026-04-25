@@ -286,9 +286,13 @@ TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "
 
     auto addi_issue = make_issue_output(i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
     opcoll.accept(addi_issue);
+    // Phase 2 discipline: is_free() reads committed state. Latch via commit()
+    // before observing the post-accept busy bit.
+    opcoll.commit();
     REQUIRE_FALSE(opcoll.is_free());
     opcoll.evaluate();
     REQUIRE(opcoll.output().has_value());
+    opcoll.commit();
     REQUIRE(opcoll.is_free());
 
     opcoll.reset();
@@ -297,9 +301,11 @@ TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "
     opcoll.accept(vdot_issue);
     opcoll.evaluate();
     REQUIRE_FALSE(opcoll.output().has_value());
+    opcoll.commit();
     REQUIRE_FALSE(opcoll.is_free());
     opcoll.evaluate();
     REQUIRE(opcoll.output().has_value());
+    opcoll.commit();
     REQUIRE(opcoll.is_free());
 }
 
