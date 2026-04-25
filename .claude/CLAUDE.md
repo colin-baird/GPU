@@ -24,6 +24,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Performance Sim Documentation:** [/resources/perf_sim_arch.md](/resources/perf_sim_arch.md) — a single reference sheet covering every file in the simulator
 - **Trace & Performance Counters:** [/resources/trace_and_perf_counters.md](/resources/trace_and_perf_counters.md) — operator-facing reference for `--trace`, `--trace-file`, the Chrome/Perfetto track layout and event schema, and the `Stats` counter catalog
 - **C++ Coding Standard:** [/resources/cpp_coding_standard.md](/resources/cpp_coding_standard.md) — naming, formatting, ownership, error handling, and structural conventions for all C++ code
+- **Timing Discipline:** [/resources/timing_discipline.md](/resources/timing_discipline.md) — cross-stage signaling discipline (REGISTERED / COMBINATIONAL / READY/STALL) for the timing model, with a per-boundary inventory and the phased refactor plan
 - **Untested Changes Log:** [/UNTESTED.md](/UNTESTED.md) — tracker for changes that passed regression but lack targeted test coverage
 - **Onboarding Guide:** [/resources/onboarding.md](/resources/onboarding.md) — introduction to the project, codebase map, build/test/run instructions, and workflow overview for new contributors
 

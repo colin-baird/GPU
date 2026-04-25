@@ -382,6 +382,47 @@ public:
 
 ---
 
+## Cross-stage signaling discipline (timing model)
+
+Every cross-stage signal in the timing model belongs to exactly one of three
+classes, declared at the call site:
+
+- **REGISTERED** — producer writes `next_*` in `evaluate()`; `commit()`
+  latches `next_* → current_*`; consumer reads `current_*` only. 1-cycle
+  handshake, independent of `tick()` ordering. The default class for any
+  state that should reach the consumer on a later cycle.
+- **COMBINATIONAL** — producer's `next_*` (or a transient) is read by the
+  consumer in the same `evaluate()` phase. Order in `tick()` is part of the
+  contract and must be commented at the call site (producer name, consumer
+  name, why the order matters).
+- **READY/STALL** — consumer exposes `ready_out()` computed in
+  `compute_ready()` from its own `current_*` only. Producer reads
+  `consumer.ready_out()` during its own `evaluate()`. Used for backpressure.
+
+Rules:
+
+- **Any cross-stage signal in the timing model must be classified at the
+  call site.** Plain mutable members read by one stage and written by
+  another mid-evaluate are forbidden.
+- **Use the `Scoreboard` pattern
+  (`sim/include/gpu_sim/timing/scoreboard.h`) as the canonical REGISTERED
+  reference.** New next/current pairs reuse its
+  `current_[]` / `next_[]` / `seed_next()` / `commit()` shape verbatim.
+- **Pre-evaluate setters that latch live state from another stage**
+  (e.g. `set_opcoll_free`, `set_decode_pending_warp`, `set_units_drained`,
+  `set_unit_ready_fn`) are forbidden. Replace with `compute_ready()` +
+  `ready_out()`.
+- **Mid-tick mutations of committed state that bypass `commit()`**
+  (side-channel `redirect_warp`, `invalidate_warp`, `reset()` cascades) are
+  forbidden. Express the request as a REGISTERED signal and let each stage
+  flush at its own commit.
+
+See [`/resources/timing_discipline.md`](/resources/timing_discipline.md) for
+the full per-boundary inventory and the phasing of the cross-stage
+signaling refactor.
+
+---
+
 ## Tests
 
 Tests use Catch2 v2 (single-header). Each test file includes `"catch.hpp"` and links against the `catch_main` object library.
