@@ -1,7 +1,13 @@
     .option norvc
 
+    # MATMUL_N and MATMUL_K may be overridden via assembler --defsym so a
+    # single source can be rebuilt for shape sweeps without editing this file.
+    .ifndef MATMUL_N
     .equ MATMUL_N, 128
+    .endif
+    .ifndef MATMUL_K
     .equ MATMUL_K, 128
+    .endif
     .equ MATMUL_K_CHUNKS, (MATMUL_K / 4)
     .equ MATMUL_TILE_COLS, 32
     .equ TILE_COUNT, (MATMUL_N / MATMUL_TILE_COLS)
@@ -32,14 +38,19 @@ _start:
     addi x25, x0, TILE_COUNT
     li x26, B_TILE_STRIDE_BYTES
     slli x27, x23, 2
+    # Per-row byte strides depend on K (A) and N (C); precompute once so the
+    # kernel works for any K, N (not just K=N=128 where these collapsed to
+    # constant shifts).
+    li x14, MATMUL_K
+    li x28, (MATMUL_N * 4)
 
 row_loop:
     bgeu x22, x21, done
 
-    slli x5, x22, 7
+    mul x5, x22, x14
     add x6, x18, x5
 
-    slli x7, x22, 9
+    mul x7, x22, x28
     add x8, x20, x7
 
     mv x9, x19

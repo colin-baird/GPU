@@ -16,17 +16,36 @@ using namespace gpu_sim;
 
 namespace {
 
-constexpr uint32_t kMatmulM = 128;
-constexpr uint32_t kMatmulN = 128;
-constexpr uint32_t kMatmulK = 128;
 constexpr uint32_t kTileCols = 32;
-constexpr uint32_t kABytesPerRow = kMatmulK;
-constexpr uint32_t kBTileStrideBytes = (kMatmulK / 4) * kTileCols * sizeof(uint32_t);
-constexpr uint32_t kCBytesPerRow = kMatmulN * sizeof(int32_t);
+constexpr uint32_t kABaseDefault = 0x00002000;
 
-constexpr uint32_t kABase = 0x00002000;
-constexpr uint32_t kBBase = 0x00008000;
-constexpr uint32_t kCBase = 0x00010000;
+struct Shape {
+    uint32_t m = 128;
+    uint32_t n = 128;
+    uint32_t k = 128;
+
+    uint32_t a_base = kABaseDefault;
+    uint32_t b_base = 0;
+    uint32_t c_base = 0;
+
+    uint32_t a_bytes_per_row() const { return k; }
+    uint32_t b_tile_stride_bytes() const {
+        return (k / 4u) * kTileCols * static_cast<uint32_t>(sizeof(uint32_t));
+    }
+    uint32_t c_bytes_per_row() const {
+        return n * static_cast<uint32_t>(sizeof(int32_t));
+    }
+
+    void recompute_bases() {
+        const uint32_t a_bytes = m * k;
+        const uint32_t b_bytes = k * n;
+        auto align_up = [](uint32_t x, uint32_t align) {
+            return (x + align - 1) & ~(align - 1);
+        };
+        b_base = align_up(a_base + a_bytes, 0x100);
+        c_base = align_up(b_base + b_bytes, 0x100);
+    }
+};
 
 struct Options {
     uint32_t num_warps = MAX_WARPS;
@@ -35,6 +54,8 @@ struct Options {
     bool json_output = false;
     std::string memory_backend = "fixed";
     std::string dramsim3_config_path = "";
+    std::string kernel_elf = MATMUL_KERNEL_ELF;
+    Shape shape;
 };
 
 struct MatmulCase {
@@ -46,7 +67,8 @@ struct MatmulCase {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n"
-              << "         [--memory-backend=<fixed|dramsim3>] [--dramsim3-config-path=<file.ini>]\n";
+              << "         [--memory-backend=<fixed|dramsim3>] [--dramsim3-config-path=<file.ini>]\n"
+              << "         [--m=<rows>] [--n=<cols>] [--k=<reduction>] [--kernel-elf=<path>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS
               << " --memory-latency=" << SimConfig{}.external_memory_latency_cycles << " --max-cycles=5000000 --memory-backend=fixed\n";
 }
@@ -100,8 +122,33 @@ Options parse_options(int argc, char* argv[]) {
             options.dramsim3_config_path = arg.substr(23);
             continue;
         }
+        if (arg.rfind("--m=", 0) == 0) {
+            options.shape.m = parse_u32(arg.substr(4), "m");
+            continue;
+        }
+        if (arg.rfind("--n=", 0) == 0) {
+            options.shape.n = parse_u32(arg.substr(4), "n");
+            continue;
+        }
+        if (arg.rfind("--k=", 0) == 0) {
+            options.shape.k = parse_u32(arg.substr(4), "k");
+            continue;
+        }
+        if (arg.rfind("--kernel-elf=", 0) == 0) {
+            options.kernel_elf = arg.substr(13);
+            continue;
+        }
         throw std::invalid_argument("unknown argument: " + arg);
     }
+
+    if (options.shape.n % kTileCols != 0) {
+        throw std::invalid_argument("--n must be a multiple of " +
+                                    std::to_string(kTileCols));
+    }
+    if (options.shape.k % 16u != 0u) {
+        throw std::invalid_argument("--k must be a multiple of 16");
+    }
+    options.shape.recompute_bases();
 
     return options;
 }
@@ -123,64 +170,67 @@ uint32_t pack_int8x4(int8_t v0, int8_t v1, int8_t v2, int8_t v3) {
            (static_cast<uint32_t>(static_cast<uint8_t>(v3)) << 24);
 }
 
-MatmulCase build_case() {
+MatmulCase build_case(const Shape& shape) {
     MatmulCase test_case;
-    test_case.a.resize(kMatmulM * kMatmulK);
-    test_case.b.resize(kMatmulK * kMatmulN);
-    test_case.reference.assign(kMatmulM * kMatmulN, 0);
+    test_case.a.resize(shape.m * shape.k);
+    test_case.b.resize(shape.k * shape.n);
+    test_case.reference.assign(shape.m * shape.n, 0);
 
-    for (uint32_t row = 0; row < kMatmulM; ++row) {
-        for (uint32_t col = 0; col < kMatmulK; ++col) {
-            test_case.a[row * kMatmulK + col] = make_a_value(row, col);
+    for (uint32_t row = 0; row < shape.m; ++row) {
+        for (uint32_t col = 0; col < shape.k; ++col) {
+            test_case.a[row * shape.k + col] = make_a_value(row, col);
         }
     }
 
-    for (uint32_t row = 0; row < kMatmulK; ++row) {
-        for (uint32_t col = 0; col < kMatmulN; ++col) {
-            test_case.b[row * kMatmulN + col] = make_b_value(row, col);
+    for (uint32_t row = 0; row < shape.k; ++row) {
+        for (uint32_t col = 0; col < shape.n; ++col) {
+            test_case.b[row * shape.n + col] = make_b_value(row, col);
         }
     }
 
-    for (uint32_t row = 0; row < kMatmulM; ++row) {
-        for (uint32_t col = 0; col < kMatmulN; ++col) {
+    for (uint32_t row = 0; row < shape.m; ++row) {
+        for (uint32_t col = 0; col < shape.n; ++col) {
             int32_t accum = 0;
-            for (uint32_t k = 0; k < kMatmulK; ++k) {
-                accum += static_cast<int32_t>(test_case.a[row * kMatmulK + k]) *
-                         static_cast<int32_t>(test_case.b[k * kMatmulN + col]);
+            for (uint32_t k = 0; k < shape.k; ++k) {
+                accum += static_cast<int32_t>(test_case.a[row * shape.k + k]) *
+                         static_cast<int32_t>(test_case.b[k * shape.n + col]);
             }
-            test_case.reference[row * kMatmulN + col] = accum;
+            test_case.reference[row * shape.n + col] = accum;
         }
     }
 
     return test_case;
 }
 
-void load_a_matrix(const std::vector<int8_t>& a, FlatMemory& memory) {
-    for (uint32_t row = 0; row < kMatmulM; ++row) {
-        for (uint32_t k = 0; k < kMatmulK; k += 4) {
+void load_a_matrix(const std::vector<int8_t>& a, const Shape& shape,
+                   FlatMemory& memory) {
+    for (uint32_t row = 0; row < shape.m; ++row) {
+        for (uint32_t k = 0; k < shape.k; k += 4) {
             const uint32_t packed = pack_int8x4(
-                a[row * kMatmulK + k + 0],
-                a[row * kMatmulK + k + 1],
-                a[row * kMatmulK + k + 2],
-                a[row * kMatmulK + k + 3]);
-            const uint32_t addr = kABase + row * kABytesPerRow + k;
+                a[row * shape.k + k + 0],
+                a[row * shape.k + k + 1],
+                a[row * shape.k + k + 2],
+                a[row * shape.k + k + 3]);
+            const uint32_t addr = shape.a_base + row * shape.a_bytes_per_row() + k;
             memory.write32(addr, packed);
         }
     }
 }
 
-void load_b_tiles(const std::vector<int8_t>& b, FlatMemory& memory) {
-    for (uint32_t tile = 0; tile < kMatmulN / kTileCols; ++tile) {
-        for (uint32_t chunk = 0; chunk < kMatmulK / 4; ++chunk) {
+void load_b_tiles(const std::vector<int8_t>& b, const Shape& shape,
+                  FlatMemory& memory) {
+    for (uint32_t tile = 0; tile < shape.n / kTileCols; ++tile) {
+        for (uint32_t chunk = 0; chunk < shape.k / 4; ++chunk) {
             for (uint32_t lane = 0; lane < kTileCols; ++lane) {
                 const uint32_t col = tile * kTileCols + lane;
                 const uint32_t k = chunk * 4;
                 const uint32_t packed = pack_int8x4(
-                    b[(k + 0) * kMatmulN + col],
-                    b[(k + 1) * kMatmulN + col],
-                    b[(k + 2) * kMatmulN + col],
-                    b[(k + 3) * kMatmulN + col]);
-                const uint32_t addr = kBBase + tile * kBTileStrideBytes +
+                    b[(k + 0) * shape.n + col],
+                    b[(k + 1) * shape.n + col],
+                    b[(k + 2) * shape.n + col],
+                    b[(k + 3) * shape.n + col]);
+                const uint32_t addr = shape.b_base +
+                                      tile * shape.b_tile_stride_bytes() +
                                       chunk * kTileCols * sizeof(uint32_t) +
                                       lane * sizeof(uint32_t);
                 memory.write32(addr, packed);
@@ -189,10 +239,11 @@ void load_b_tiles(const std::vector<int8_t>& b, FlatMemory& memory) {
     }
 }
 
-void clear_c_matrix(FlatMemory& memory) {
-    for (uint32_t row = 0; row < kMatmulM; ++row) {
-        for (uint32_t col = 0; col < kMatmulN; ++col) {
-            const uint32_t addr = kCBase + row * kCBytesPerRow + col * sizeof(uint32_t);
+void clear_c_matrix(const Shape& shape, FlatMemory& memory) {
+    for (uint32_t row = 0; row < shape.m; ++row) {
+        for (uint32_t col = 0; col < shape.n; ++col) {
+            const uint32_t addr = shape.c_base + row * shape.c_bytes_per_row() +
+                                  col * sizeof(uint32_t);
             memory.write32(addr, 0);
         }
     }
@@ -239,14 +290,16 @@ void dump_timeout_snapshot(const TimingModel& timing) {
     }
 }
 
-bool verify_output(const FunctionalModel& model, const std::vector<int32_t>& reference) {
+bool verify_output(const FunctionalModel& model, const Shape& shape,
+                   const std::vector<int32_t>& reference) {
     uint32_t mismatch_count = 0;
 
-    for (uint32_t row = 0; row < kMatmulM; ++row) {
-        for (uint32_t col = 0; col < kMatmulN; ++col) {
-            const uint32_t addr = kCBase + row * kCBytesPerRow + col * sizeof(uint32_t);
+    for (uint32_t row = 0; row < shape.m; ++row) {
+        for (uint32_t col = 0; col < shape.n; ++col) {
+            const uint32_t addr = shape.c_base + row * shape.c_bytes_per_row() +
+                                  col * sizeof(uint32_t);
             const int32_t observed = static_cast<int32_t>(model.memory().read32(addr));
-            const int32_t expected = reference[row * kMatmulN + col];
+            const int32_t expected = reference[row * shape.n + col];
             if (observed == expected) {
                 continue;
             }
@@ -270,12 +323,13 @@ bool verify_output(const FunctionalModel& model, const std::vector<int32_t>& ref
 }
 
 void print_summary(const Options& options, const TimingModel& timing, const Stats& stats) {
-    const double macs = static_cast<double>(kMatmulM) * kMatmulN * kMatmulK;
+    const Shape& s = options.shape;
+    const double macs = static_cast<double>(s.m) * s.n * s.k;
     const double cycles = static_cast<double>(timing.cycle_count());
     const double macs_per_cycle = macs / cycles;
 
     std::cout << "Matmul kernel verified\n";
-    std::cout << "  dimensions: " << kMatmulM << "x" << kMatmulN << "x" << kMatmulK << "\n";
+    std::cout << "  dimensions: " << s.m << "x" << s.n << "x" << s.k << "\n";
     std::cout << "  resident warps: " << options.num_warps << "\n";
     std::cout << "  memory backend: " << options.memory_backend << "\n";
     std::cout << "  external memory latency: " << options.memory_latency << " cycles\n";
@@ -307,19 +361,19 @@ int main(int argc, char* argv[]) {
         config.external_memory_latency_cycles = options.memory_latency;
         config.memory_backend = options.memory_backend;
         config.dramsim3_config_path = options.dramsim3_config_path;
-        config.kernel_args[0] = kABase;
-        config.kernel_args[1] = kBBase;
-        config.kernel_args[2] = kCBase;
-        config.kernel_args[3] = kMatmulM;
+        config.kernel_args[0] = options.shape.a_base;
+        config.kernel_args[1] = options.shape.b_base;
+        config.kernel_args[2] = options.shape.c_base;
+        config.kernel_args[3] = options.shape.m;
         config.validate();
 
         FunctionalModel model(config);
-        config.start_pc = load_program(model, MATMUL_KERNEL_ELF);
+        config.start_pc = load_program(model, options.kernel_elf.c_str());
 
-        const MatmulCase test_case = build_case();
-        load_a_matrix(test_case.a, model.memory());
-        load_b_tiles(test_case.b, model.memory());
-        clear_c_matrix(model.memory());
+        const MatmulCase test_case = build_case(options.shape);
+        load_a_matrix(test_case.a, options.shape, model.memory());
+        load_b_tiles(test_case.b, options.shape, model.memory());
+        clear_c_matrix(options.shape, model.memory());
         model.init_kernel(config);
 
         Stats stats;
@@ -345,7 +399,7 @@ int main(int argc, char* argv[]) {
             return 4;
         }
 
-        if (!verify_output(model, test_case.reference)) {
+        if (!verify_output(model, options.shape, test_case.reference)) {
             return 5;
         }
 
@@ -359,7 +413,8 @@ int main(int argc, char* argv[]) {
                              ([&]{
                                  std::ostringstream v;
                                  v << std::setprecision(6)
-                                   << (static_cast<double>(kMatmulM) * kMatmulN * kMatmulK)
+                                   << (static_cast<double>(options.shape.m) *
+                                       options.shape.n * options.shape.k)
                                       / static_cast<double>(timing.cycle_count());
                                  return v.str();
                              })());
