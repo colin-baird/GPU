@@ -68,15 +68,15 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         return false;
     }
 
-    stats_.cache_misses++;
-    stats_.load_misses++;
-
     if (!mshrs_.has_free()) {
         stats_.mshr_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::MSHR_FULL;
         return false;
     }
+
+    stats_.cache_misses++;
+    stats_.load_misses++;
 
     int tail_idx = mshrs_.find_chain_tail(line_addr);
 
@@ -123,15 +123,14 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
 
     if (tags_[set].valid && tags_[set].tag == tag) {
         // Store hit: write-through to write buffer (timing model tracks tags only, not data)
-        stats_.cache_hits++;
-        stats_.store_hits++;
-
         if (write_buffer_.size() >= write_buffer_depth_) {
             stats_.write_buffer_stall_cycles++;
             stalled_ = true;
             stall_reason_ = CacheStallReason::WRITE_BUFFER_FULL;
             return false;
         }
+        stats_.cache_hits++;
+        stats_.store_hits++;
         write_buffer_.push_back(line_addr);
         return true;
     }
@@ -150,15 +149,15 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         return false;
     }
 
-    stats_.cache_misses++;
-    stats_.store_misses++;
-
     if (!mshrs_.has_free()) {
         stats_.mshr_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::MSHR_FULL;
         return false;
     }
+
+    stats_.cache_misses++;
+    stats_.store_misses++;
 
     int tail_idx = mshrs_.find_chain_tail(line_addr);
 

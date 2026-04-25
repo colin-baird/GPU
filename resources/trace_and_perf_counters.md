@@ -406,8 +406,8 @@ Emitted for each of `alu_stats`, `mul_stats`, `div_stats`, `ldst_stats`,
 
 | Field | Meaning |
 |-------|---------|
-| `cache_hits` / `cache_misses` | Request-level totals (cache-line requests from the coalescer). |
-| `load_hits` / `load_misses` / `store_hits` / `store_misses` | Split by operation type. |
+| `cache_hits` / `cache_misses` | Request-level totals (cache-line requests from the coalescer). Counted only on accepted requests, never on retries blocked by MSHR-full or write-buffer-full. |
+| `load_hits` / `load_misses` / `store_hits` / `store_misses` | Split by operation type. Same accept-only accounting as the totals above. |
 | Hit rate (derived) | `100 × cache_hits / (cache_hits + cache_misses)`, emitted in the text report only. |
 | `mshr_stall_cycles` | Cycles the coalescer was unable to issue into a full MSHR file. |
 | `write_buffer_stall_cycles` | Cycles a store hit or store fill could not proceed because the write buffer was full. |

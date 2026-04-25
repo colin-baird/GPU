@@ -469,9 +469,10 @@ TEST_CASE("MSHR merging: exhaustion via 4 same-line misses stalls a new line",
     REQUIRE_FALSE(f.cache.process_load(2 * LINE_SIZE, 0, FULL_MASK, r, 10, 0, 0));
     REQUIRE(f.cache.stall_reason() == CacheStallReason::MSHR_FULL);
     REQUIRE(f.stats.mshr_stall_cycles == stalls_before + 1);
-    // Rejection bumps load_misses (the miss counter increments BEFORE the
-    // MSHR-full check, matching the current impl for MSHR_FULL path).
-    REQUIRE(f.stats.load_misses == misses_before + 1);
+    // Rejection must NOT bump load_misses: the miss counter only advances on
+    // accepted requests, otherwise a single miss waiting N cycles for a free
+    // MSHR would be counted N+1 times.
+    REQUIRE(f.stats.load_misses == misses_before);
 
     // Deliver fill. Primary retires + one secondary drains in same cycle
     // (FILL + secondary on different buffers -> but gather_extract_port_used
