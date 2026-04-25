@@ -365,9 +365,15 @@ bool TimingModel::tick() {
     cache_->evaluate();
 
     fetch_->set_decode_pending_warp(decode_->pending_warp());
-    fetch_->evaluate();
-
+    // Decode evaluates BEFORE fetch in the same tick: decode pulls last
+    // cycle's fetch result (held in fetch.current_output_) into its pending
+    // slot AND flips fetch.output_consumed_ before fetch checks backpressure.
+    // The reverse order silently lost half the frontend throughput because
+    // fetch always observed output_consumed_=false (decode hadn't run yet)
+    // and backpressured every cycle a previous instruction was in flight.
     decode_->evaluate();
+
+    fetch_->evaluate();
 
     if (decode_->ebreak_detected()) {
         panic_->trigger(decode_->ebreak_warp(), decode_->ebreak_pc());

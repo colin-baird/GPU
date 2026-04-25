@@ -448,7 +448,7 @@ Top-level cycle stepper wiring everything together.
 - **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Sets up scheduler's unit readiness callback. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. Forward-order evaluation:
   1. `scoreboard_.seed_next()` and `cache_.evaluate()`
-  2. `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`
+  2. `decode_` -> `fetch_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`. Decode evaluates before fetch within a tick so that decode's `consume_output()` flips `output_consumed_` before fetch checks its backpressure flag — the reverse order silently capped frontend throughput at 1 instr per 2 cycles because fetch always observed the stale "not consumed" state.
   3. All `.commit()`
   4. Termination check: `all_warps_done() && pipeline_drained()`
 - **`run(max_cycles)`**: Calls `tick()` in a loop.
