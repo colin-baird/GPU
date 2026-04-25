@@ -471,6 +471,25 @@ The SM connects to external memory (DDR3/DDR4 on the FPGA board) to serve L1 dat
 
 **Simulation defaults:** External memory latency is parameterizable (default: **100 cycles**). External memory size is parameterizable (default: **64 MB**). These defaults model a representative DDR3/DDR4 access pattern for FPGA prototyping.
 
+**Simulator memory backends.** The performance simulator selects between two backends behind the same `ExternalMemoryInterface` (`submit_read`, `submit_write`, `evaluate`, `commit`, `is_idle`, `has_response`, `get_response`) via `SimConfig::memory_backend`:
+
+- **`fixed`** (default): `FixedLatencyMemory`. Every request completes after exactly `external_memory_latency_cycles`, FIFO-ordered. Used by all unit tests so cycle counts are predictable.
+- **`dramsim3`**: `DRAMSim3Memory`, a thin wrapper around upstream DRAMSim3 (`umd-memsys/DRAMsim3`, vendored via `FetchContent`). Configured by `dramsim3_config_path`; the canonical config for the DE-10 Nano target is `sim/configs/dram/DDR3_4Gb_x16_800.ini` (DDR3-800, 1 GB, x16 device, 32-bit fabric bus, BL8). Used by performance benchmarks once selected (see step 8 of the integration plan).
+
+The DRAMSim3 backend models four effects the fixed-latency backend ignores:
+
+1. **Asynchronous fabric/DRAM clocks.** Two independent clocks (`fpga_clock_mhz`, `dram_clock_mhz`) are crossed by a request FIFO and a response FIFO. A phase accumulator advances DRAMSim3 by `dram_clock_mhz / fpga_clock_mhz` ticks per fabric `evaluate()`, handling non-integer ratios without long-run drift.
+2. **Bounded request FIFO with reserved regions.** The request FIFO is logically split into two regions whose sizes are exactly the cache's worst-case in-flight chunk count for each direction:
+   - **Read region:** `num_mshrs * chunks_per_line` slots. At most `num_mshrs` reads can be in flight at once (one per MSHR), so reads are guaranteed to fit by construction. `submit_read` therefore never returns `false` under any legitimate cache traffic — this is required because the cache call sites (`cache.cpp` cache-miss paths) do not check the bool return; if a submit could fail, the MSHR would be left allocated forever waiting for a fill that never arrives.
+   - **Write region:** `write_buffer_depth * chunks_per_line` slots. `submit_write` returns `false` when the write region is full; the cache must respect this return (`L1Cache::drain_write_buffer` pops from the write buffer only on success). A silent pop would lose the write entirely (the timing model's tag-only write protocol means the lost write never re-enters the system).
+   - **Total depth:** `dramsim3_request_fifo_depth = (num_mshrs + write_buffer_depth) * chunks_per_line`. `validate()` enforces this as the lower bound; sizing larger is wasteful (the cache cannot produce more outstanding chunks than the architectural sum). Both `submit_read` and `submit_write` carry `assert`s against the FIFO bound to convert a violation into an immediate failure rather than a silent drop.
+
+   **Response queue bound.** The response queue holds at most `num_mshrs + write_buffer_depth + chunks_per_line` entries: `num_mshrs` long-running read responses (drained at one read per cache cycle), plus a write-finalization burst of up to one slot retirement per chunk completion within a single `evaluate()` (bounded by `chunks_per_line`), plus the steady-state write-region size (bounded by `write_buffer_depth`). `on_read_complete` and `on_write_complete` carry `assert`s against this bound; the test `DRAMSim3Memory: worst-case cache traffic never drops requests` exercises peak production for hundreds of cycles and verifies the queue never exceeds capacity.
+3. **Chunked cache-line transfers.** The DE-10 Nano DDR3 bus is 32 bits wide; with BL8 each DRAMSim3 transaction moves 32 bytes (8 beats × 4 bytes/beat) and occupies the data bus for 4 tCK (8 beats ÷ 2 beats-per-tCK on a DDR interface). A 128-byte cache line is issued as `chunks_per_line = cache_line_size_bytes / dramsim3_bytes_per_burst` (default 4) DRAMSim3 transactions. Back-to-back column reads pipeline at `tCCD_S = 4` cycles, so the data-bus floor for a full line is 4 × 4 = **16 tCK**, with CAS latency (CL = 6) and an ACT (tRCD = 6) on top when the row is not already open — empirically ~24–31 tCK per line under the DE-10 Nano timings. Read completions are reassembled per-MSHR; one `MemoryResponse` is emitted to the cache once all chunks of a line return. Writes share a per-line slot; multiple in-flight `submit_write` calls to the same line are folded into a single response (matching the cache's existing semantics, which discards write responses).
+4. **Bank/bus contention, refresh, row-buffer locality.** All emergent from DRAMSim3's internal model.
+
+The two backends share `MemoryResponse` semantics so the cache code is agnostic to which is selected.
+
 ---
 
 ## 6. Host Interface and Kernel Launch

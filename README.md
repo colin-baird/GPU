@@ -19,7 +19,7 @@ The architecture is loosely inspired by an NVIDIA SM, but constrained for FPGA f
 - **Pipeline:** Fetch -> Decode -> Issue -> Operand Collect -> Dispatch -> Execute -> Writeback
 - **Warps:** 32 threads per warp, with 4-8 resident warps parameterized in config
 - **Execution units:** ALU, pipelined multiply/`VDOT8`, iterative divide, LD/ST, `TLOOKUP`
-- **Memory system:** direct-mapped L1 data cache, write-through/write-allocate policy, MSHRs, and address coalescing
+- **Memory system:** direct-mapped L1 data cache, write-through/write-allocate policy, MSHRs, and address coalescing. External DRAM is modeled by one of two swappable backends — a fixed-latency stub (default for unit tests) and a DRAMSim3 model of the DE-10 Nano DDR3-800 target (default for benchmarks). See `sim/configs/dram/DDR3_4Gb_x16_800.ini` for the canonical config.
 - **Host/program model:** runner loads programs and optional data/lookup-table images, then executes via the `perf_sim` backend
 
 The architectural source of truth is [`resources/gpu_architectural_spec.md`](resources/gpu_architectural_spec.md).
@@ -163,6 +163,20 @@ bash ./tests/run_workload_benchmarks.sh --build-dir build --bench gemv --bench m
 bash ./tests/run_workload_benchmarks.sh --build-dir build -- --num-warps=8
 ```
 
+The script defaults to the DRAMSim3 backend (DE-10 Nano DDR3-800 at `sim/configs/dram/DDR3_4Gb_x16_800.ini`); pass `--fixed-memory` to fall back to the fixed-latency stub for ad-hoc runs:
+
+```bash
+bash ./tests/run_workload_benchmarks.sh --build-dir build --fixed-memory
+```
+
+For A/B comparisons against a baseline git ref:
+
+```bash
+python3 tools/bench_compare.py --baseline HEAD~1
+```
+
+`bench_compare.py` builds the baseline in a temporary worktree, runs both sides under DRAMSim3 by default, stores results in `tools/.bench_history.db`, and prints a delta table. Pass `--fixed-memory` to compare under the fixed-latency stub instead.
+
 ## Configuration And Tracing
 
 The simulator configuration lives in `SimConfig` and can be supplied from JSON plus CLI overrides. Important runtime controls include:
@@ -175,6 +189,8 @@ The simulator configuration lives in `SimConfig` and can be supplied from JSON p
 - `--json`
 - `--arg0=<N>` through `--arg3=<N>`
 - `--start-pc=<N>`
+- `--memory-backend=<fixed|dramsim3>` (default `fixed` for the runner; benchmarks default to `dramsim3`)
+- `--dramsim3-config-path=<file.ini>` (required when `--memory-backend=dramsim3`)
 
 Structured trace output written via `--trace-file` is suitable for Chrome trace viewers and Perfetto. For a complete reference — track layout, slice coalescing, instant-event schema, counter track catalog, and the `Stats` performance-counter fields — see [`resources/trace_and_perf_counters.md`](resources/trace_and_perf_counters.md).
 

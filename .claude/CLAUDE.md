@@ -34,6 +34,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
   src/                           # Functional model, timing model, decoder, etc.
   include/gpu_sim/               # Public headers
   tests/                         # Catch2 unit tests
+  configs/dram/                  # External-DRAM .ini files for the DRAMSim3 backend
 /runner/                       # Backend router and executable
   src/                           # Entry point, backend abstraction, backends
   include/runner/                # Runner headers

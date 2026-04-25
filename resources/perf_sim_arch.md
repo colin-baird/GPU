@@ -9,9 +9,13 @@ This document describes every file in the simulator, what it does, and where to 
 | File | Purpose |
 |------|---------|
 | `/CMakeLists.txt` | Top-level build. Includes `sim/` and `runner/` as subdirectories. C++17. |
-| `sim/CMakeLists.txt` | Builds `gpu_sim_lib` (static library) and optionally test targets. Can also be built standalone. |
+| `sim/CMakeLists.txt` | Builds `gpu_sim_lib` (static library) and optionally test targets. Can also be built standalone. Vendors DRAMSim3 via `FetchContent` (option `GPU_SIM_USE_DRAMSIM3`, default ON) and links it `PUBLIC` into `gpu_sim_lib`. |
 | `runner/CMakeLists.txt` | Builds `runner_lib` (backend abstraction) and `gpu_sim` executable. Links against `gpu_sim_lib`. |
 | `sim/tests/CMakeLists.txt` | Registers each `test_*.cpp` as a Catch2 test executable linked against `gpu_sim_lib`. |
+
+| Runtime config | Purpose |
+|----------------|---------|
+| `sim/configs/dram/DDR3_4Gb_x16_800.ini` | DRAMSim3 timing/structure/system parameters for the DE-10 Nano DDR3-800 target. Loaded by the `dramsim3` memory backend at startup; ignored by the default `fixed` backend. |
 
 Build: `cmake -B build && cmake --build build -j8`
 
@@ -31,9 +35,9 @@ Central type definitions used everywhere. No implementation file.
 
 Simulator configuration. All parameterizable values live in `SimConfig`.
 
-- **Struct `SimConfig`**: `num_warps`, `instruction_mem_size_bytes`, `instruction_buffer_depth`, `multiply_pipeline_stages`, `num_ldst_units`, `addr_gen_fifo_depth`, `l1_cache_size_bytes`, `cache_line_size_bytes`, `num_mshrs`, `write_buffer_depth`, `lookup_table_entries`, `external_memory_latency_cycles`, `external_memory_size_bytes`, `kernel_args[4]`, `start_pc`, `trace_enabled`, `functional_only`
-- **`validate()`**: Checks constraints (warp count in [1,8], cache size power-of-2, etc.). Throws on failure.
-- **`from_json(path)`**: Minimal hand-rolled JSON parser (key-value pairs).
+- **Struct `SimConfig`**: `num_warps`, `instruction_mem_size_bytes`, `instruction_buffer_depth`, `multiply_pipeline_stages`, `num_ldst_units`, `addr_gen_fifo_depth`, `l1_cache_size_bytes`, `cache_line_size_bytes`, `num_mshrs`, `write_buffer_depth`, `lookup_table_entries`, `external_memory_latency_cycles`, `external_memory_size_bytes`, `memory_backend` (`"fixed"` | `"dramsim3"`), `dramsim3_config_path`, `dramsim3_output_dir`, `fpga_clock_mhz`, `dram_clock_mhz`, `dramsim3_request_fifo_depth`, `dramsim3_bytes_per_burst`, `kernel_args[4]`, `start_pc`, `trace_enabled`, `functional_only`
+- **`validate()`**: Checks constraints (warp count in [1,8], cache size power-of-2, `memory_backend` is one of `{"fixed","dramsim3"}`, clocks > 0, `cache_line_size_bytes` is a multiple of `dramsim3_bytes_per_burst`, and — when `memory_backend == "dramsim3"` — `dramsim3_request_fifo_depth >= (num_mshrs + write_buffer_depth) * (cache_line_size_bytes / dramsim3_bytes_per_burst)`. The minimum is also the recommended value: it sizes the FIFO to exactly the cache's worst-case in-flight chunk count, with `num_mshrs * chunks_per_line` slots reserved for reads and `write_buffer_depth * chunks_per_line` slots for writes. Sizing larger is wasteful; sizing smaller is rejected). Throws on failure.
+- **`from_json(path)`**: Minimal hand-rolled JSON parser (key-value pairs). Supports string, bool, integer, and double fields.
 - **`apply_cli_overrides(argc, argv)`**: Parses `--key=value` CLI arguments plus boolean aliases such as `--trace-text` for the human-readable stderr trace.
 
 ### `include/gpu_sim/isa.h`
@@ -326,7 +330,7 @@ This timing model intentionally tracks cache residency, misses, backpressure, an
 - **`process_load(addr, warp_id, lane_mask, results, issue_cycle, pc, raw_instruction)`**: Hit -> attempts to write the lanes selected by `lane_mask` into the owning warp's gather buffer; returns false when the gather-buffer write port was already used this cycle (caller must retry). Miss -> allocates an MSHR recording `lane_mask`, submits the read, and records a miss-allocation trace event. Returns false if MSHR full (stall). Does not produce a writeback directly.
 - **`process_store(line_addr, warp_id, issue_cycle, pc, raw_instruction)`**: Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate) with trace metadata. Returns false if MSHR or write buffer full.
 - **`handle_responses()`**: Processes at most one readable cache-line fill per cycle. For load fills, deposits the lane values into the owning warp's gather buffer via the FILL write-port path (FILL wins a same-cycle HIT). For store fills, pushes the line into the write buffer. Responses are buffered internally if a store fill is blocked by the write buffer.
-- **`drain_write_buffer()`**: Submits one write-buffer entry per cycle to external memory.
+- **`drain_write_buffer()`**: Submits the front of the write buffer to external memory, popping only on success. The bool return from `mem_if_.submit_write` is the architectural backpressure path from the memory backend: `DRAMSim3Memory` returns `false` when its bounded write region is full, in which case the entry stays at the buffer's head and is retried next cycle. Silently popping on failure would lose the write (the timing-only model has no recovery).
 - **`evaluate()`**: Clears one-cycle cache backpressure, resets the per-cycle gather-extract-port flag, runs `handle_responses()` so FILL writes to the gather buffer occur before any HIT writes later in the cycle, then runs `drain_secondary_chain_head()` (priority FILL > secondary > HIT).
 - **Same-line MSHR merging**: Each `MSHREntry` carries `next_in_chain` and `is_secondary`. On a miss, the cache scans MSHRs for a same-line entry; if found, the new MSHR is linked as a secondary and does not submit an external read. A primary fill installs the line, sets the tag's `pinned` bit when a chain follows, and subsequent cycles drain the chain head one per cycle via `drain_secondary_chain_head()` (loads extract into the owning warp's gather buffer; stores push to the write buffer). The pin clears when the last secondary retires. Pin conflicts (different-tag miss into a pinned set) stall with `LINE_PINNED`.
 - **`is_idle()`**: True only when there are no live MSHRs, queued write-through entries, or pending fills.
@@ -362,16 +366,65 @@ All-or-nothing address coalescing.
 
 ### `include/gpu_sim/timing/memory_interface.h` -- `src/timing/memory_interface.cpp`
 
-Fixed-latency external memory model.
+External memory abstraction. The cache talks to the abstract
+`ExternalMemoryInterface` and is agnostic to the underlying timing model.
+
+Two concrete backends derive from this interface: `FixedLatencyMemory`
+(below) and `DRAMSim3Memory` (`dramsim3_memory.{h,cpp}`).
 
 - **Struct `MemoryRequest`**: `line_addr`, `mshr_id`, `is_write`, `cycles_remaining`.
 - **Struct `MemoryResponse`**: `line_addr`, `mshr_id`, `is_write`.
-- **`ExternalMemoryInterface(latency, stats_ref)`**
-- **`submit_read(line_addr, mshr_id)`**, **`submit_write(line_addr)`**: Enqueue request with `latency` countdown.
-- **`evaluate()`**: Decrements all in-flight countdowns. Moves completed requests to response queue.
-- **`has_response()`**, **`get_response()`**: Response consumption interface.
-- **`is_idle()`**: True only when no requests are in flight and no responses are queued.
-- **Snapshot helpers**: `in_flight_count()`, `response_count()`.
+- **Abstract `ExternalMemoryInterface`**: Pure-virtual surface
+  (`evaluate`, `commit`, `reset`, `submit_read`, `submit_write`,
+  `has_response`, `get_response`, `is_idle`, `in_flight_count`,
+  `response_count`). Concrete backends derive from this.
+- **`FixedLatencyMemory(latency, stats_ref)`**: Default backend. Every
+  request completes after exactly `latency` cycles. Used by all unit tests
+  and by the simulator unless a different backend is selected.
+  - `submit_read(line_addr, mshr_id)`, `submit_write(line_addr)`: Enqueue
+    request with `latency` countdown.
+  - `evaluate()`: Decrements all in-flight countdowns. Moves completed
+    requests to response queue.
+  - `has_response()`, `get_response()`: Response consumption interface.
+  - `is_idle()`: True only when no requests are in flight and no responses
+    are queued.
+  - Snapshot helpers: `in_flight_count()`, `response_count()`.
+
+### `include/gpu_sim/timing/dramsim3_memory.h` -- `src/timing/dramsim3_memory.cpp`
+
+DRAMSim3-backed external memory model. Selected when
+`SimConfig::memory_backend == "dramsim3"`. Implements the abstract
+`ExternalMemoryInterface` so the cache call sites are unchanged.
+
+- **`DRAMSim3Memory(SimConfig, Stats&)`**: Loads the DRAMSim3 `.ini` at
+  `cfg.dramsim3_config_path`, sets `chunks_per_line = cache_line_size_bytes
+  / dramsim3_bytes_per_burst`, sizes the per-MSHR read-assembly array to
+  `cfg.num_mshrs`, pre-creates `cfg.dramsim3_output_dir` so DRAMSim3 doesn't
+  emit its "WARNING: Output directory ... not exists!" line on stdout, and
+  binds the DRAMSim3 read/write callbacks to its own reassembly routines.
+- **Asynchronous fabric/DRAM clocks**: a phase accumulator advances DRAMSim3
+  by `dram_clock_mhz / fpga_clock_mhz` ticks per fabric `evaluate()`,
+  handling non-integer clock ratios without long-run drift.
+- **Bounded request FIFO with reserved regions** (`dramsim3_request_fifo_depth`): logically split into a `num_mshrs * chunks_per_line` read region and a `write_buffer_depth * chunks_per_line` write region. `submit_read` only fails if the entire FIFO is full (architecturally impossible — at most `num_mshrs` reads can be in flight, and the read region holds exactly that many). `submit_write` returns `false` once the write region is full; the cache (`L1Cache::drain_write_buffer`) consumes this as backpressure and retries next cycle. `assert`s at both push sites convert any violation into an immediate failure.
+- **Bounded response queue** (capacity = `num_mshrs + write_buffer_depth + chunks_per_line`): asserted at both push sites. The `worst-case cache traffic` Catch2 case in `test_dramsim3_memory.cpp` drives peak production and verifies the bound holds (snapshot via `max_observed_response_queue()`).
+- **Chunked transfers**: `submit_read(line_addr, mshr_id)` allocates the
+  per-MSHR `ReadAssembly` slot and pushes one chunk per
+  `dramsim3_bytes_per_burst`. The read callback decrements the slot's
+  `chunks_remaining`; when it reaches zero, a single `MemoryResponse` for
+  the full line is queued.
+- **Write reassembly**: writes are tracked by line address. Multiple
+  in-flight `submit_write` calls to the same line share one slot and emit
+  one combined response, matching the cache's current semantics (write
+  responses are discarded by `L1Cache`).
+- **`evaluate()`**: drains at most one chunk from the request FIFO per DRAM
+  tick (subject to `WillAcceptTransaction`), then `ClockTick()`s DRAMSim3.
+- **`reset()`**: clears the FIFOs and assembly state and rebuilds the
+  underlying `dramsim3::MemorySystem`.
+- **`is_idle()`**: true only when both FIFOs are empty and no read or
+  write assembly slot is active.
+- Snapshot helpers: `in_flight_count()`, `response_count()`,
+  `request_fifo_size()`, `chunks_per_line()`, `dram_ticks()`,
+  `max_observed_response_queue()`, `response_queue_capacity()`.
 
 ### `include/gpu_sim/timing/panic_controller.h` -- `src/timing/panic_controller.cpp`
 
@@ -388,7 +441,7 @@ EBREAK state machine.
 
 Top-level cycle stepper wiring everything together.
 
-- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Sets up scheduler's unit readiness callback. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
+- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Sets up scheduler's unit readiness callback. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. Forward-order evaluation:
   1. `scoreboard_.seed_next()` and `cache_.evaluate()`
   2. `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`
@@ -427,8 +480,10 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_panic.cpp` | 5 | EBREAK halts simulation, multi-warp EBREAK, state machine step-by-step progression, panic writeback freeze, reset. |
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
 | `test_timing_components.cpp` | 26 | Fetch skips full-buffer warps, fetch-decode backpressure stall, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing (busy signal, cycles_remaining countdown, is_ready lifecycle, back-to-back dispatch, stats tracking, reset, writeback metadata, accessor lifecycle), LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
+| `test_config.cpp` | 8 | Default values for memory-backend knobs, default request FIFO depth equals (num_mshrs + write_buffer_depth) * chunks_per_line worst case, JSON parse round-trip for all DRAMSim3 fields, validation rejects unknown `memory_backend`, validation rejects non-positive clocks, validation rejects line size not a multiple of burst, validation rejects undersized DRAMSim3 request FIFO, CLI override parses string/double/uint fields. |
+| `test_dramsim3_memory.cpp` | 8 | DE-10 Nano `.ini` loads, single-read chunk reassembly emits exactly one `MemoryResponse` after at least 16 DRAM ticks, eight reads with distinct mshr_ids each return once, sequential reads drain in fewer cycles than thrashing-strided reads, fabric/DRAM phase accumulator hits ~2667 DRAM ticks per 1000 fabric cycles at 150/400 MHz, `is_idle()` and `reset()` clear all state and the backend remains usable afterward, worst-case cache traffic (peak read+write production with bool-respecting drain) drops no requests and keeps the response queue within capacity, write-region saturation propagates from DRAMSim3 through the cache: `submit_write` rejection causes `drain_write_buffer` to leave entries in place, `write_buffer_` fills, `process_store` stalls with `WRITE_BUFFER_FULL`, `write_buffer_stall_cycles` increments, and no writes are silently lost. |
 
-**Totals**: 165 direct Catch2 cases.
+**Totals**: 181 direct Catch2 cases.
 
 ---
 

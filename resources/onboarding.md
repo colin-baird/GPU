@@ -101,6 +101,10 @@ The scoreboard (`include/gpu_sim/timing/scoreboard.h`) tracks in-flight destinat
 - **MSHRs** — allow multiple outstanding cache misses (non-blocking cache).
 - **Address coalescing** — LD/ST instructions from a single warp may access multiple addresses; the coalescing unit merges requests to the same cache line.
 - **`TLOOKUP`** bypasses the data cache entirely.
+- **External DRAM backend (test vs. bench split)** — the simulator picks between two backends behind the same `ExternalMemoryInterface`:
+  - `fixed` (default) — `FixedLatencyMemory`, every request completes after exactly `external_memory_latency_cycles`. Used by all unit tests so cycle counts are predictable.
+  - `dramsim3` — `DRAMSim3Memory`, a thin wrapper over upstream DRAMSim3 configured for the DE-10 Nano DDR3-800 target (`sim/configs/dram/DDR3_4Gb_x16_800.ini`). Used by performance benchmarks so numbers reflect real DDR3 bandwidth, bank/bus contention, and row-buffer locality. Selected by `SimConfig::memory_backend = "dramsim3"` (or `--memory-backend=dramsim3` on the bench/runner CLI).
+  - Architectural details (CDC FIFO model, chunked transfers, reserved request-FIFO regions) are in `gpu_architectural_spec.md` §5.6.
 
 ---
 
@@ -175,6 +179,8 @@ bash ./tests/run_workload_benchmarks.sh --build-dir build
 ```
 
 The script emits structured `RESULT` and `SUMMARY` lines. Run a subset with `--bench matmul --bench gemv`. Pass extra flags with `-- --num-warps=8`.
+
+Benchmarks default to the **DRAMSim3** backend (DE-10 Nano DDR3-800). Pass `--fixed-memory` to fall back to the fixed-latency stub. Unit tests stay on the fixed backend regardless — keep them that way unless you really do want a DRAM-aware regression, since DRAMSim3 cycle counts depend on row-buffer state and aren't suitable as oracles.
 
 ---
 
