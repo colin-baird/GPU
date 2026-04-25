@@ -39,6 +39,8 @@ struct Options {
     uint32_t memory_latency = 100;
     uint64_t max_cycles = 5000000;
     bool json_output = false;
+    std::string memory_backend = "fixed";
+    std::string dramsim3_config_path = "";
 };
 
 struct WorkloadCase {
@@ -50,8 +52,10 @@ struct WorkloadCase {
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n";
-    std::cerr << "Defaults: --num-warps=" << MAX_WARPS << " --memory-latency=100 --max-cycles=5000000\n";
+              << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n"
+              << "         [--memory-backend=<fixed|dramsim3>] [--dramsim3-config-path=<file.ini>]\n";
+    std::cerr << "Defaults: --num-warps=" << MAX_WARPS
+              << " --memory-latency=100 --max-cycles=5000000 --memory-backend=fixed\n";
 }
 
 uint32_t parse_u32(const std::string& value, const std::string& name) {
@@ -93,6 +97,14 @@ Options parse_options(int argc, char* argv[]) {
         }
         if (arg == "--json") {
             options.json_output = true;
+            continue;
+        }
+        if (arg.rfind("--memory-backend=", 0) == 0) {
+            options.memory_backend = arg.substr(17);
+            continue;
+        }
+        if (arg.rfind("--dramsim3-config-path=", 0) == 0) {
+            options.dramsim3_config_path = arg.substr(23);
             continue;
         }
         throw std::invalid_argument("unknown argument: " + arg);
@@ -289,6 +301,7 @@ void print_summary(const Options& options, const TimingModel& timing, const Stat
     std::cout << "  outputs: " << output_count << "\n";
     std::cout << "  input length: " << kInputLength << "\n";
     std::cout << "  resident warps: " << options.num_warps << "\n";
+    std::cout << "  memory backend: " << options.memory_backend << "\n";
     std::cout << "  external memory latency: " << options.memory_latency << " cycles\n";
     std::cout << "  cycles: " << timing.cycle_count() << "\n";
     std::cout << "  issued instructions: " << stats.total_instructions_issued << "\n";
@@ -324,6 +337,8 @@ int main(int argc, char* argv[]) {
         SimConfig config;
         config.num_warps = options.num_warps;
         config.external_memory_latency_cycles = options.memory_latency;
+        config.memory_backend = options.memory_backend;
+        config.dramsim3_config_path = options.dramsim3_config_path;
         config.kernel_args[0] = kInputBase;
         config.kernel_args[1] = weights_base;
         config.kernel_args[2] = output_base;

@@ -23,6 +23,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = REPO_ROOT / "tools" / ".bench_history.db"
+DEFAULT_DRAMSIM3_INI = REPO_ROOT / "sim" / "configs" / "dram" / "DDR3_4Gb_x16_800.ini"
 
 BENCHMARK_SPECS = [
     ("matmul", "tests/matmul/matmul_bench"),
@@ -179,9 +180,11 @@ def parse_text_output(name, text):
     return metrics if "total_cycles" in metrics else None
 
 
-def run_benchmark(build_dir, name, rel_path):
+def run_benchmark(build_dir, name, rel_path, backend_args):
     """Run a single benchmark with --json and return parsed metrics dict, or None.
-    Falls back to parsing text output if --json is not supported."""
+    Falls back to parsing text output if --json is not supported.
+    backend_args is a list of CLI flags (e.g. memory-backend selection) passed
+    to the benchmark binary."""
     exe = Path(build_dir) / rel_path
     if not exe.exists():
         print(f"  {name}: SKIP (executable not found)", file=sys.stderr)
@@ -189,7 +192,7 @@ def run_benchmark(build_dir, name, rel_path):
 
     # Try --json first
     result = subprocess.run(
-        [str(exe), "--json"],
+        [str(exe), "--json", *backend_args],
         capture_output=True, text=True, timeout=300,
     )
     if result.returncode == 0:
@@ -200,7 +203,7 @@ def run_benchmark(build_dir, name, rel_path):
 
     # Fallback: run without --json and parse text output
     result = subprocess.run(
-        [str(exe)],
+        [str(exe), *backend_args],
         capture_output=True, text=True, timeout=300,
     )
     if result.returncode != 0:
@@ -218,16 +221,28 @@ def run_benchmark(build_dir, name, rel_path):
     return parsed
 
 
-def run_all_benchmarks(build_dir, selected):
+def run_all_benchmarks(build_dir, selected, backend_args):
     """Run benchmarks and return {name: metrics_dict}."""
     results = {}
     for name, rel_path in BENCHMARK_SPECS:
         if selected and name not in selected:
             continue
-        metrics = run_benchmark(build_dir, name, rel_path)
+        metrics = run_benchmark(build_dir, name, rel_path, backend_args)
         if metrics is not None:
             results[name] = metrics
     return results
+
+
+def build_backend_args(args):
+    """Return CLI args to pass to each benchmark for backend selection.
+    Defaults to DRAMSim3 with the DE-10 Nano DDR3-800 .ini; --fixed-memory
+    falls back to the FixedLatencyMemory backend."""
+    if args.fixed_memory:
+        return ["--memory-backend=fixed"]
+    return [
+        "--memory-backend=dramsim3",
+        f"--dramsim3-config-path={DEFAULT_DRAMSIM3_INI}",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -440,12 +455,15 @@ def cmd_compare(args):
     current_branch = git_current_branch()
     dirty = git_has_changes()
     selected = set(args.bench) if args.bench else set()
+    backend_args = build_backend_args(args)
 
     print(f"Baseline: {git_short_sha(baseline_sha)} ({args.baseline})")
     label = git_short_sha(current_sha)
     if dirty:
         label += " (dirty)"
     print(f"Current:  {label}" + (f" [{current_branch}]" if current_branch else ""))
+    backend_label = "fixed" if args.fixed_memory else "dramsim3"
+    print(f"Backend:  {backend_label}")
 
     # --- Baseline: build in worktree ---
     db = init_db() if not args.no_store else None
@@ -475,7 +493,7 @@ def cmd_compare(args):
             wt_build = os.path.join(wt_path, "build")
             cmake_build(wt_path, wt_build)
             print(f"\nRunning baseline benchmarks ...")
-            baseline_results = run_all_benchmarks(wt_build, selected)
+            baseline_results = run_all_benchmarks(wt_build, selected, backend_args)
             if db:
                 for name, metrics in baseline_results.items():
                     store_run(db, baseline_sha, None, False, name, metrics)
@@ -498,7 +516,7 @@ def cmd_compare(args):
         print(f"\nUsing existing build at {current_build}")
 
     print(f"\nRunning current benchmarks ...")
-    current_results = run_all_benchmarks(str(current_build), selected)
+    current_results = run_all_benchmarks(str(current_build), selected, backend_args)
 
     if db:
         for name, metrics in current_results.items():
@@ -588,6 +606,12 @@ def main():
     parser.add_argument(
         "--limit", type=int, default=20,
         help="Number of history entries to show (default: 20)",
+    )
+    parser.add_argument(
+        "--fixed-memory", action="store_true",
+        help="Run benchmarks against the FixedLatencyMemory backend instead of "
+             "the DRAMSim3 default. Both baseline and current are run with the "
+             "same backend selection.",
     )
 
     args = parser.parse_args()
