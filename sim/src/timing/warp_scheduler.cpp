@@ -21,10 +21,11 @@ SchedulerIssueOutcome WarpScheduler::unit_busy_outcome(ExecUnit unit) {
 }
 
 WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
-                             Scoreboard& scoreboard, FunctionalModel& func_model,
-                             Stats& stats)
+                             Scoreboard& scoreboard,
+                             BranchShadowTracker& branch_tracker,
+                             FunctionalModel& func_model, Stats& stats)
     : num_warps_(num_warps), warps_(warps), scoreboard_(scoreboard),
-      func_model_(func_model), stats_(stats) {}
+      branch_tracker_(branch_tracker), func_model_(func_model), stats_(stats) {}
 
 bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const {
     // Check rs1
@@ -95,7 +96,10 @@ void WarpScheduler::evaluate() {
             continue;
         }
 
-        if (warps_[w].branch_in_flight) {
+        // Phase 5 REGISTERED: read tracker.is_in_flight(w) which exposes
+        // current_ (committed) state. The set_in_flight write below goes
+        // into next_; commit() flips at end of cycle.
+        if (branch_tracker_.is_in_flight(w)) {
             stats_.warp_stall_branch_shadow[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::BRANCH_SHADOW;
             continue;
@@ -158,7 +162,9 @@ void WarpScheduler::evaluate() {
         if (selected_entry.decoded.type == InstructionType::BRANCH ||
             selected_entry.decoded.type == InstructionType::JAL ||
             selected_entry.decoded.type == InstructionType::JALR) {
-            warps_[selected_warp].branch_in_flight = true;
+            // Phase 5 REGISTERED: write into next_; visible to scheduler via
+            // current_ after commit() flips at end of cycle.
+            branch_tracker_.set_in_flight(selected_warp);
         }
     }
 

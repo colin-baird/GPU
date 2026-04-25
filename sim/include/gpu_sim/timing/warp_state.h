@@ -8,7 +8,6 @@ namespace gpu_sim {
 struct WarpState {
     uint32_t pc = 0;
     bool active = false;
-    bool branch_in_flight = false;
     InstructionBuffer instr_buffer;
 
     explicit WarpState(uint32_t buffer_depth = 3) : instr_buffer(buffer_depth) {}
@@ -16,7 +15,6 @@ struct WarpState {
     void reset(uint32_t start_pc) {
         pc = start_pc;
         active = true;
-        branch_in_flight = false;
         instr_buffer.reset();
     }
 };

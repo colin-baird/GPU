@@ -8,6 +8,8 @@
 
 namespace gpu_sim {
 
+class OperandCollector;  // forward decl: decode reads opcoll.current_redirect_request()
+
 class DecodeStage : public PipelineStage {
 public:
     DecodeStage(WarpState* warps, FetchStage& fetch);
@@ -42,12 +44,33 @@ public:
     // Computed by compute_ready() from committed state only.
     bool ready_to_consume_fetch() const { return ready_to_consume_fetch_; }
 
-    // Invalidate any pending decode for a given warp (branch redirect)
-    void invalidate_warp(uint32_t warp_id);
+    // Phase 5: wire opcoll so decode.commit() can read its REGISTERED
+    // current_redirect_request() and invalidate any matching pending entry.
+    // Replaces the prior mid-tick decode_->invalidate_warp(...) call from
+    // timing_model.cpp.
+    void set_opcoll(const OperandCollector* opcoll) { opcoll_ = opcoll; }
+
+    // Phase 5 test hook: explicit override of the redirect-request signal
+    // for unit tests that drive DecodeStage in isolation.
+    void set_redirect_request_override(bool valid, uint32_t warp_id) {
+        redirect_override_valid_ = valid;
+        redirect_override_warp_ = warp_id;
+        has_redirect_override_ = true;
+    }
+    void clear_redirect_request_override() {
+        has_redirect_override_ = false;
+        redirect_override_valid_ = false;
+    }
 
 private:
+    // Phase 5: applied from commit() when the upstream REGISTERED redirect
+    // signal is valid. Drops the pending entry if it belongs to the
+    // redirected warp.
+    void apply_redirect_invalidate(uint32_t warp_id);
+
     WarpState* warps_;
     FetchStage& fetch_;
+    const OperandCollector* opcoll_ = nullptr;
 
     bool ebreak_detected_ = false;
     uint32_t ebreak_warp_id_ = 0;
@@ -65,6 +88,11 @@ private:
         bool valid = false;
     };
     PendingDecode pending_;
+
+    // Phase 5 test hook fields.
+    bool has_redirect_override_ = false;
+    bool redirect_override_valid_ = false;
+    uint32_t redirect_override_warp_ = 0;
 };
 
 } // namespace gpu_sim

@@ -11,6 +11,7 @@
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/timing/warp_scheduler.h"
 #include "gpu_sim/timing/scoreboard.h"
+#include "gpu_sim/timing/branch_shadow_tracker.h"
 #include "gpu_sim/decoder.h"
 
 using namespace gpu_sim;
@@ -240,18 +241,25 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     REQUIRE_FALSE(warps[0].instr_buffer.is_empty());
 
     // Simulate a branch already in flight — as if the BEQ just issued last
-    // cycle and is now sitting in the operand collector.
-    warps[0].branch_in_flight = true;
+    // cycle and is now sitting in the operand collector. Phase 5: this is
+    // now expressed via the BranchShadowTracker; we set next_ and commit so
+    // current_ reflects the in-flight bit at the start of the next cycle.
+    BranchShadowTracker branch_tracker;
+    branch_tracker.set_in_flight(0);
+    branch_tracker.commit();
 
-    WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
+    WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
+                            func_model, stats);
     // Phase 4: with no consumers wired the scheduler defaults to "all ready",
     // matching the prior behavior of these explicit setters. Overrides remain
     // available if a test wants to gate ALU/opcoll explicitly.
 
     scoreboard.seed_next();
+    branch_tracker.seed_next();
     scheduler.evaluate();
     scheduler.commit();
     scoreboard.commit();
+    branch_tracker.commit();
 
     // Gate must block issue even though buffer is non-empty, scoreboard is
     // clear, opcoll is free, and the target unit is ready.
@@ -263,13 +271,18 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     REQUIRE(warps[0].instr_buffer.size() == 1);
 
     // Flip the gate: simulate the branch retiring from the operand
-    // collector, which clears branch_in_flight in timing_model.cpp:383.
-    warps[0].branch_in_flight = false;
+    // collector. Phase 5: this clears the tracker's next_ slot, and a
+    // commit() flips it into current_ so the scheduler's eligibility check
+    // (which reads current_) sees the warp as no longer in flight.
+    branch_tracker.clear_in_flight(0);
+    branch_tracker.commit();
 
     scoreboard.seed_next();
+    branch_tracker.seed_next();
     scheduler.evaluate();
     scheduler.commit();
     scoreboard.commit();
+    branch_tracker.commit();
 
     // Now the follow-up ADDI must issue.
     REQUIRE(scheduler.output().has_value());
@@ -278,8 +291,8 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     REQUIRE(stats.total_instructions_issued == 1);
     REQUIRE(warps[0].instr_buffer.is_empty());
 
-    // Self-check: if the `if (warps_[w].branch_in_flight)` block in
-    // warp_scheduler.cpp:59 were removed, the first evaluate() would issue
+    // Self-check: if the `if (branch_tracker_.is_in_flight(w))` block in
+    // warp_scheduler.cpp were removed, the first evaluate() would issue
     // the ADDI (output has_value, ISSUED diagnostic, instructions_issued == 1,
     // warp_stall_branch_shadow == 0) — every one of the first-phase
     // REQUIREs would fail.
@@ -410,8 +423,18 @@ TEST_CASE("Branch: mispredict flush drains warp buffer and forces refill delay",
         }
         if (mispredict_seen && !refill_rest_observed) {
             const auto& snap = timing.last_cycle_snapshot();
+            // Phase 5 (+1 cycle on mispredict): the redirect is now
+            // REGISTERED through opcoll.commit -> fetch.commit, so the
+            // mispredict-cycle's flush is deferred by one cycle. The warp
+            // shows WAIT_BRANCH_SHADOW for the deferred cycle (the gate
+            // that was previously WAIT_FRONTEND on the mispredict cycle is
+            // now BRANCH_SHADOW because branch_in_flight stays true through
+            // the cycle the redirect applies). Either WAIT_FRONTEND or
+            // WAIT_BRANCH_SHADOW post-mispredict proves the scheduler
+            // observed a stall window during recovery — accept either.
             if (snap.has_value() &&
-                snap->warps[0].rest_reason == WarpRestReason::WAIT_FRONTEND) {
+                (snap->warps[0].rest_reason == WarpRestReason::WAIT_FRONTEND ||
+                 snap->warps[0].rest_reason == WarpRestReason::WAIT_BRANCH_SHADOW)) {
                 refill_rest_observed = true;
             }
         }

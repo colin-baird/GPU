@@ -3,6 +3,7 @@
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/timing/scoreboard.h"
+#include "gpu_sim/timing/branch_shadow_tracker.h"
 #include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/functional/functional_model.h"
 #include "gpu_sim/stats.h"
@@ -47,6 +48,7 @@ enum class SchedulerIssueOutcome {
 class WarpScheduler : public PipelineStage {
 public:
     WarpScheduler(uint32_t num_warps, WarpState* warps, Scoreboard& scoreboard,
+                  BranchShadowTracker& branch_tracker,
                   FunctionalModel& func_model, Stats& stats);
 
     void evaluate() override;
@@ -102,6 +104,7 @@ private:
     uint32_t num_warps_;
     WarpState* warps_;
     Scoreboard& scoreboard_;
+    BranchShadowTracker& branch_tracker_;
     FunctionalModel& func_model_;
     Stats& stats_;
 

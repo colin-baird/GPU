@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "gpu_sim/timing/warp_scheduler.h"
 #include "gpu_sim/timing/scoreboard.h"
+#include "gpu_sim/timing/branch_shadow_tracker.h"
 #include "gpu_sim/functional/functional_model.h"
 #include "gpu_sim/decoder.h"
 #include "gpu_sim/isa.h"
@@ -34,6 +35,7 @@ struct SchedulerFixture {
     FunctionalModel func_model;
     Stats stats;
     Scoreboard scoreboard;
+    BranchShadowTracker branch_tracker;
     std::vector<WarpState> warps;
     std::unique_ptr<WarpScheduler> scheduler;
 
@@ -49,7 +51,7 @@ struct SchedulerFixture {
         }
 
         scheduler = std::make_unique<WarpScheduler>(
-            num_warps, warps.data(), scoreboard, func_model, stats);
+            num_warps, warps.data(), scoreboard, branch_tracker, func_model, stats);
         // Phase 4: no consumers wired -> default "all ready". Tests that
         // need to gate opcoll or a specific unit busy use the override hooks
         // (set_opcoll_ready_override / set_unit_ready_override) below.

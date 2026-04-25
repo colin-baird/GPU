@@ -109,7 +109,12 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
     fetch.commit();
 
     REQUIRE(fetch.current_output().has_value());
-    fetch.redirect_warp(0, 16);
+    // Phase 5: redirect_warp() is gone; the test now drives the same flush
+    // by setting the REGISTERED redirect-request override and running
+    // commit() — exactly how production code now applies a redirect.
+    fetch.set_redirect_request_override(true, 0, 16);
+    fetch.commit();
+    fetch.clear_redirect_request_override();
 
     REQUIRE_FALSE(fetch.current_output().has_value());
     REQUIRE(warps[0].pc == 16);
@@ -176,8 +181,14 @@ TEST_CASE("DecodeStage: invalidate_warp drops pending decode before commit", "[t
 
     DecodeStage decode(warps.data(), fetch);
     decode.evaluate();
-    decode.invalidate_warp(0);
+    // Phase 5: invalidate_warp() is gone; drive the same effect via the
+    // REGISTERED redirect-request override before commit(). Decode's
+    // commit() now reads opcoll.current_redirect_request_ (or the override)
+    // after attempting to push to instr_buffer and drops the pending entry
+    // if the warp matches.
+    decode.set_redirect_request_override(true, 0);
     decode.commit();
+    decode.clear_redirect_request_override();
 
     REQUIRE(warps[0].instr_buffer.is_empty());
 }
@@ -1208,7 +1219,9 @@ TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
     func_model.instruction_memory().write(1, i_type(1, 0, isa::FUNCT3_ADD_SUB, 6, isa::OP_ALU_I));
     func_model.instruction_memory().write(2, i_type(1, 0, isa::FUNCT3_ADD_SUB, 7, isa::OP_ALU_I));
 
-    WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
+    BranchShadowTracker branch_tracker;
+    WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
+                            func_model, stats);
     // Phase 4: no consumers wired -> default "all ready" matches the prior
     // explicit setters.
 
@@ -1254,7 +1267,9 @@ TEST_CASE("Depth-1 buffer starves immediately after one issue under fetch stall"
 
     func_model.instruction_memory().write(0, i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
-    WarpScheduler scheduler(1, warps.data(), scoreboard, func_model, stats);
+    BranchShadowTracker branch_tracker;
+    WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
+                            func_model, stats);
     // Phase 4: no consumers wired -> default "all ready".
 
     scoreboard.seed_next();

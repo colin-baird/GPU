@@ -53,6 +53,34 @@ void OperandCollector::commit() {
     current_cycles_remaining_ = next_cycles_remaining_;
     current_instr_ = next_instr_;
     current_output_ = next_output_;
+    // Phase 5: flip the redirect-request slot. Then clear next_ so that a
+    // single mispredict doesn't repeat-fire on subsequent cycles. Fetch and
+    // decode read current_redirect_request_ during their own commit() this
+    // tick (commits run in tick-order in TimingModel::tick(); opcoll.commit()
+    // runs after fetch.commit() / decode.commit() — the redirect they see is
+    // last cycle's, latched by THIS commit a tick ago).
+    current_redirect_request_ = next_redirect_request_;
+    next_redirect_request_.valid = false;
+}
+
+void OperandCollector::resolve_branch(uint32_t warp_id, bool mispredicted,
+                                      uint32_t target_pc) {
+    if (mispredicted) {
+        // Mispredict: defer the branch-shadow clear until fetch.commit()
+        // actually applies the redirect (cycle N+1 in REGISTERED terms).
+        // Clearing here would unblock the scheduler in cycle N+1 to issue
+        // a shadow instruction from a buffer that has not yet been flushed,
+        // committing a wrong-path instruction. The redirect-applying side
+        // (FetchStage::commit) clears the tracker as part of its flush.
+        next_redirect_request_.valid = true;
+        next_redirect_request_.warp_id = warp_id;
+        next_redirect_request_.target_pc = target_pc;
+    } else if (branch_tracker_) {
+        // Correct prediction: no shadow path — fetch was already speculating
+        // down the right path — so clear immediately. This matches the
+        // pre-Phase-5 behavior for not-taken / correctly-predicted branches.
+        branch_tracker_->clear_in_flight(warp_id);
+    }
 }
 
 void OperandCollector::reset() {
@@ -63,6 +91,8 @@ void OperandCollector::reset() {
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
     ready_out_ = true;
+    current_redirect_request_ = RedirectRequest{};
+    next_redirect_request_ = RedirectRequest{};
 }
 
 } // namespace gpu_sim

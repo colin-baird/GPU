@@ -1,5 +1,7 @@
 #include "gpu_sim/timing/fetch_stage.h"
 #include "gpu_sim/timing/decode_stage.h"
+#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/branch_shadow_tracker.h"
 
 namespace gpu_sim {
 
@@ -73,6 +75,31 @@ void FetchStage::commit() {
     // hold-vs-advance decision into next_output_ (carrying current forward
     // when backpressured, producing nullopt or a fresh fetch otherwise).
     current_output_ = next_output_;
+
+    // Phase 5: apply REGISTERED redirect-request from the OperandCollector
+    // (or test override). The signal we read here is the producer's
+    // current_redirect_request_, latched by opcoll.commit() on the previous
+    // cycle (opcoll.commit() runs after fetch.commit() within the same
+    // tick). So a misprediction observed in opcoll.evaluate() at cycle N
+    // becomes visible to fetch.commit() at cycle N+1, applying the flush
+    // there. This adds +1 cycle to mispredict-recovery vs. the prior
+    // mid-tick mutation — accepted by Option A.
+    bool redirect_valid = false;
+    uint32_t redirect_warp = 0;
+    uint32_t redirect_target = 0;
+    if (has_redirect_override_) {
+        redirect_valid = redirect_override_valid_;
+        redirect_warp = redirect_override_warp_;
+        redirect_target = redirect_override_target_;
+    } else if (opcoll_) {
+        const auto& req = opcoll_->current_redirect_request();
+        redirect_valid = req.valid;
+        redirect_warp = req.warp_id;
+        redirect_target = req.target_pc;
+    }
+    if (redirect_valid) {
+        apply_redirect(redirect_warp, redirect_target);
+    }
 }
 
 void FetchStage::reset() {
@@ -83,17 +110,30 @@ void FetchStage::reset() {
     decode_pending_warp_override_ = std::nullopt;
     has_ready_override_ = false;
     decode_ready_override_ = true;
+    has_redirect_override_ = false;
+    redirect_override_valid_ = false;
 }
 
-void FetchStage::redirect_warp(uint32_t warp_id, uint32_t target_pc) {
+void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
     warps_[warp_id].pc = target_pc;
     warps_[warp_id].instr_buffer.flush();
-    // Invalidate any in-flight fetch for this warp
+    // Invalidate any in-flight fetch for this warp.
     if (current_output_ && current_output_->warp_id == warp_id) {
         current_output_ = std::nullopt;
     }
     if (next_output_ && next_output_->warp_id == warp_id) {
         next_output_ = std::nullopt;
+    }
+    // Phase 5: clear branch_in_flight in the tracker's next_ slot at the
+    // same moment we apply the redirect-flush. This is the deferred half
+    // of the mispredict-resolve described at OperandCollector::resolve_branch:
+    // through the cycle where the redirect is applied, the scheduler must
+    // still see current_branch_in_flight==true so it does not issue a
+    // shadow instruction from the soon-to-be-flushed buffer. branch_tracker
+    // .commit() at end-of-cycle then makes current_=false visible to next
+    // cycle's scheduler.
+    if (branch_tracker_) {
+        branch_tracker_->clear_in_flight(warp_id);
     }
 }
 

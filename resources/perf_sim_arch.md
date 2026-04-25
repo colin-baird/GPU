@@ -191,7 +191,31 @@ Abstract base for execution units plus the writeback data structure. Header-only
 
 Per-warp timing state. Header-only.
 
-- **Struct `WarpState`**: `pc`, `active`, `branch_in_flight`, `instr_buffer` (InstructionBuffer). `reset(start_pc)` sets active, clears `branch_in_flight`, and clears buffer. The `branch_in_flight` flag is set when the scheduler issues a branch/JAL/JALR and cleared when the operand collector dispatches it; while set, the scheduler stalls the warp to prevent issuing shadow instructions.
+- **Struct `WarpState`**: `pc`, `active`, `instr_buffer` (InstructionBuffer). `reset(start_pc)` sets active and clears the buffer. Phase 5: the prior `branch_in_flight` plain bool was removed and replaced by the REGISTERED `BranchShadowTracker` (see below).
+
+### `include/gpu_sim/timing/branch_shadow_tracker.h`
+
+Per-warp branch-shadow ("branch_in_flight") bit, double-buffered in the
+exact `Scoreboard` shape. Header-only.
+
+- **Class `BranchShadowTracker`**: Two `std::array<bool, MAX_WARPS>` slots
+  `current_` and `next_`.
+- **`is_in_flight(warp)`**: Reads `current_`. Used by `WarpScheduler::evaluate()`
+  to gate issue of further instructions for a warp whose branch is still
+  in flight.
+- **`set_in_flight(warp)`** / **`clear_in_flight(warp)`**: Writes to
+  `next_`. `WarpScheduler::evaluate()` calls `set_in_flight(w)` on issue
+  of a BRANCH/JAL/JALR; `OperandCollector::resolve_branch()` calls
+  `clear_in_flight(w)` on resolve of a correctly-predicted branch;
+  `FetchStage::commit()` calls `clear_in_flight(w)` when applying a
+  mispredict-redirect (deferred, so the scheduler keeps observing
+  `current_=true` through the cycle the redirect propagates).
+- **`seed_next()`**: Copies `current_` -> `next_` at top of cycle.
+- **`commit()`**: Copies `next_` -> `current_` at end of cycle.
+- **Tick-order**: `branch_tracker_.seed_next()` runs alongside
+  `scoreboard_.seed_next()` near the top of `TimingModel::tick()`;
+  `branch_tracker_.commit()` runs after `scoreboard_.commit()` near the
+  end.
 
 ### `include/gpu_sim/timing/instruction_buffer.h`
 
@@ -219,8 +243,9 @@ Instruction fetch with round-robin warp selection.
 - **`evaluate()`**: Scans forward from `rr_pointer` through all warps to find the first eligible warp (active and buffer not full after accounting for decode's pending entry). Stalls (produces no output) when `decode->ready_to_consume_fetch()` is false and the previous output is still held in `current_output_` — backpressure carries the held output forward into `next_output_` so `commit()` retains it; increments `fetch_skip_backpressure` and `fetch_skip_count` during backpressure stalls. Reads instruction from `InstructionMemory`, records branch-prediction metadata, and advances the warp PC to the predicted target when `predicted_taken` is set, otherwise `pc + 4`. The RR pointer always advances to `(original + 1) % num_warps` regardless of which warp was fetched.
 - **`set_decode(decode_ptr)`**: Wires fetch to the decode stage so `evaluate()` can query `decode->ready_to_consume_fetch()` and `decode->pending_warp()` directly (Phase 3 READY/STALL discipline). Called once during `TimingModel` construction after both stages exist.
 - **`set_decode_pending_warp_override(...)` / `set_decode_ready_override(...)`**: Test-only hooks that override the wired-decode signals so unit tests can drive `FetchStage` in isolation.
-- **`commit()`**: REGISTERED output — `current_output_ = next_output_` unconditionally. `evaluate()` is responsible for encoding the hold-vs-advance decision into `next_output_` (carrying `current_output_` forward when backpressured, producing nullopt or a fresh fetch otherwise).
-- **`redirect_warp(warp_id, target_pc)`**: Sets warp PC, flushes instruction buffer, invalidates any pending fetch (current and next) for that warp. Used for branch mispredict recovery.
+- **`commit()`**: REGISTERED output — `current_output_ = next_output_`. After that flip, applies any pending Phase 5 REGISTERED redirect by reading `opcoll_->current_redirect_request()` (or the test override) and, if valid, calling private `apply_redirect(warp_id, target_pc)`: sets warp PC, flushes the warp's instruction buffer, invalidates any in-flight fetch for that warp, and clears `branch_tracker_->next_` for the warp. The prior public `redirect_warp(...)` mid-tick call from `timing_model.cpp` is gone — fetch sees the redirect via opcoll's REGISTERED `current_redirect_request_` signal at cycle N+1 after opcoll's commit at end of cycle N.
+- **`set_opcoll(opcoll_ptr)`** / **`set_branch_tracker(tracker_ptr)`**: Phase 5 wiring. Called once during `TimingModel` construction so `commit()` can read the redirect signal and clear the tracker when applying it.
+- **`set_redirect_request_override(...)`** / **`clear_redirect_request_override()`**: Phase 5 test-only hooks for unit tests that drive `FetchStage` in isolation.
 - **Outputs**: `output()` (next), `current_output()` (committed). Struct `FetchOutput`: `raw_instruction`, `warp_id`, `pc`, `prediction`.
 
 ### `include/gpu_sim/timing/decode_stage.h` -- `src/timing/decode_stage.cpp`
@@ -231,10 +256,11 @@ Instruction decode with EBREAK detection.
 - **`compute_ready()`**: Phase 3 READY/STALL hook. Reads only the committed `pending_` slot (it has not been mutated yet this cycle, since `compute_ready()` runs before `evaluate()`) and writes `ready_to_consume_fetch_`. Currently `ready_to_consume_fetch_ = !pending_.valid` — decode pulls a new fetch output only when its pending slot is empty, which equals committed state. Called by `TimingModel::tick()` before `fetch_->evaluate()` so fetch sees a stable signal.
 - **`ready_to_consume_fetch()`**: Accessor consumed by `FetchStage::evaluate()` to decide whether to backpressure.
 - **`evaluate()`**: Reads `fetch_.current_output()`. Decodes via `Decoder::decode()`. If EBREAK, signals panic and returns. Otherwise stages one decoded instruction in `pending_`. If a prior decode is still pending because the target warp buffer was full at last cycle's commit, evaluate holds that instruction and does not decode the fetch output — EBREAK detection is deferred until the pending instruction clears.
-- **`commit()`**: Pushes the staged instruction to the target warp's instruction buffer once space is available; otherwise the staged decode remains pending (and `compute_ready()` will report `ready_to_consume_fetch_=false` next cycle).
+- **`commit()`**: First applies any Phase 5 REGISTERED redirect from `opcoll_->current_redirect_request()` (or test override): if valid and the pending entry's warp matches, drops the pending entry. Then pushes the (possibly cleared) staged instruction to the target warp's instruction buffer once space is available; otherwise the staged decode remains pending (and `compute_ready()` will report `ready_to_consume_fetch_=false` next cycle). The redirect-apply is sequenced before the push so a shadow instruction whose pending entry would otherwise have just landed in the warp buffer is dropped instead.
 - **`has_pending()`**: Reports whether decode is holding an uncommitted instruction.
 - **Snapshot helpers**: `pending_warp()`, `pending_entry()`.
-- **`invalidate_warp(warp_id)`**: Clears any pending decode for that warp (branch redirect).
+- **`set_opcoll(opcoll_ptr)`**: Phase 5 wiring. Called once during `TimingModel` construction so `commit()` can read the redirect signal.
+- **`set_redirect_request_override(...)`** / **`clear_redirect_request_override()`**: Phase 5 test-only hooks.
 - **`ebreak_detected()`**, **`ebreak_warp()`**, **`ebreak_pc()`**: Panic detection interface.
 The staged `BufferEntry` also carries the fetch-time `BranchPrediction`.
 
@@ -243,8 +269,8 @@ The staged `BufferEntry` also carries the fetch-time `BranchPrediction`.
 Issue stage with round-robin scheduling and 4-way eligibility check.
 
 - **Enum `SchedulerIssueOutcome`**: `INACTIVE`, `BUFFER_EMPTY`, `BRANCH_SHADOW`, `SCOREBOARD`, `OPCOLL_BUSY`, `UNIT_BUSY_ALU`, `UNIT_BUSY_MULTIPLY`, `UNIT_BUSY_DIVIDE`, `UNIT_BUSY_TLOOKUP`, `UNIT_BUSY_LDST`, `READY_NOT_SELECTED`, `ISSUED`.
-- **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, func_model_ref, stats_ref)`**
-- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) no branch in flight for this warp, (3) scoreboard clear for source registers, (4) operand collector free (`opcoll_->ready_out()`), (5) target execution unit ready (`unit->ready_out()` for the routed `ExecUnit`). First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, sets scoreboard pending for `rd`, and sets `branch_in_flight` on the warp if the issued instruction is a branch/JAL/JALR. Pointer advances unconditionally. Stall counters: branch shadow stalls increment `warp_stall_branch_shadow`, scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
+- **`WarpScheduler(num_warps, warps_ptr, scoreboard_ref, branch_tracker_ref, func_model_ref, stats_ref)`**
+- **`evaluate()`**: Scans warps starting from `rr_pointer`. For each, checks: (1) buffer not empty, (2) no branch in flight for this warp via `branch_tracker_.is_in_flight(w)` (Phase 5 REGISTERED — reads committed `current_`), (3) scoreboard clear for source registers, (4) operand collector free (`opcoll_->ready_out()`), (5) target execution unit ready (`unit->ready_out()` for the routed `ExecUnit`). First eligible warp wins. Calls `func_model_.execute(warp_id, pc)` to produce TraceEvent, forwards the buffered `BranchPrediction`, sets scoreboard pending for `rd`, and writes `branch_tracker_.set_in_flight(w)` (into `next_`) on issue of a BRANCH/JAL/JALR. Pointer advances unconditionally. Stall counters: branch shadow stalls increment `warp_stall_branch_shadow`, scoreboard stalls increment `warp_stall_scoreboard`, operand collector busy and target unit busy both increment `warp_stall_unit_busy`. Also records one committed `SchedulerIssueOutcome` per warp each cycle for trace attribution.
 - **`set_consumers(opcoll, alu, mul, div, tlookup, ldst)`**: Phase 4 wiring. Called once during `TimingModel` construction with the owned opcoll and five typed execution units. Replaces the prior `set_opcoll_free(bool)` setter and the `UnitReadyFn` callback (`set_unit_ready_fn`) — those have been removed. Inside `evaluate()`, the scheduler reads `opcoll_->ready_out()` and each unit's `ready_out()` directly; both signals are computed earlier in the same tick by the corresponding `compute_ready()` (see Phase 4 in `resources/timing_discipline.md`).
 - **`set_opcoll_ready_override(optional<bool>)`** / **`set_unit_ready_override(ExecUnit, optional<bool>)`**: Test-only hooks that override the wired opcoll/unit `ready_out()` for a unit-level test that constructs a `WarpScheduler` without real consumers. With no override and no wired consumer, the scheduler defaults to "ready", matching the prior pre-Phase-4 fixture default.
 - **`current_diagnostics()`**: Returns the committed per-warp `SchedulerIssueOutcome` array.
@@ -258,7 +284,10 @@ Models operand read timing (no actual data movement -- values are in TraceEvent)
 - **`compute_ready()`** / **`ready_out()`**: Phase 4 READY/STALL hook. `compute_ready()` writes `ready_out_ = !current_busy_`; `ready_out()` returns the latched signal. Called by `TimingModel::tick()` before `scheduler_->evaluate()` so the scheduler sees a stable, committed-state-derived signal. Replaces the prior `scheduler_->set_opcoll_free(opcoll_->is_free())` pre-evaluate setter call.
 - **`accept(IssueOutput)`**: Writes only `next_*`. Sets `next_cycles_remaining_` to 1 (2-operand) or 2 (VDOT8/3-operand).
 - **`evaluate()`**: Decrements `next_cycles_remaining_`. When 0, produces `next_output_` and clears `next_busy_`.
-- **`commit()`**: Flips `next_* -> current_*` for busy, cycles_remaining, instr, and output.
+- **`commit()`**: Flips `next_* -> current_*` for busy, cycles_remaining, instr, output, AND the Phase 5 redirect-request slot (`current_redirect_request_ = next_redirect_request_`); then clears `next_redirect_request_.valid` so a single mispredict only fires its redirect for one cycle.
+- **`set_branch_tracker(tracker_ptr)`**: Phase 5 wiring. Called once during `TimingModel` construction so `resolve_branch()` can clear the tracker for correctly-predicted branches.
+- **`resolve_branch(warp_id, mispredicted, target_pc)`**: Phase 5 REGISTERED branch resolution called from `TimingModel::tick()` after `evaluate()` produces a branch's `DispatchInput`. On misprediction, writes `next_redirect_request_{valid:true, warp_id, target_pc}` and defers the `branch_in_flight` clear to `FetchStage::commit()` (so the scheduler does not issue a shadow instruction in the cycle the redirect propagates). On correct prediction, clears `branch_tracker_` for the warp immediately. Predictor update and branch stats counters remain in `TimingModel::tick()`.
+- **`current_redirect_request()`**: Returns the latched `RedirectRequest`. Read by `FetchStage::commit()` and `DecodeStage::commit()` at cycle N+1 (their commits run before opcoll's commit within the same cycle, so they observe the slot latched by opcoll's commit at end of cycle N). Struct `RedirectRequest`: `valid`, `warp_id`, `target_pc`.
 - **`is_free()`**: Alias of `ready_out()` for post-commit observers (`pipeline_drained()`, `execution_units_drained()`, `trace_cycle()`, unit tests). Reads `current_busy_` directly.
 - **Snapshot helpers**: `busy()`, `cycles_remaining()`, `resident_warp()`, `current_instruction()` -- all read committed (`current_*`) state and are consumed by `build_cycle_snapshot()` after the tick's full commit phase.
 - **Outputs**: Struct `DispatchInput`: `decoded`, `trace`, `warp_id`, `pc`, `prediction`.
@@ -456,12 +485,12 @@ EBREAK state machine.
 
 Top-level cycle stepper wiring everything together.
 
-- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Wires the scheduler's READY/STALL consumers via `scheduler_->set_consumers(opcoll_, alu_, mul_, div_, tlookup_, ldst_)` (Phase 4): the scheduler reads each consumer's `ready_out()` directly, replacing the prior `set_unit_ready_fn` callback registration. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
+- **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Wires the scheduler's READY/STALL consumers via `scheduler_->set_consumers(opcoll_, alu_, mul_, div_, tlookup_, ldst_)` (Phase 4): the scheduler reads each consumer's `ready_out()` directly, replacing the prior `set_unit_ready_fn` callback registration. Wires the Phase 5 branch-shadow tracker into the scheduler (constructor) and into opcoll (`opcoll_->set_branch_tracker(&branch_tracker_)`), and wires opcoll into fetch (`fetch_->set_opcoll(opcoll_.get())`) and decode (`decode_->set_opcoll(opcoll_.get())`) so their `commit()` methods can read the REGISTERED redirect-request signal; also wires the tracker into fetch (`fetch_->set_branch_tracker(&branch_tracker_)`) so fetch can clear it when applying a mispredict-redirect. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. Forward-order evaluation:
-  1. `scoreboard_.seed_next()` and `cache_.evaluate()`
+  1. `scoreboard_.seed_next()`, `branch_tracker_.seed_next()` (Phase 5), and `cache_.evaluate()`
   2. **READY/STALL backward sweep** (Phase 3 + Phase 4): `opcoll_.compute_ready` -> `alu_.compute_ready` -> `mul_.compute_ready` -> `div_.compute_ready` -> `tlookup_.compute_ready` -> `ldst_.compute_ready` -> `decode_.compute_ready`. Each consumer reads only its own committed (`current_*`) state and writes its `ready_out_` slot; producers (scheduler, fetch) read those signals during their own `evaluate()` later this cycle. Within this group no `compute_ready()` reads another stage's `ready_out_`, so order does not matter for correctness today; scheduler-consumed signals come first by convention.
-  3. **Forward sweep**: `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`. The Phase-3 fetch/decode READY/STALL boundary is structural: `fetch_.evaluate()` reads `decode_.ready_to_consume_fetch()` (committed-state-derived) as its backpressure gate; `decode_.evaluate()` then pulls `fetch.current_output()` into `pending_` when ready. The Phase-4 scheduler boundaries are structural: `scheduler_.evaluate()` reads `opcoll_->ready_out()` and each unit's `ready_out()` directly — the prior `set_opcoll_free` / `set_unit_ready_fn` setter calls are gone.
-  4. All `.commit()`
+  3. **Forward sweep**: `fetch_` -> `decode_` -> EBREAK check -> `scheduler_` -> `opcoll_` -> dispatch -> branch resolution (Phase 5: `opcoll_->resolve_branch(warp_id, mispredicted, target_pc)` writes the REGISTERED redirect slot and clears `branch_tracker_` on correct prediction; on mispredict, the tracker clear is deferred to `FetchStage::commit()`) -> execute (all units) -> `coalescing_` -> `mem_if_` -> MSHR fill -> write buffer drain -> `wb_arbiter_`. The Phase-3 fetch/decode READY/STALL boundary is structural: `fetch_.evaluate()` reads `decode_.ready_to_consume_fetch()` (committed-state-derived) as its backpressure gate; `decode_.evaluate()` then pulls `fetch.current_output()` into `pending_` when ready. The Phase-4 scheduler boundaries are structural: `scheduler_.evaluate()` reads `opcoll_->ready_out()` and each unit's `ready_out()` directly — the prior `set_opcoll_free` / `set_unit_ready_fn` setter calls are gone. Phase-5: the prior mid-tick `fetch_->redirect_warp(...)` and `decode_->invalidate_warp(...)` calls are gone — `FetchStage::commit()` and `DecodeStage::commit()` read `opcoll_->current_redirect_request()` and apply the flush from there (one-cycle delay vs. pre-Phase-5).
+  4. All `.commit()` (including `branch_tracker_.commit()` after `scoreboard_.commit()`)
   5. Termination check: `all_warps_done() && pipeline_drained()`
 - **`run(max_cycles)`**: Calls `tick()` in a loop.
 - **`dispatch_to_unit(DispatchInput)`**: Routes to appropriate execution unit. ECALL (via SYSTEM case) marks warp inactive. CSR reads are routed to ALU by the decoder (`target_unit = ExecUnit::ALU`), so they match the ALU case directly.

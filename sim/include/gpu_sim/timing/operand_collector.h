@@ -2,6 +2,7 @@
 
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/warp_scheduler.h"
+#include "gpu_sim/timing/branch_shadow_tracker.h"
 #include "gpu_sim/stats.h"
 #include <optional>
 
@@ -15,9 +16,42 @@ struct DispatchInput {
     BranchPrediction prediction;
 };
 
+// Phase 5 REGISTERED branch-redirect signal. The OperandCollector publishes
+// next_redirect_request_ when a branch resolves with misprediction during
+// its evaluate(); commit() flips next_-> current_; FetchStage and
+// DecodeStage read current_redirect_request() during their own commit() and
+// flush as needed. This replaces the prior mid-tick fetch_->redirect_warp
+// and decode_->invalidate_warp side-channel calls from timing_model.cpp.
+struct RedirectRequest {
+    bool valid = false;
+    uint32_t warp_id = 0;
+    uint32_t target_pc = 0;
+};
+
 class OperandCollector : public PipelineStage {
 public:
     explicit OperandCollector(Stats& stats) : stats_(stats) {}
+
+    // Phase 5 wiring: opcoll knows about the branch-shadow tracker so
+    // resolve_branch() can clear it directly into next_*. Wired by
+    // TimingModel after construction (nullptr-tolerant for unit tests
+    // that exercise OperandCollector in isolation).
+    void set_branch_tracker(BranchShadowTracker* tracker) {
+        branch_tracker_ = tracker;
+    }
+
+    // Phase 5 REGISTERED branch resolution: called from TimingModel::tick()
+    // after opcoll_->evaluate() has produced its output for a BRANCH/JAL/JALR.
+    // Always clears branch_in_flight in next_ for the resolving warp; if
+    // mispredicted == true, also writes next_redirect_request_ so that
+    // fetch.commit() and decode.commit() can flush this same cycle's
+    // boundary. The redirect itself is delayed by 1 cycle relative to the
+    // pre-Phase-5 mid-tick fetch_->redirect_warp call: fetch/decode see
+    // current_redirect_request_ in cycle N+1 after commit() flips next_.
+    void resolve_branch(uint32_t warp_id, bool mispredicted, uint32_t target_pc);
+    const RedirectRequest& current_redirect_request() const {
+        return current_redirect_request_;
+    }
 
     // Phase 4 READY/STALL discipline: compute_ready() reads only committed
     // (current_busy_) state and updates ready_out_. WarpScheduler::evaluate()
@@ -86,6 +120,16 @@ private:
     // cycle. Initial value matches pre-tick "free" so the very first cycle
     // matches the prior pre-evaluate setter behavior.
     bool ready_out_ = true;
+
+    // Phase 5 REGISTERED redirect-request signal. resolve_branch() writes
+    // next_redirect_request_; commit() flips it to current_redirect_request_.
+    // FetchStage and DecodeStage read current_redirect_request() during
+    // their own commit() to apply the flush, replacing the prior mid-tick
+    // side-channel calls from timing_model.cpp.
+    RedirectRequest current_redirect_request_{};
+    RedirectRequest next_redirect_request_{};
+
+    BranchShadowTracker* branch_tracker_ = nullptr;
 };
 
 } // namespace gpu_sim

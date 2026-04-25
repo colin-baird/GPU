@@ -146,8 +146,19 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     // output_consumed_ round-trip.
     fetch_->set_decode(decode_.get());
     scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
-                                                 scoreboard_, func_model, stats);
+                                                 scoreboard_, branch_tracker_,
+                                                 func_model, stats);
     opcoll_ = std::make_unique<OperandCollector>(stats);
+    // Phase 5: opcoll publishes a REGISTERED redirect-request and clears
+    // branch_in_flight directly into the tracker's next_ on resolve_branch()
+    // for correctly-predicted branches. For mispredicts, opcoll defers the
+    // clear and fetch.commit() does it when applying the redirect.
+    opcoll_->set_branch_tracker(&branch_tracker_);
+    fetch_->set_branch_tracker(&branch_tracker_);
+    // Phase 5: fetch and decode read opcoll's current_redirect_request()
+    // during their own commit() to apply the flush.
+    fetch_->set_opcoll(opcoll_.get());
+    decode_->set_opcoll(opcoll_.get());
 
     alu_ = std::make_unique<ALUUnit>(stats);
     mul_ = std::make_unique<MultiplyUnit>(config.multiply_pipeline_stages, stats);
@@ -362,6 +373,13 @@ bool TimingModel::tick() {
     }
 
     scoreboard_.seed_next();
+    // Phase 5 REGISTERED branch-shadow tracker: seed next_ from current_ so
+    // unmodified slots carry forward; scheduler.evaluate() reads current_
+    // (via tracker.is_in_flight) and may write next_ (set_in_flight on
+    // issue), opcoll.evaluate() may write next_ (clear_in_flight on
+    // resolve), and tracker.commit() flips at end-of-cycle alongside
+    // scoreboard_.commit().
+    branch_tracker_.seed_next();
     cache_->evaluate();
 
     // Phase 4 READY/STALL discipline: each consumer reads only its own
@@ -390,6 +408,12 @@ bool TimingModel::tick() {
         opcoll_->reset();
         gather_file_->reset();
         wb_arbiter_->reset();
+        // Phase 5: branch_tracker_.seed_next() was already called this
+        // tick; commit it (current_ <- next_, both equal current_) so the
+        // double-buffer state stays self-consistent. The tracker is also
+        // explicitly reset on panic completion below.
+        branch_tracker_.commit();
+        branch_tracker_.reset();
         record_cycle_trace(true);
         return true;
     }
@@ -409,16 +433,22 @@ bool TimingModel::tick() {
 
         const auto& out = *opcoll_->output();
         if (out.trace.is_branch) {
-            warps_[out.warp_id].branch_in_flight = false;
             stats_.branch_predictions++;
             branch_predictor_->update(out.pc, out.decoded, out.prediction,
                                       out.trace.branch_taken, out.trace.branch_target);
-            if (branch_mispredicted(out)) {
-                const uint32_t actual_target = out.trace.branch_taken
-                    ? out.trace.branch_target
-                    : (out.pc + 4);
-                fetch_->redirect_warp(out.warp_id, actual_target);
-                decode_->invalidate_warp(out.warp_id);
+            const bool mispredicted = branch_mispredicted(out);
+            const uint32_t actual_target = out.trace.branch_taken
+                ? out.trace.branch_target
+                : (out.pc + 4);
+            // Phase 5 REGISTERED branch resolution: opcoll clears the
+            // branch-shadow tracker (writes into next_) and, on
+            // misprediction, writes next_redirect_request_. fetch.commit()
+            // and decode.commit() read opcoll.current_redirect_request_
+            // at cycle N+1 (after this cycle's opcoll.commit() flips
+            // next_ -> current_). This is +1 cycle vs. the prior mid-tick
+            // mutation; accepted by Option A.
+            opcoll_->resolve_branch(out.warp_id, mispredicted, actual_target);
+            if (mispredicted) {
                 stats_.branch_mispredictions++;
                 stats_.branch_flushes++;
             }
@@ -460,6 +490,11 @@ bool TimingModel::tick() {
     // arbiter observes has_result() for this cycle.
     gather_file_->commit();
     scoreboard_.commit();
+    // Phase 5: flip branch-shadow tracker. Sequenced after every stage
+    // that may have written into next_ (scheduler set_in_flight on issue,
+    // opcoll clear_in_flight on resolve), and after every reader's
+    // evaluate() has already observed current_ from this same cycle.
+    branch_tracker_.commit();
 
     if (trace_enabled_) {
         trace_cycle();

@@ -6,6 +6,7 @@
 #include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/timing/scoreboard.h"
+#include "gpu_sim/timing/branch_shadow_tracker.h"
 #include "gpu_sim/timing/fetch_stage.h"
 #include "gpu_sim/timing/decode_stage.h"
 #include "gpu_sim/timing/warp_scheduler.h"
@@ -85,6 +86,7 @@ private:
 
     // Pipeline components
     Scoreboard scoreboard_;
+    BranchShadowTracker branch_tracker_;
     std::unique_ptr<FetchStage> fetch_;
     std::unique_ptr<DecodeStage> decode_;
     std::unique_ptr<WarpScheduler> scheduler_;
