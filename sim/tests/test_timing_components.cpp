@@ -691,7 +691,7 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
 
 TEST_CASE("MemoryInterface: fixed latency responses preserve submission order", "[timing]") {
     Stats stats;
-    ExternalMemoryInterface mem_if(2, stats);
+    FixedLatencyMemory mem_if(2, stats);
 
     mem_if.submit_read(10, 1);
     mem_if.submit_write(20);

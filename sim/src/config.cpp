@@ -50,6 +50,46 @@ void SimConfig::validate() const {
     if (external_memory_size_bytes < 1024) {
         throw std::invalid_argument("external_memory_size_bytes must be >= 1024");
     }
+    if (memory_backend != "fixed" && memory_backend != "dramsim3") {
+        throw std::invalid_argument(
+            "memory_backend must be one of {\"fixed\", \"dramsim3\"} (got \"" +
+            memory_backend + "\")");
+    }
+    if (fpga_clock_mhz <= 0.0) {
+        throw std::invalid_argument("fpga_clock_mhz must be > 0");
+    }
+    if (dram_clock_mhz <= 0.0) {
+        throw std::invalid_argument("dram_clock_mhz must be > 0");
+    }
+    if (dramsim3_request_fifo_depth < 1) {
+        throw std::invalid_argument("dramsim3_request_fifo_depth must be >= 1");
+    }
+    if (dramsim3_bytes_per_burst == 0) {
+        throw std::invalid_argument("dramsim3_bytes_per_burst must be > 0");
+    }
+    if (cache_line_size_bytes % dramsim3_bytes_per_burst != 0) {
+        throw std::invalid_argument(
+            "cache_line_size_bytes must be a multiple of dramsim3_bytes_per_burst");
+    }
+    // The request FIFO must absorb a worst-case submit when every MSHR has a
+    // read in flight and the write buffer drains a write the same cycle. Each
+    // cache submit pushes `chunks_per_line` entries; if there isn't space the
+    // backend silently rejects the request (cache call sites are void-return)
+    // and the cache hangs waiting for a fill or write-ack that never comes.
+    if (memory_backend == "dramsim3") {
+        const uint32_t chunks_per_line =
+            cache_line_size_bytes / dramsim3_bytes_per_burst;
+        const uint32_t min_fifo_depth =
+            (num_mshrs + write_buffer_depth) * chunks_per_line;
+        if (dramsim3_request_fifo_depth < min_fifo_depth) {
+            throw std::invalid_argument(
+                "dramsim3_request_fifo_depth (" +
+                std::to_string(dramsim3_request_fifo_depth) +
+                ") must be >= (num_mshrs + write_buffer_depth) * "
+                "(cache_line_size_bytes / dramsim3_bytes_per_burst) = " +
+                std::to_string(min_fifo_depth));
+        }
+    }
 }
 
 // Minimal JSON parser - handles flat key-value pairs for config
@@ -96,6 +136,25 @@ SimConfig SimConfig::from_json(const std::string& path) {
         if (key == "trace_enabled") { config.trace_enabled = (val == "true"); continue; }
         if (key == "functional_only") { config.functional_only = (val == "true"); continue; }
 
+        // String fields
+        if (key == "memory_backend") { config.memory_backend = val; continue; }
+        if (key == "dramsim3_config_path") { config.dramsim3_config_path = val; continue; }
+        if (key == "dramsim3_output_dir") { config.dramsim3_output_dir = val; continue; }
+
+        // Floating-point fields
+        if (key == "fpga_clock_mhz" || key == "dram_clock_mhz") {
+            double d;
+            try {
+                d = std::stod(val);
+            } catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "Invalid numeric value for \"" + key + "\": " + val);
+            }
+            if (key == "fpga_clock_mhz") config.fpga_clock_mhz = d;
+            else config.dram_clock_mhz = d;
+            continue;
+        }
+
         // Numeric fields
         uint32_t num;
         try {
@@ -118,6 +177,8 @@ SimConfig SimConfig::from_json(const std::string& path) {
         else if (key == "lookup_table_entries") config.lookup_table_entries = num;
         else if (key == "external_memory_latency_cycles") config.external_memory_latency_cycles = num;
         else if (key == "external_memory_size_bytes") config.external_memory_size_bytes = num;
+        else if (key == "dramsim3_request_fifo_depth") config.dramsim3_request_fifo_depth = num;
+        else if (key == "dramsim3_bytes_per_burst") config.dramsim3_bytes_per_burst = num;
         else if (key == "start_pc") config.start_pc = num;
         else if (key == "arg0") config.kernel_args[0] = num;
         else if (key == "arg1") config.kernel_args[1] = num;
@@ -152,6 +213,25 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         if (key == "trace_enabled") { trace_enabled = (val == "true" || val == "1"); continue; }
         if (key == "functional_only") { functional_only = (val == "true" || val == "1"); continue; }
 
+        // String fields
+        if (key == "memory_backend") { memory_backend = val; continue; }
+        if (key == "dramsim3_config_path") { dramsim3_config_path = val; continue; }
+        if (key == "dramsim3_output_dir") { dramsim3_output_dir = val; continue; }
+
+        // Floating-point fields
+        if (key == "fpga_clock_mhz" || key == "dram_clock_mhz") {
+            double d;
+            try {
+                d = std::stod(val);
+            } catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "Invalid numeric value for --" + key + ": " + val);
+            }
+            if (key == "fpga_clock_mhz") fpga_clock_mhz = d;
+            else dram_clock_mhz = d;
+            continue;
+        }
+
         // Numeric fields — reject bad values
         uint32_t num;
         try {
@@ -173,6 +253,8 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         else if (key == "lookup_table_entries") lookup_table_entries = num;
         else if (key == "external_memory_latency_cycles") external_memory_latency_cycles = num;
         else if (key == "external_memory_size_bytes") external_memory_size_bytes = num;
+        else if (key == "dramsim3_request_fifo_depth") dramsim3_request_fifo_depth = num;
+        else if (key == "dramsim3_bytes_per_burst") dramsim3_bytes_per_burst = num;
         else if (key == "start_pc") start_pc = num;
         else if (key == "arg0") kernel_args[0] = num;
         else if (key == "arg1") kernel_args[1] = num;

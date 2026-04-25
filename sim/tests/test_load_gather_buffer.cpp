@@ -108,7 +108,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // the last MSHR fill lands — this is the primary correctness property
     // of the gather-buffer refactor.
     Stats stats;
-    ExternalMemoryInterface mem_if(MEM_LATENCY, stats);
+    FixedLatencyMemory mem_if(MEM_LATENCY, stats);
     LoadGatherBufferFile gather_file(NUM_WARPS, stats);
     L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if,
                   gather_file, stats);
@@ -176,7 +176,7 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
     // on the target warp. Under normal operation the scoreboard prevents
     // this — this test verifies the structural safety net.
     Stats stats;
-    ExternalMemoryInterface mem_if(MEM_LATENCY, stats);
+    FixedLatencyMemory mem_if(MEM_LATENCY, stats);
     LoadGatherBufferFile gather_file(NUM_WARPS, stats);
     L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if,
                   gather_file, stats);

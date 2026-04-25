@@ -1,4 +1,7 @@
 #include "gpu_sim/timing/timing_model.h"
+#ifdef GPU_SIM_USE_DRAMSIM3
+#include "gpu_sim/timing/dramsim3_memory.h"
+#endif
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -147,7 +150,18 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     tlookup_ = std::make_unique<TLookupUnit>(stats);
     ldst_ = std::make_unique<LdStUnit>(config.num_ldst_units, config.addr_gen_fifo_depth, stats);
 
-    mem_if_ = std::make_unique<ExternalMemoryInterface>(config.external_memory_latency_cycles, stats);
+    if (config.memory_backend == "dramsim3") {
+#ifdef GPU_SIM_USE_DRAMSIM3
+        mem_if_ = std::make_unique<DRAMSim3Memory>(config, stats);
+#else
+        throw std::invalid_argument(
+            "memory_backend=\"dramsim3\" requires the simulator to be built "
+            "with -DGPU_SIM_USE_DRAMSIM3=ON (currently OFF)");
+#endif
+    } else {
+        mem_if_ = std::make_unique<FixedLatencyMemory>(
+            config.external_memory_latency_cycles, stats);
+    }
     gather_file_ = std::make_unique<LoadGatherBufferFile>(config.num_warps, stats);
     cache_ = std::make_unique<L1Cache>(config.l1_cache_size_bytes, config.cache_line_size_bytes,
                                        config.num_mshrs, config.write_buffer_depth,

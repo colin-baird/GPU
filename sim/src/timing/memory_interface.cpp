@@ -2,10 +2,10 @@
 
 namespace gpu_sim {
 
-ExternalMemoryInterface::ExternalMemoryInterface(uint32_t latency, Stats& stats)
+FixedLatencyMemory::FixedLatencyMemory(uint32_t latency, Stats& stats)
     : latency_(latency), stats_(stats) {}
 
-bool ExternalMemoryInterface::submit_read(uint32_t line_addr, uint32_t mshr_id) {
+bool FixedLatencyMemory::submit_read(uint32_t line_addr, uint32_t mshr_id) {
     MemoryRequest req;
     req.line_addr = line_addr;
     req.mshr_id = mshr_id;
@@ -16,7 +16,7 @@ bool ExternalMemoryInterface::submit_read(uint32_t line_addr, uint32_t mshr_id) 
     return true;
 }
 
-bool ExternalMemoryInterface::submit_write(uint32_t line_addr) {
+bool FixedLatencyMemory::submit_write(uint32_t line_addr) {
     MemoryRequest req;
     req.line_addr = line_addr;
     req.mshr_id = 0;
@@ -27,7 +27,7 @@ bool ExternalMemoryInterface::submit_write(uint32_t line_addr) {
     return true;
 }
 
-void ExternalMemoryInterface::evaluate() {
+void FixedLatencyMemory::evaluate() {
     for (auto& req : in_flight_) {
         req.cycles_remaining--;
     }
@@ -43,15 +43,15 @@ void ExternalMemoryInterface::evaluate() {
     }
 }
 
-void ExternalMemoryInterface::commit() {}
+void FixedLatencyMemory::commit() {}
 
-MemoryResponse ExternalMemoryInterface::get_response() {
+MemoryResponse FixedLatencyMemory::get_response() {
     MemoryResponse resp = responses_.front();
     responses_.pop_front();
     return resp;
 }
 
-void ExternalMemoryInterface::reset() {
+void FixedLatencyMemory::reset() {
     in_flight_.clear();
     responses_.clear();
 }

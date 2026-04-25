@@ -20,7 +20,7 @@ constexpr uint32_t FULL_MASK = 0xFFFFFFFFu;
 // against a shared Stats object. Each test constructs one of these.
 struct CacheFixture {
     Stats stats;
-    ExternalMemoryInterface mem_if{MEM_LATENCY, stats};
+    FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
 

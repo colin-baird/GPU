@@ -371,10 +371,17 @@ void L1Cache::drain_secondary_chain_head() {
 }
 
 void L1Cache::drain_write_buffer() {
-    // Drain one entry per cycle if external memory can accept
+    // Drain one entry per cycle if external memory can accept. The bool
+    // return must be respected: backends with a bounded request FIFO
+    // (DRAMSim3) reject the submit when the FIFO is full, and silently
+    // popping the entry would lose the write entirely (the timing model
+    // tracks tags only — functional data is unaffected, but cycle counts
+    // and external_memory_writes go astray and the line is never marked
+    // observed by the memory model).
     if (!write_buffer_.empty()) {
-        mem_if_.submit_write(write_buffer_.front());
-        write_buffer_.pop_front();
+        if (mem_if_.submit_write(write_buffer_.front())) {
+            write_buffer_.pop_front();
+        }
     }
 }
 

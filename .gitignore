@@ -8,6 +8,10 @@
 # Generic out-of-tree build folders created in subdirectories
 **/build/
 
+# FetchContent-populated dependency sources/builds (e.g., DRAMSim3)
+build/_deps/
+**/_deps/
+
 # Common CMake-generated metadata inside build trees
 **/CMakeFiles/
 **/Testing/
@@ -26,6 +30,12 @@ __pycache__/
 
 # Benchmark history database
 tools/.bench_history.db
+
+# DRAMSim3 epoch stat dumps written into the cwd when its output dir
+# doesn't exist (defensive — the simulator creates the dir explicitly,
+# but external invocations of vendored DRAMSim3 binaries can drop these)
+dramsim3epoch.json
+*epoch.json
 
 # Office temp/lock files
 ~$*

@@ -21,3 +21,10 @@ add_gpu_test(test_integration test_integration.cpp)
 add_gpu_test(test_timing_components test_timing_components.cpp)
 add_gpu_test(test_load_gather_buffer test_load_gather_buffer.cpp)
 add_gpu_test(test_cache_mshr_merging test_cache_mshr_merging.cpp)
+add_gpu_test(test_config test_config.cpp)
+
+if(GPU_SIM_USE_DRAMSIM3)
+    add_gpu_test(test_dramsim3_memory test_dramsim3_memory.cpp)
+    target_compile_definitions(test_dramsim3_memory PRIVATE
+        DRAMSIM3_TEST_INI_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../configs/dram/DDR3_4Gb_x16_800.ini")
+endif()

@@ -35,6 +35,23 @@ struct SimConfig {
     uint32_t external_memory_latency_cycles = 100;
     uint32_t external_memory_size_bytes = 64 * 1024 * 1024;  // 64 MB
 
+    // External-memory backend selection.
+    //   "fixed"    — FixedLatencyMemory (default; used by all unit tests)
+    //   "dramsim3" — DRAMSim3Memory backed by the DE-10 Nano DDR3 model
+    std::string memory_backend = "fixed";
+    std::string dramsim3_config_path = "";
+    std::string dramsim3_output_dir = "/tmp/dramsim3";
+    double      fpga_clock_mhz = 150.0;
+    double      dram_clock_mhz = 400.0;             // DDR3-800 I/O = 400 MHz
+    // Sized to exactly absorb the cache's worst-case simultaneous in-flight
+    // submits: (num_mshrs + write_buffer_depth) chunks_per_line. validate()
+    // rejects any value below this minimum. The default tracks the simulator
+    // defaults (4 MSHRs + 4-deep write buffer + 4 chunks/line = 32). Sizing
+    // larger than the minimum is wasteful — the cache cannot produce more
+    // outstanding chunks than the architectural bound.
+    uint32_t    dramsim3_request_fifo_depth = 32;
+    uint32_t    dramsim3_bytes_per_burst = 32;      // BL8 x 32-bit = 32 B
+
     // Kernel arguments
     uint32_t kernel_args[4] = {0, 0, 0, 0};
     uint32_t start_pc = 0;

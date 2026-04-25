@@ -27,7 +27,7 @@ constexpr uint32_t NUM_SETS = CACHE_SIZE / LINE_SIZE;
 
 struct MergeFixture {
     Stats stats;
-    ExternalMemoryInterface mem_if{MEM_LATENCY, stats};
+    FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
 
