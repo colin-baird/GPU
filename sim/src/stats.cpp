@@ -71,6 +71,12 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "Serialized requests:       " << serialized_requests << "\n";
     out << "External memory reads:     " << external_memory_reads << "\n";
     out << "External memory writes:    " << external_memory_writes << "\n";
+    if (external_read_latency_count > 0) {
+        out << "Avg external read latency: " << std::fixed << std::setprecision(1)
+            << static_cast<double>(external_read_latency_total) /
+                   static_cast<double>(external_read_latency_count)
+            << " cycles (" << external_read_latency_count << " samples)\n";
+    }
     out << "Gather buffer stall:       " << gather_buffer_stall_cycles << "\n";
     out << "Gather buffer port conf.:  " << gather_buffer_port_conflict_cycles << "\n";
     out << "MSHR merged loads:         " << mshr_merged_loads << "\n";
@@ -135,6 +141,8 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"serialized_requests\": " << serialized_requests << ",\n";
     out << "  \"external_memory_reads\": " << external_memory_reads << ",\n";
     out << "  \"external_memory_writes\": " << external_memory_writes << ",\n";
+    out << "  \"external_read_latency_total\": " << external_read_latency_total << ",\n";
+    out << "  \"external_read_latency_count\": " << external_read_latency_count << ",\n";
     out << "  \"total_load_latency\": " << total_load_latency << ",\n";
     out << "  \"total_loads_completed\": " << total_loads_completed << ",\n";
     out << "  \"gather_buffer_stall_cycles\": " << gather_buffer_stall_cycles << ",\n";

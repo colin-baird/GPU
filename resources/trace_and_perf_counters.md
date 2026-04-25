@@ -414,6 +414,7 @@ Emitted for each of `alu_stats`, `mul_stats`, `div_stats`, `ldst_stats`,
 | `coalesced_requests` | Memory requests where all 32 lanes fell in one cache line. |
 | `serialized_requests` | Memory requests that serialized into 32 per-lane accesses (totals per lane, not per warp). |
 | `external_memory_reads` / `external_memory_writes` | Requests submitted to the external memory interface. |
+| `external_read_latency_total` / `external_read_latency_count` | Sum and count of submit→response cycles for completed external reads. Both backends populate these (FixedLatencyMemory adds `latency_` per completion; DRAMSim3Memory measures actual fabric-clock delta). The text report emits the derived average; used to calibrate the fixed-backend default against the DRAMSim3 backend. |
 | `total_load_latency` / `total_loads_completed` | Used to derive average load latency (`total_load_latency / total_loads_completed`), emitted in the text report. |
 | `gather_buffer_stall_cycles` | Cycles the coalescer stalled because the target warp's gather buffer was busy. |
 | `gather_buffer_port_conflict_cycles` | Cycles a HIT lost the gather-buffer write port to a same-cycle FILL. |

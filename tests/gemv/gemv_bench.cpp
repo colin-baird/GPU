@@ -25,7 +25,7 @@ constexpr uint32_t kMatrixBase = 0x00002000;
 
 struct Options {
     uint32_t num_warps = MAX_WARPS;
-    uint32_t memory_latency = 100;
+    uint32_t memory_latency = SimConfig{}.external_memory_latency_cycles;
     uint64_t max_cycles = 2000000;
     bool json_output = false;
     std::string memory_backend = "fixed";
@@ -43,7 +43,7 @@ void print_usage(const char* argv0) {
               << " [--num-warps=<1-" << MAX_WARPS << ">] [--memory-latency=<cycles>] [--max-cycles=<N>]\n"
               << "         [--memory-backend=<fixed|dramsim3>] [--dramsim3-config-path=<file.ini>]\n";
     std::cerr << "Defaults: --num-warps=" << MAX_WARPS
-              << " --memory-latency=100 --max-cycles=2000000 --memory-backend=fixed\n";
+              << " --memory-latency=" << SimConfig{}.external_memory_latency_cycles << " --max-cycles=2000000 --memory-backend=fixed\n";
 }
 
 uint32_t parse_u32(const std::string& value, const std::string& name) {

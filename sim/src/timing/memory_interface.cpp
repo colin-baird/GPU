@@ -38,6 +38,10 @@ void FixedLatencyMemory::evaluate() {
         resp.line_addr = req.line_addr;
         resp.mshr_id = req.mshr_id;
         resp.is_write = req.is_write;
+        if (!req.is_write) {
+            stats_.external_read_latency_total += latency_;
+            stats_.external_read_latency_count++;
+        }
         responses_.push_back(resp);
         in_flight_.pop_front();
     }

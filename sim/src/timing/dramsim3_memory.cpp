@@ -79,6 +79,7 @@ bool DRAMSim3Memory::submit_read(uint32_t line_addr, uint32_t mshr_id) {
     a.line_addr        = line_addr;
     a.chunks_remaining = static_cast<uint16_t>(chunks_per_line_);
     a.active           = true;
+    a.submit_cycle     = fabric_cycle_;
 
     const uint64_t base = static_cast<uint64_t>(line_addr) * line_size_;
     for (uint32_t i = 0; i < chunks_per_line_; ++i) {
@@ -115,6 +116,7 @@ bool DRAMSim3Memory::submit_write(uint32_t line_addr) {
 }
 
 void DRAMSim3Memory::evaluate() {
+    ++fabric_cycle_;
     phase_ += ticks_per_fabric_;
     while (phase_ >= 1.0) {
         if (!request_fifo_.empty()) {
@@ -170,6 +172,7 @@ void DRAMSim3Memory::reset() {
     read_chunk_to_mshr_.clear();
     write_chunk_to_line_.clear();
     phase_ = 0.0;
+    fabric_cycle_ = 0;
     dram_ticks_ = 0;
     max_response_queue_ = 0;
     rebuild_memory_system();
@@ -193,6 +196,9 @@ void DRAMSim3Memory::on_read_complete(uint64_t addr) {
         assert(responses_.size() < response_queue_capacity_ &&
                "DRAMSim3Memory response queue overflow on read completion");
         responses_.push_back({a.line_addr, mshr_id, false});
+        stats_.external_read_latency_total +=
+            (fabric_cycle_ - a.submit_cycle);
+        stats_.external_read_latency_count++;
         a.active = false;
         if (responses_.size() > max_response_queue_) {
             max_response_queue_ = responses_.size();

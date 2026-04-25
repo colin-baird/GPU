@@ -55,6 +55,7 @@ private:
         uint32_t line_addr        = 0;
         uint16_t chunks_remaining = 0;
         bool     active           = false;
+        uint64_t submit_cycle     = 0;
     };
 
     struct WriteAssembly {
@@ -114,6 +115,11 @@ private:
     // Reverse maps from chunk byte address (issued to DRAMSim3) to its owner.
     std::unordered_map<uint64_t, uint32_t> read_chunk_to_mshr_;
     std::unordered_map<uint64_t, uint32_t> write_chunk_to_line_;
+
+    // Fabric-clock cycle counter, incremented once per evaluate(). Used to
+    // tag in-flight reads with their submit cycle so per-request latency
+    // (submit→response) can be accumulated into Stats on completion.
+    uint64_t fabric_cycle_ = 0;
 
     // Total DRAMSim3 ClockTicks issued since construction or last reset.
     size_t dram_ticks_ = 0;

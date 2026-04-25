@@ -57,6 +57,8 @@ struct Stats {
     uint64_t serialized_requests = 0;
     uint64_t external_memory_reads = 0;
     uint64_t external_memory_writes = 0;
+    uint64_t external_read_latency_total = 0;   // sum of submit→response cycles for completed external reads
+    uint64_t external_read_latency_count = 0;   // number of external reads contributing to the total
     uint64_t total_load_latency = 0;
     uint64_t total_loads_completed = 0;
     uint64_t gather_buffer_stall_cycles = 0;

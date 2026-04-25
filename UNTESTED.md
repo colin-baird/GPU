@@ -15,6 +15,13 @@ Changes that passed regression but have not yet received targeted test coverage.
 
 ## Entries
 
+### External-memory read-latency instrumentation
+- **Date:** 2026-04-25
+- **Commit:** (logged during fixed-latency calibration to DRAMSim3 mean)
+- **What changed:** Added `Stats::external_read_latency_total` / `external_read_latency_count`, populated by both `FixedLatencyMemory` (adds `latency_` per completion) and `DRAMSim3Memory` (measures `fabric_cycle_ - submit_cycle` per completed read). Used to recalibrate the fixed-backend default from 100 → 17 cycles to match the weighted-mean DDR3 read latency across the workload benchmark suite.
+- **Why untested:** deferred — counters are exercised end-to-end by every benchmark run, but no targeted Catch2 case asserts the accumulation arithmetic on either backend.
+- **Test priority:** low
+
 ### TLOOKUP intra-warp 2-lane/cycle BRAM pipelining
 - **Date:** 2026-04-23
 - **Commit:** (logged during TLOOKUP timing-test retrofit)

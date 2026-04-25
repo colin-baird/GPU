@@ -32,7 +32,12 @@ struct SimConfig {
     uint32_t lookup_table_entries = 1024;
 
     // External memory
-    uint32_t external_memory_latency_cycles = 100;
+    // Default chosen to match the weighted-mean DRAMSim3 read latency across
+    // the workload benchmark suite (DDR3-800 DE-10 Nano config), so the fixed
+    // backend approximates the DDR3 backend's average per-request cost. Sweep
+    // the suite under both backends and recompute if the suite or DDR3 config
+    // changes materially.
+    uint32_t external_memory_latency_cycles = 17;
     uint32_t external_memory_size_bytes = 64 * 1024 * 1024;  // 64 MB
 
     // External-memory backend selection.

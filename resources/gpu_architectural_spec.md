@@ -469,7 +469,7 @@ The SM connects to external memory (DDR3/DDR4 on the FPGA board) to serve L1 dat
 - Valid/ready handshake: the SM asserts `req_valid` with address and data; it holds until `req_ready` is asserted. Responses return asynchronously via `resp_valid`.
 - The wrapper module translates this simple interface to the target bus protocol (Avalon burst transactions, AXI4 AR/AW/R/W/B channels, etc.).
 
-**Simulation defaults:** External memory latency is parameterizable (default: **100 cycles**). External memory size is parameterizable (default: **64 MB**). These defaults model a representative DDR3/DDR4 access pattern for FPGA prototyping.
+**Simulation defaults:** External memory latency is parameterizable (default: **17 cycles**). External memory size is parameterizable (default: **64 MB**). The 17-cycle default is calibrated to the weighted-mean DRAMSim3 read latency observed across the workload benchmark suite under the DE-10 Nano DDR3-800 config, so the fixed backend approximates the DDR3 backend's average per-request cost on representative workloads. Re-run the calibration if the suite or the DDR3 config changes materially.
 
 **Simulator memory backends.** The performance simulator selects between two backends behind the same `ExternalMemoryInterface` (`submit_read`, `submit_write`, `evaluate`, `commit`, `is_idle`, `has_response`, `get_response`) via `SimConfig::memory_backend`:
 

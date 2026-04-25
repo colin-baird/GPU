@@ -384,7 +384,10 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
   - `submit_read(line_addr, mshr_id)`, `submit_write(line_addr)`: Enqueue
     request with `latency` countdown.
   - `evaluate()`: Decrements all in-flight countdowns. Moves completed
-    requests to response queue.
+    requests to response queue. On read completion, accumulates
+    `latency_` into `Stats::external_read_latency_total` /
+    `external_read_latency_count` so the average can be compared against
+    the DRAMSim3 backend's measured per-request latency.
   - `has_response()`, `get_response()`: Response consumption interface.
   - `is_idle()`: True only when no requests are in flight and no responses
     are queued.
@@ -407,6 +410,7 @@ DRAMSim3-backed external memory model. Selected when
   handling non-integer clock ratios without long-run drift.
 - **Bounded request FIFO with reserved regions** (`dramsim3_request_fifo_depth`): logically split into a `num_mshrs * chunks_per_line` read region and a `write_buffer_depth * chunks_per_line` write region. `submit_read` only fails if the entire FIFO is full (architecturally impossible — at most `num_mshrs` reads can be in flight, and the read region holds exactly that many). `submit_write` returns `false` once the write region is full; the cache (`L1Cache::drain_write_buffer`) consumes this as backpressure and retries next cycle. `assert`s at both push sites convert any violation into an immediate failure.
 - **Bounded response queue** (capacity = `num_mshrs + write_buffer_depth + chunks_per_line`): asserted at both push sites. The `worst-case cache traffic` Catch2 case in `test_dramsim3_memory.cpp` drives peak production and verifies the bound holds (snapshot via `max_observed_response_queue()`).
+- **Per-request latency tracking**: each `ReadAssembly` records its `submit_cycle` (sampled from a fabric-clock counter incremented in `evaluate()`); on the final chunk callback, the (`fabric_cycle_ - submit_cycle`) delta is accumulated into `Stats::external_read_latency_total` / `external_read_latency_count`. The averaged value is used to calibrate the `FixedLatencyMemory` default against representative DDR3 behavior.
 - **Chunked transfers**: `submit_read(line_addr, mshr_id)` allocates the
   per-MSHR `ReadAssembly` slot and pushes one chunk per
   `dramsim3_bytes_per_burst`. The read callback decrements the slot's
