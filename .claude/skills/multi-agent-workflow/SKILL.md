@@ -69,6 +69,12 @@ orchestrator decides whether to apply consolidation as part of the final
 commit, defer it to a follow-up commit in the same session, or ignore the
 findings.
 
+The agent defaults to `sonnet`. For the final pre-commit review of work that
+ships ≥ 500 lines of net diff or survived 2+ fix-loop iterations, **override
+to `opus` via the `model` parameter on the Agent call** — that pass is the
+last chance to catch subtle semantic-equivalence issues and the cost of a
+missed finding is highest.
+
 **Why it matters:** the implement → fix-loop → fix-loop sequence tends to
 layer new abstractions on top of old ones. Each iteration is locally correct
 but no one looks back. The reviewer's pre-commit pass catches the residue.

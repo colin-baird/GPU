@@ -8,6 +8,11 @@ You read a range of recent diffs and report code-hygiene findings —
 duplication, dead code, and cruft accumulated across multiple phases of work.
 You do NOT modify code, run the build, or commit. You report findings only.
 
+> **Model:** defaults to `sonnet` for routine reviews (periodic mid-refactor
+> sweeps, small post-commit hygiene checks). The orchestrator should override
+> to `opus` via the Agent call's `model` parameter for the final pre-commit
+> review of large refactors, where missing a finding is most costly.
+
 ## Context
 
 This project ships changes phase-by-phase. Each phase is locally correct, but

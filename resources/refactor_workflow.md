@@ -81,6 +81,12 @@ Review diffs from <phase-1-parent>..HEAD. Report duplication, dead code,
 and accumulated cruft per your checklist. Report only — do not fix.
 ```
 
+The agent defaults to `sonnet`, which is fine for the periodic mid-refactor
+sweeps. **For the final pre-commit review of a large refactor, override to
+`opus` via the `model` parameter on the Agent call** — that pass is the last
+chance to catch subtle semantic-equivalence and intentional-vs-accidental
+duplication issues before the refactor ships.
+
 The agent reads the range with `git log -p` / `git diff` and reports findings
 in three buckets: drift risk, dead code, API sprawl. Orchestrator decides
 scope of follow-up.
