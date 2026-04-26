@@ -6,16 +6,6 @@ namespace gpu_sim {
 DecodeStage::DecodeStage(WarpState* warps, FetchStage& fetch)
     : warps_(warps), fetch_(fetch) {}
 
-void DecodeStage::compute_ready() {
-    // Read only committed state. pending_ at this point reflects what last
-    // cycle's commit() left behind (commit pushes to instr_buffer when
-    // possible; otherwise pending_ persists). evaluate() runs after
-    // compute_ready() this cycle and will only consume a new fetch output
-    // when pending_.valid is false at that point — which equals committed
-    // state. Hence the ready signal is just !pending_.valid.
-    ready_to_consume_fetch_ = !pending_.valid;
-}
-
 void DecodeStage::evaluate() {
     // Phase 6: write only into next_ slot. commit() flips it; TimingModel
     // observes current_ at the top of the *next* tick. Reset next_ to
@@ -59,18 +49,9 @@ void DecodeStage::commit() {
     // cycle. Applying the invalidate first prevents this commit from
     // pushing a shadow instruction (the pending entry that decode.evaluate
     // accepted while reading from the wrong path) into the warp's buffer.
-    bool redirect_valid = false;
-    uint32_t redirect_warp = 0;
-    if (has_redirect_override_) {
-        redirect_valid = redirect_override_valid_;
-        redirect_warp = redirect_override_warp_;
-    } else if (opcoll_) {
-        const auto& req = opcoll_->current_redirect_request();
-        redirect_valid = req.valid;
-        redirect_warp = req.warp_id;
-    }
-    if (redirect_valid) {
-        apply_redirect_invalidate(redirect_warp);
+    const RedirectRequest req = read_redirect_request(redirect_override_, opcoll_);
+    if (req.valid) {
+        apply_redirect_invalidate(req.warp_id);
     }
 
     if (pending_.valid) {
@@ -85,9 +66,7 @@ void DecodeStage::reset() {
     current_ebreak_request_ = EBreakRequest{};
     next_ebreak_request_ = EBreakRequest{};
     pending_.valid = false;
-    ready_to_consume_fetch_ = true;
-    has_redirect_override_ = false;
-    redirect_override_valid_ = false;
+    redirect_override_.reset();
 }
 
 void DecodeStage::apply_redirect_invalidate(uint32_t warp_id) {

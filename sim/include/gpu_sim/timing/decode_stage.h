@@ -2,13 +2,12 @@
 
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/fetch_stage.h"
+#include "gpu_sim/timing/operand_collector.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/decoder.h"
 #include <optional>
 
 namespace gpu_sim {
-
-class OperandCollector;  // forward decl: decode reads opcoll.current_redirect_request()
 
 // Phase 6 REGISTERED EBREAK side-channel. evaluate() writes
 // next_ebreak_request_ when it sees an EBREAK at decode; commit() flips
@@ -27,13 +26,6 @@ class DecodeStage : public PipelineStage {
 public:
     DecodeStage(WarpState* warps, FetchStage& fetch);
 
-    // Phase 3 READY/STALL discipline: compute_ready() reads only committed
-    // state (pending_) and exposes ready_to_consume_fetch() for
-    // FetchStage::evaluate() to query as a backpressure gate. Called by
-    // TimingModel::tick() before fetch_->evaluate() so fetch sees a stable,
-    // committed-state-derived signal. Phase 8: overrides PipelineStage's
-    // virtual default no-op so the backward sweep can dispatch via base.
-    void compute_ready() override;
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -55,12 +47,11 @@ public:
         return pending_.valid ? &pending_.entry : nullptr;
     }
 
-    // True if decode can accept a new fetch output this cycle.
-    // Equivalent to !pending_.valid: decode.evaluate() consumes a new
-    // fetch output only when its pending slot is empty at evaluate time
-    // (which equals committed state, since compute_ready() runs first).
-    // Computed by compute_ready() from committed state only.
-    bool ready_to_consume_fetch() const { return ready_to_consume_fetch_; }
+    // True if decode can accept a new fetch output this cycle. Reads only
+    // committed state (pending_, mutated only by commit()): decode.evaluate()
+    // consumes a new fetch output only when its pending slot is empty at
+    // evaluate time, which equals committed state.
+    bool ready_to_consume_fetch() const { return !pending_.valid; }
 
     // Phase 5: wire opcoll so decode.commit() can read its REGISTERED
     // current_redirect_request() and invalidate any matching pending entry.
@@ -71,13 +62,14 @@ public:
     // Phase 5 test hook: explicit override of the redirect-request signal
     // for unit tests that drive DecodeStage in isolation.
     void set_redirect_request_override(bool valid, uint32_t warp_id) {
-        redirect_override_valid_ = valid;
-        redirect_override_warp_ = warp_id;
-        has_redirect_override_ = true;
+        RedirectRequest req;
+        req.valid = valid;
+        req.warp_id = warp_id;
+        // target_pc is unused by DecodeStage's redirect handling.
+        redirect_override_ = req;
     }
     void clear_redirect_request_override() {
-        has_redirect_override_ = false;
-        redirect_override_valid_ = false;
+        redirect_override_.reset();
     }
 
 private:
@@ -95,13 +87,13 @@ private:
     // top of the next tick.
     EBreakRequest current_ebreak_request_{};
     EBreakRequest next_ebreak_request_{};
-    bool ready_to_consume_fetch_ = true;
 
-    // Pending decode result (staged for commit). pending_ is committed
-    // state at the top of tick: it was last mutated by the previous
-    // cycle's commit() (push attempt) or evaluate() (pull). The READY/STALL
-    // contract requires compute_ready() to read pending_ before this
-    // cycle's evaluate() mutates it.
+    // Pending decode result (staged for commit). pending_ is committed state
+    // at evaluate time: it was last mutated by the previous cycle's commit()
+    // (push attempt) or evaluate() (pull). The READY/STALL contract requires
+    // FetchStage::evaluate() to read ready_to_consume_fetch() (computed from
+    // pending_) before this cycle's decode.evaluate() mutates it — this is
+    // ensured by tick order: fetch.evaluate() runs before decode.evaluate().
     struct PendingDecode {
         BufferEntry entry;
         uint32_t target_warp;
@@ -109,10 +101,8 @@ private:
     };
     PendingDecode pending_;
 
-    // Phase 5 test hook fields.
-    bool has_redirect_override_ = false;
-    bool redirect_override_valid_ = false;
-    uint32_t redirect_override_warp_ = 0;
+    // Phase 5 test hook field.
+    std::optional<RedirectRequest> redirect_override_;
 };
 
 } // namespace gpu_sim

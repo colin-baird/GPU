@@ -53,31 +53,20 @@ public:
         return current_redirect_request_;
     }
 
-    // Phase 4 READY/STALL discipline: compute_ready() reads only committed
-    // (current_busy_) state and updates ready_out_. WarpScheduler::evaluate()
-    // queries ready_out() during the same tick; TimingModel::tick() invokes
-    // compute_ready() before scheduler_->evaluate() so the signal is stable
-    // and derived from end-of-last-cycle state. Phase 8: overrides
-    // PipelineStage's virtual default no-op.
-    void compute_ready() override;
-    bool ready_out() const { return ready_out_; }
+    // READY/STALL discipline: ready_out() is a const accessor reading only
+    // committed (current_busy_) state. WarpScheduler::evaluate() queries it
+    // during its own evaluate() this same tick; post-commit observers
+    // (pipeline_drained / execution_units_drained / trace_cycle / unit
+    // tests) call the same accessor.
+    bool ready_out() const { return !current_busy_; }
 
     void evaluate() override;
     void commit() override;
     void reset() override;
 
-    // Phase 6: panic flush hook. Called from TimingModel::tick() at the
-    // commit-phase boundary when the panic signal becomes active. Same
-    // body as reset() — drops the in-flight instruction, clears
-    // busy/cycles, and clears the redirect-request slot.
+    // Panic flush hook. Called from TimingModel::tick() at the commit-phase
+    // boundary when the panic signal becomes active. Delegates to reset().
     void flush();
-
-    // Alias of ready_out() retained for post-commit observers and tests:
-    // pipeline_drained() / execution_units_drained() / trace_cycle() / unit
-    // tests query "is operand collector idle?" after commit and need to read
-    // committed (current_busy_) state directly. Functionally identical to
-    // ready_out() because both derive from current_busy_.
-    bool is_free() const { return !current_busy_; }
 
     // Phase 2 discipline: writes only into next_* slots. evaluate() runs
     // afterward in the same tick and consumes next_* (combinational forward
@@ -122,12 +111,6 @@ private:
     std::optional<DispatchInput> current_output_;
     std::optional<DispatchInput> next_output_;
 
-    // Phase 4 READY/STALL slot: written by compute_ready() at the top of the
-    // tick from current_busy_; read by WarpScheduler::evaluate() the same
-    // cycle. Initial value matches pre-tick "free" so the very first cycle
-    // matches the prior pre-evaluate setter behavior.
-    bool ready_out_ = true;
-
     // Phase 5 REGISTERED redirect-request signal. resolve_branch() writes
     // next_redirect_request_; commit() flips it to current_redirect_request_.
     // FetchStage and DecodeStage read current_redirect_request() during
@@ -138,5 +121,18 @@ private:
 
     BranchShadowTracker* branch_tracker_ = nullptr;
 };
+
+// Resolve the redirect-request signal observed by FetchStage::commit and
+// DecodeStage::commit. Each stage may carry a test-only override (set when
+// the stage is exercised in isolation); when present it takes precedence
+// over the wired OperandCollector. With neither override nor opcoll wired,
+// the returned request is invalid (RedirectRequest::valid == false).
+inline RedirectRequest read_redirect_request(
+    const std::optional<RedirectRequest>& override_request,
+    const OperandCollector* opcoll) {
+    if (override_request) return *override_request;
+    if (opcoll) return opcoll->current_redirect_request();
+    return RedirectRequest{};
+}
 
 } // namespace gpu_sim

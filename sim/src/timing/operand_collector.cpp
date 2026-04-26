@@ -2,17 +2,9 @@
 
 namespace gpu_sim {
 
-void OperandCollector::compute_ready() {
-    // Phase 4 READY/STALL: read only committed (current_busy_) state. The
-    // scheduler reads ready_out() during its evaluate() this same cycle.
-    // Mirrors the prior pre-evaluate set_opcoll_free(opcoll_->is_free())
-    // setter exactly.
-    ready_out_ = !current_busy_;
-}
-
 void OperandCollector::accept(const IssueOutput& issue) {
     // Phase 2 discipline: writes only into next_* slots. The scheduler's
-    // pre-evaluate is_free() check (which reads current_busy_) gates calling
+    // pre-evaluate ready_out() check (which reads current_busy_) gates calling
     // accept() so we never overwrite an in-flight instruction.
     next_busy_ = true;
     next_instr_ = issue;
@@ -79,7 +71,7 @@ void OperandCollector::resolve_branch(uint32_t warp_id, bool mispredicted,
         // Correct prediction: no shadow path — fetch was already speculating
         // down the right path — so clear immediately. This matches the
         // pre-Phase-5 behavior for not-taken / correctly-predicted branches.
-        branch_tracker_->clear_in_flight(warp_id);
+        branch_tracker_->note_resolved_correctly(warp_id);
     }
 }
 
@@ -90,23 +82,12 @@ void OperandCollector::reset() {
     next_cycles_remaining_ = 0;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
-    ready_out_ = true;
     current_redirect_request_ = RedirectRequest{};
     next_redirect_request_ = RedirectRequest{};
 }
 
 void OperandCollector::flush() {
-    // Phase 6: panic-flush. Same body as reset() — drop the resident
-    // instruction and any pending redirect request.
-    current_busy_ = false;
-    next_busy_ = false;
-    current_cycles_remaining_ = 0;
-    next_cycles_remaining_ = 0;
-    current_output_ = std::nullopt;
-    next_output_ = std::nullopt;
-    ready_out_ = true;
-    current_redirect_request_ = RedirectRequest{};
-    next_redirect_request_ = RedirectRequest{};
+    reset();
 }
 
 } // namespace gpu_sim

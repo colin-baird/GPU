@@ -97,8 +97,8 @@ void WarpScheduler::evaluate() {
         }
 
         // Phase 5 REGISTERED: read tracker.is_in_flight(w) which exposes
-        // current_ (committed) state. The set_in_flight write below goes
-        // into next_; commit() flips at end of cycle.
+        // current_ (committed) state. The note_branch_issued write below
+        // goes into next_; commit() flips at end of cycle.
         if (branch_tracker_.is_in_flight(w)) {
             stats_.warp_stall_branch_shadow[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::BRANCH_SHADOW;
@@ -164,7 +164,7 @@ void WarpScheduler::evaluate() {
             selected_entry.decoded.type == InstructionType::JALR) {
             // Phase 5 REGISTERED: write into next_; visible to scheduler via
             // current_ after commit() flips at end of cycle.
-            branch_tracker_.set_in_flight(selected_warp);
+            branch_tracker_.note_branch_issued(selected_warp);
         }
     }
 
@@ -186,14 +186,7 @@ void WarpScheduler::reset() {
 }
 
 void WarpScheduler::flush() {
-    // Phase 6: panic-flush. Same body as reset() — drop any in-flight
-    // issue, reset round-robin pointer, and clear diagnostics. Called at
-    // the commit phase when panic becomes active.
-    rr_pointer_ = 0;
-    current_output_ = std::nullopt;
-    next_output_ = std::nullopt;
-    current_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
-    next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+    reset();
 }
 
 } // namespace gpu_sim

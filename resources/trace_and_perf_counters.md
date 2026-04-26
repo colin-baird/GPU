@@ -398,7 +398,7 @@ Emitted for each of `alu_stats`, `mul_stats`, `div_stats`, `ldst_stats`,
 
 | Field | Meaning |
 |-------|---------|
-| `<unit>_busy_cycles` | Cycles the unit was not `is_ready()`. |
+| `<unit>_busy_cycles` | Cycles the unit was not `ready_out()`. |
 | `<unit>_instructions` | Instructions accepted by the unit. |
 | Utilization (derived) | `100 × busy_cycles / total_cycles`, emitted in the text report only. |
 

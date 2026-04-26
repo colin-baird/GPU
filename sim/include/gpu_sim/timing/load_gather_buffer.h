@@ -49,41 +49,34 @@ public:
     void commit() override;
     void reset() override;
 
-    // Phase 6: panic flush hook. Same body as reset() — clears every
-    // gather buffer (including any in-flight values) and resets the
-    // round-robin pointer. Called at the commit-phase boundary when the
-    // panic signal becomes active.
+    // Panic flush hook. Called at the commit-phase boundary when the panic
+    // signal becomes active. Delegates to reset().
     void flush();
-    bool is_ready() const override;
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
-    // Phase 4: LoadGatherBufferFile is a writeback source (consumed by the
-    // writeback arbiter), never a scheduler dispatch target. The scheduler
-    // routes LDST instructions to LdStUnit. Default no-op compute_ready()
-    // suffices; ready_out() returns true since the scheduler never queries it.
+    // LoadGatherBufferFile is a writeback source (consumed by the writeback
+    // arbiter), never a scheduler dispatch target. The scheduler routes
+    // LDST instructions to LdStUnit, so ready_out() is a constant true that
+    // the scheduler never queries.
     bool ready_out() const override { return true; }
 
     uint32_t num_buffers() const { return num_warps_; }
     const LoadGatherBuffer& buffer(uint32_t warp_id) const { return buffers_[warp_id]; }
-    // Phase 7: visibility into the shared write-port claim (REGISTERED). Tests
-    // and tooling read the post-commit `current_port_claimed_` snapshot.
-    bool current_port_claimed() const { return current_port_claimed_; }
 
 private:
     uint32_t num_warps_;
     Stats& stats_;
     std::vector<LoadGatherBuffer> buffers_;
     uint32_t rr_pointer_ = 0;
-    // Phase 7: REGISTERED single-port arbitration flag for the cache's
-    // line-to-gather-buffer extraction port (§5.3 Port model: FILL >
-    // secondary > HIT). Writers (cache.handle_responses, cache
-    // .drain_secondary_chain_head, cache.process_load HIT path) all funnel
-    // through `try_write()`; the first writer in a tick wins by reading the
-    // live `next_port_claimed_` and the others bail. `commit()` latches
-    // next -> current at end-of-cycle.
+    // Single-port arbitration flag for the cache's line-to-gather-buffer
+    // extraction port (§5.3 Port model: FILL > secondary > HIT). Writers
+    // (cache.handle_responses, cache.drain_secondary_chain_head,
+    // cache.process_load HIT path) all funnel through try_write(); the first
+    // writer in a tick wins by reading next_port_claimed_, and the others
+    // bail. commit() clears the flag at end-of-cycle so the next tick starts
+    // unclaimed.
     bool next_port_claimed_ = false;
-    bool current_port_claimed_ = false;
 };
 
 } // namespace gpu_sim

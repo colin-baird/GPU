@@ -71,7 +71,6 @@ public:
     void evaluate() override {}
     void commit() override {}
     void reset() override { result_.valid = false; }
-    bool is_ready() const override { return true; }
     bool ready_out() const override { return true; }
     bool has_result() const override { return result_.valid; }
     WritebackEntry consume_result() override {
@@ -305,14 +304,14 @@ TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "
 
     auto addi_issue = make_issue_output(i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
     opcoll.accept(addi_issue);
-    // Phase 2 discipline: is_free() reads committed state. Latch via commit()
+    // Phase 2 discipline: ready_out() reads committed state. Latch via commit()
     // before observing the post-accept busy bit.
     opcoll.commit();
-    REQUIRE_FALSE(opcoll.is_free());
+    REQUIRE_FALSE(opcoll.ready_out());
     opcoll.evaluate();
     REQUIRE(opcoll.output().has_value());
     opcoll.commit();
-    REQUIRE(opcoll.is_free());
+    REQUIRE(opcoll.ready_out());
 
     opcoll.reset();
 
@@ -321,11 +320,11 @@ TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "
     opcoll.evaluate();
     REQUIRE_FALSE(opcoll.output().has_value());
     opcoll.commit();
-    REQUIRE_FALSE(opcoll.is_free());
+    REQUIRE_FALSE(opcoll.ready_out());
     opcoll.evaluate();
     REQUIRE(opcoll.output().has_value());
     opcoll.commit();
-    REQUIRE(opcoll.is_free());
+    REQUIRE(opcoll.ready_out());
 }
 
 TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
@@ -334,10 +333,10 @@ TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
     auto issue = make_issue_output(i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
     alu.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 12);
-    // Phase 1 discipline: is_ready() reads committed state, so latch the
+    // Phase 1 discipline: ready_out() reads committed state, so latch the
     // post-accept state before observing.
     alu.commit();
-    REQUIRE_FALSE(alu.is_ready());
+    REQUIRE_FALSE(alu.ready_out());
     alu.evaluate();
     REQUIRE(alu.has_result());
 
@@ -346,7 +345,7 @@ TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
     REQUIRE(wb.dest_reg == 5);
     REQUIRE(wb.issue_cycle == 12);
     alu.commit();
-    REQUIRE(alu.is_ready());
+    REQUIRE(alu.ready_out());
 }
 
 TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption", "[timing]") {
@@ -358,7 +357,7 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
                                            isa::OP_ALU_R));
 
     // Phase 1 discipline: each cycle is accept/evaluate followed by commit.
-    // is_ready() reads committed state; has_result() / consume_result() read
+    // ready_out() reads committed state; has_result() / consume_result() read
     // and write next_*, so they observe live in-tick state.
     mul.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     mul.evaluate();
@@ -370,7 +369,7 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
     REQUIRE(mul.has_result());
     mul.commit();
     // Pipeline head ready but result buffer occupied -> committed-state stall.
-    REQUIRE_FALSE(mul.is_ready());
+    REQUIRE_FALSE(mul.ready_out());
 
     auto first_wb = mul.consume_result();
     REQUIRE(first_wb.dest_reg == 5);
@@ -380,7 +379,7 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
     auto second_wb = mul.consume_result();
     REQUIRE(second_wb.dest_reg == 6);
     mul.commit();
-    REQUIRE(mul.is_ready());
+    REQUIRE(mul.ready_out());
 }
 
 TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
@@ -400,15 +399,15 @@ TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
                                         isa::OP_ALU_R));
 
     // Accept 3 ops back-to-back — pipeline must accept on every cycle.
-    REQUIRE(mul.is_ready());
+    REQUIRE(mul.ready_out());
     mul.accept(DispatchInput{op0.decoded, op0.trace, op0.warp_id, op0.pc}, 0);
-    REQUIRE(mul.is_ready());
+    REQUIRE(mul.ready_out());
     mul.evaluate();  // advance cycle 0→1
     mul.accept(DispatchInput{op1.decoded, op1.trace, op1.warp_id, op1.pc}, 1);
-    REQUIRE(mul.is_ready());
+    REQUIRE(mul.ready_out());
     mul.evaluate();  // advance cycle 1→2
     mul.accept(DispatchInput{op2.decoded, op2.trace, op2.warp_id, op2.pc}, 2);
-    REQUIRE(mul.is_ready());
+    REQUIRE(mul.ready_out());
 
     // No result yet — op0 was accepted at cycle 0 with 3 cycles remaining, so
     // after 2 evaluates it still has 1 cycle to go.
@@ -453,7 +452,7 @@ TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
 TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle window",
           "[timing]") {
     // Spec §4.5: divide is "iterative (radix-2); busy until complete". A
-    // concurrent accept mid-flight must be impossible — is_ready() must stay
+    // concurrent accept mid-flight must be impossible — ready_out() must stay
     // false for every cycle of the 32-cycle latency and remain false afterward
     // until the result is consumed.
     Stats stats;
@@ -461,24 +460,24 @@ TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle w
     auto issue = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_DIV, 5,
                                           isa::OP_ALU_R));
 
-    REQUIRE(div.is_ready());
+    REQUIRE(div.ready_out());
     div.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-    // Phase 1: is_ready() reads committed state; latch the post-accept state.
+    // Phase 1: ready_out() reads committed state; latch the post-accept state.
     div.commit();
 
     for (int i = 0; i < 32; ++i) {
-        REQUIRE_FALSE(div.is_ready());
+        REQUIRE_FALSE(div.ready_out());
         div.evaluate();
         div.commit();
     }
 
     // Latency completed but result unconsumed — must still refuse accept.
     REQUIRE(div.has_result());
-    REQUIRE_FALSE(div.is_ready());
+    REQUIRE_FALSE(div.ready_out());
 
     div.consume_result();
     div.commit();
-    REQUIRE(div.is_ready());
+    REQUIRE(div.ready_out());
 }
 
 // Binds claim #1 (TLOOKUP latency = 17 cycles, spec §2.3 / §4.5).
@@ -513,34 +512,34 @@ TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]
     REQUIRE(tlookup.has_result());
 }
 
-TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed", "[timing][tlookup]") {
+TEST_CASE("TLookupUnit: ready_out blocks while busy and while result unconsumed", "[timing][tlookup]") {
     Stats stats;
     TLookupUnit tlookup(stats);
     auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
 
     // Initially ready
-    REQUIRE(tlookup.is_ready());
+    REQUIRE(tlookup.ready_out());
 
     // Not ready while busy
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-    // Phase 1: is_ready() reads committed state; latch the post-accept state.
+    // Phase 1: ready_out() reads committed state; latch the post-accept state.
     tlookup.commit();
-    REQUIRE_FALSE(tlookup.is_ready());
+    REQUIRE_FALSE(tlookup.ready_out());
 
     for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE_FALSE(tlookup.is_ready());
+        REQUIRE_FALSE(tlookup.ready_out());
         tlookup.evaluate();
         tlookup.commit();
     }
 
     // Result is available but unconsumed -- still not ready
     REQUIRE(tlookup.has_result());
-    REQUIRE_FALSE(tlookup.is_ready());
+    REQUIRE_FALSE(tlookup.ready_out());
 
     // After consuming, should be ready again
     tlookup.consume_result();
     tlookup.commit();
-    REQUIRE(tlookup.is_ready());
+    REQUIRE(tlookup.ready_out());
 }
 
 // Binds claim #2: per-warp initiation interval.
@@ -550,15 +549,15 @@ TEST_CASE("TLookupUnit: is_ready blocks while busy and while result unconsumed",
 // 32 lanes into a single 17-cycle countdown, so intra-warp pipelining is not
 // exposed at the unit interface. What IS observable at this interface is the
 // warp-level II: the unit has a single accept slot gated by
-//     is_ready() = !busy_ && !result_buffer_.valid
+//     ready_out() = !busy_ && !result_buffer_.valid
 // so a second warp cannot be accepted until (a) the prior 17-cycle countdown
 // has completed AND (b) the result has been consumed. Minimum per-warp II is
 // therefore 17 compute cycles + 1 consume cycle = 18 cycles.
 //
-// Self-check: this test fails if the `busy_` arm of is_ready() is removed
-// (the in-flight loop would see is_ready() == true), and fails if the
+// Self-check: this test fails if the `busy_` arm of ready_out() is removed
+// (the in-flight loop would see ready_out() == true), and fails if the
 // `!result_buffer_.valid` arm is removed (the post-completion block would see
-// is_ready() == true before consume_result()). A 0-cycle stub would also
+// ready_out() == true before consume_result()). A 0-cycle stub would also
 // trip the in-flight loop on the very first iteration.
 TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
           "[timing][tlookup]") {
@@ -567,23 +566,23 @@ TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
     auto first = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP), 0);
     auto second = make_issue_output(i_type(16, 1, 0, 6, isa::OP_TLOOKUP), 1);
 
-    REQUIRE(tlookup.is_ready());
+    REQUIRE(tlookup.ready_out());
     tlookup.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 0);
-    tlookup.commit();  // Phase 1: latch post-accept state for is_ready() reads.
+    tlookup.commit();  // Phase 1: latch post-accept state for ready_out() reads.
 
-    // In-flight window: is_ready() must be false every cycle of the 17-cycle
+    // In-flight window: ready_out() must be false every cycle of the 17-cycle
     // countdown. This binds the `busy_` arm of the ready gate.
     for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE_FALSE(tlookup.is_ready());
+        REQUIRE_FALSE(tlookup.ready_out());
         tlookup.evaluate();
         tlookup.commit();
     }
 
-    // Countdown complete but result not yet consumed: is_ready() must still be
+    // Countdown complete but result not yet consumed: ready_out() must still be
     // false. This binds the `!result_buffer_.valid` arm of the ready gate --
     // the unit cannot accept warp B while warp A's result sits unclaimed.
     REQUIRE(tlookup.has_result());
-    REQUIRE_FALSE(tlookup.is_ready());
+    REQUIRE_FALSE(tlookup.ready_out());
 
     // Consume drain cycle unblocks the next accept; this is the "+1 consume
     // cycle" component of the warp-level II.
@@ -591,14 +590,14 @@ TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
     REQUIRE(wb1.warp_id == 0);
     REQUIRE(wb1.dest_reg == 5);
     tlookup.commit();
-    REQUIRE(tlookup.is_ready());
+    REQUIRE(tlookup.ready_out());
 
     // Second accept now succeeds and runs its own independent 17-cycle
     // countdown -- confirming II is finite and the slot recycles cleanly.
     tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 18);
     tlookup.commit();
     for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE_FALSE(tlookup.is_ready());
+        REQUIRE_FALSE(tlookup.ready_out());
         REQUIRE_FALSE(tlookup.has_result());
         tlookup.evaluate();
         tlookup.commit();
@@ -658,7 +657,7 @@ TEST_CASE("TLookupUnit: reset clears all state", "[timing][tlookup]") {
     REQUIRE_FALSE(tlookup.busy());
     REQUIRE(tlookup.cycles_remaining() == 0);
     REQUIRE_FALSE(tlookup.has_result());
-    REQUIRE(tlookup.is_ready());
+    REQUIRE(tlookup.ready_out());
 }
 
 TEST_CASE("TLookupUnit: consume_result returns correct writeback metadata", "[timing][tlookup]") {
@@ -732,23 +731,23 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
     auto second = make_issue_output(i_type(4, 1, isa::FUNCT3_LW, 6, isa::OP_LOAD));
     second.trace.is_load = true;
 
-    // Phase 1: is_ready() reads committed state, so commit between cycles.
+    // Phase 1: ready_out() reads committed state, so commit between cycles.
     ldst.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     ldst.evaluate();
     ldst.commit();
     REQUIRE_FALSE(ldst.fifo_empty());
-    REQUIRE(ldst.is_ready());
+    REQUIRE(ldst.ready_out());
 
     ldst.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
     ldst.evaluate();
     ldst.commit();
-    REQUIRE_FALSE(ldst.is_ready());
+    REQUIRE_FALSE(ldst.ready_out());
 
     ldst.fifo_pop();
     ldst.evaluate();
     ldst.commit();
     REQUIRE_FALSE(ldst.fifo_empty());
-    REQUIRE(ldst.is_ready());
+    REQUIRE(ldst.ready_out());
 }
 
 TEST_CASE("MemoryInterface: fixed latency responses preserve submission order", "[timing]") {

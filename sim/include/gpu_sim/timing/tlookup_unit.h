@@ -10,12 +10,12 @@ class TLookupUnit : public ExecutionUnit {
 public:
     explicit TLookupUnit(Stats& stats) : stats_(stats) {}
 
-    void compute_ready() override;
-    bool ready_out() const override { return ready_out_; }
+    bool ready_out() const override {
+        return !current_busy_ && !current_result_buffer_.valid;
+    }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool is_ready() const override;
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::TLOOKUP; }
@@ -50,8 +50,6 @@ private:
     WritebackEntry next_pending_result_;
     WritebackEntry current_result_buffer_;
     WritebackEntry next_result_buffer_;
-    // Phase 4 READY/STALL slot.
-    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

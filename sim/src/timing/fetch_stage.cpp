@@ -84,21 +84,9 @@ void FetchStage::commit() {
     // becomes visible to fetch.commit() at cycle N+1, applying the flush
     // there. This adds +1 cycle to mispredict-recovery vs. the prior
     // mid-tick mutation — accepted by Option A.
-    bool redirect_valid = false;
-    uint32_t redirect_warp = 0;
-    uint32_t redirect_target = 0;
-    if (has_redirect_override_) {
-        redirect_valid = redirect_override_valid_;
-        redirect_warp = redirect_override_warp_;
-        redirect_target = redirect_override_target_;
-    } else if (opcoll_) {
-        const auto& req = opcoll_->current_redirect_request();
-        redirect_valid = req.valid;
-        redirect_warp = req.warp_id;
-        redirect_target = req.target_pc;
-    }
-    if (redirect_valid) {
-        apply_redirect(redirect_warp, redirect_target);
+    const RedirectRequest req = read_redirect_request(redirect_override_, opcoll_);
+    if (req.valid) {
+        apply_redirect(req.warp_id, req.target_pc);
     }
 }
 
@@ -110,8 +98,7 @@ void FetchStage::reset() {
     decode_pending_warp_override_ = std::nullopt;
     has_ready_override_ = false;
     decode_ready_override_ = true;
-    has_redirect_override_ = false;
-    redirect_override_valid_ = false;
+    redirect_override_.reset();
 }
 
 void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
@@ -133,7 +120,7 @@ void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
     // .commit() at end-of-cycle then makes current_=false visible to next
     // cycle's scheduler.
     if (branch_tracker_) {
-        branch_tracker_->clear_in_flight(warp_id);
+        branch_tracker_->note_redirect_applied(warp_id);
     }
 }
 

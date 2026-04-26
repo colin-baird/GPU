@@ -3,6 +3,7 @@
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/warp_state.h"
+#include "gpu_sim/timing/operand_collector.h"
 #include "gpu_sim/functional/memory.h"
 #include "gpu_sim/stats.h"
 #include <optional>
@@ -10,7 +11,6 @@
 namespace gpu_sim {
 
 class DecodeStage;          // forward decl: fetch reads decode.ready_to_consume_fetch()
-class OperandCollector;     // forward decl: fetch reads opcoll.current_redirect_request()
 class BranchShadowTracker;  // forward decl: fetch clears in-flight on redirect apply
 
 struct FetchOutput {
@@ -54,17 +54,17 @@ public:
     }
 
     // Phase 5 test hook: explicit override of the redirect-request signal
-    // for unit tests that drive FetchStage in isolation. When valid, takes
+    // for unit tests that drive FetchStage in isolation. When set, takes
     // precedence over opcoll_->current_redirect_request().
     void set_redirect_request_override(bool valid, uint32_t warp_id, uint32_t target_pc) {
-        redirect_override_valid_ = valid;
-        redirect_override_warp_ = warp_id;
-        redirect_override_target_ = target_pc;
-        has_redirect_override_ = true;
+        RedirectRequest req;
+        req.valid = valid;
+        req.warp_id = warp_id;
+        req.target_pc = target_pc;
+        redirect_override_ = req;
     }
     void clear_redirect_request_override() {
-        has_redirect_override_ = false;
-        redirect_override_valid_ = false;
+        redirect_override_.reset();
     }
 
     // Test hook: explicit override of the decode-pending-warp signal for unit
@@ -112,10 +112,7 @@ private:
     bool decode_ready_override_ = true;
 
     // Phase 5 test hook: redirect-request override for unit tests.
-    bool has_redirect_override_ = false;
-    bool redirect_override_valid_ = false;
-    uint32_t redirect_override_warp_ = 0;
-    uint32_t redirect_override_target_ = 0;
+    std::optional<RedirectRequest> redirect_override_;
 };
 
 } // namespace gpu_sim

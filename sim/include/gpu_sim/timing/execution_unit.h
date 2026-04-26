@@ -21,28 +21,19 @@ struct WritebackEntry {
 class ExecutionUnit {
 public:
     virtual ~ExecutionUnit() = default;
-    // Phase 4 READY/STALL discipline: compute_ready() reads only committed
-    // (current_*) state and updates the unit's ready_out_ slot. The scheduler
-    // calls ready_out() during its evaluate() to decide whether dispatch is
-    // permitted this cycle. compute_ready() is invoked by TimingModel::tick()
-    // before scheduler_->evaluate() so the signal is stable. Default no-op
-    // is appropriate for units whose readiness never depends on cross-stage
-    // state (e.g. QueuedWritebackSource, which is always ready).
-    //
-    // Phase 8 note: ExecutionUnit is a separate hierarchy from PipelineStage
-    // (units have a different lifecycle — they produce results consumed by
-    // WritebackArbiter rather than participating in the unified
-    // evaluate/commit fan-in). Both hierarchies expose the same
-    // compute_ready() convention: a backward-sweep hook that reads only
-    // committed state. Keep this duplicate virtual default here; the two
-    // hierarchies share the convention but not the base class. See
+    // READY/STALL discipline: ready_out() is a const accessor that reads only
+    // the unit's own committed (current_*) state. The scheduler queries it
+    // during evaluate() to decide whether dispatch is permitted this cycle;
+    // post-commit drain checks (TimingModel::execution_units_drained) read
+    // the same accessor. ExecutionUnit is a separate hierarchy from
+    // PipelineStage (units produce results consumed by WritebackArbiter
+    // rather than participating in the unified evaluate/commit fan-in), but
+    // both hierarchies share the discipline. See
     // resources/timing_discipline.md.
-    virtual void compute_ready() {}
     virtual bool ready_out() const = 0;
     virtual void evaluate() = 0;
     virtual void commit() = 0;
     virtual void reset() = 0;
-    virtual bool is_ready() const = 0;
     virtual bool has_result() const = 0;
     virtual WritebackEntry consume_result() = 0;
     virtual ExecUnit get_type() const = 0;
@@ -61,10 +52,8 @@ public:
     void evaluate() override {}
     void commit() override {}
     void reset() override { queue_.clear(); }
-    bool is_ready() const override { return true; }
     // QueuedWritebackSource has no dispatch input; it is always "ready" from
-    // the scheduler's perspective (the scheduler never targets it). Skip
-    // compute_ready() entirely (default no-op) and return true here.
+    // the scheduler's perspective (the scheduler never targets it).
     bool ready_out() const override { return true; }
     bool has_result() const override { return !queue_.empty(); }
 

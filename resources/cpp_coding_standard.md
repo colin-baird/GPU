@@ -49,7 +49,7 @@ if (tags_[set].valid && tags_[set].tag == tag) {
 **Short bodies**: One-line bodies are allowed inline for trivial getters, guards, and no-ops:
 
 ```cpp
-bool is_free() const { return !busy_; }
+bool ready_out() const { return !busy_; }
 ExecUnit get_type() const override { return ExecUnit::ALU; }
 if (reg == 0) return false;
 ```
@@ -356,37 +356,32 @@ Prefer explicit loops over STL algorithms when the loop body involves domain-spe
 
 ## Pipeline Stage Pattern
 
-All timing model components follow the double-buffered four-method
-pattern (`compute_ready` / `evaluate` / `commit` / `reset`):
+All timing model components follow the double-buffered three-method
+pattern (`evaluate` / `commit` / `reset`):
 
 ```cpp
 class MyStage : public PipelineStage {
 public:
-    void compute_ready() override; // Read own current_ state, write ready_out_
-                                   // (omit / inherit default no-op if no
-                                   // READY/STALL output is exposed)
     void evaluate() override;      // Read current_ state, compute next_ state
     void commit() override;        // current_ = next_
     void reset() override;         // Return to initial state
 };
 ```
 
-`compute_ready()` is a virtual default no-op on `PipelineStage`. Only
-override it when the stage exposes a `ready_out()` consumed by an
-upstream producer (today: `DecodeStage`, `OperandCollector`, the five
-execution units via the parallel `ExecutionUnit::compute_ready()`
-hook).
+If a stage exposes a READY/STALL signal, add a `const` accessor that
+reads only its own committed (`current_*`) state. The accessor's value
+is stable across the entire evaluate phase, so any upstream producer
+can query it from inside its own `evaluate()` without an explicit
+backward-sweep step.
 
 Execution units extend `ExecutionUnit` (a separate hierarchy that
-shares the same four-method convention) with the accept/ready/result
-interface:
+shares the same convention) with the accept/ready/result interface:
 
 ```cpp
 class MyUnit : public ExecutionUnit {
 public:
-    void compute_ready() override;             // Same convention as PipelineStage
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool is_ready() const override;
+    bool ready_out() const override;          // const accessor on current_*
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override;
@@ -408,9 +403,11 @@ classes, declared at the call site:
   consumer in the same `evaluate()` phase. Order in `tick()` is part of the
   contract and must be commented at the call site (producer name, consumer
   name, why the order matters).
-- **READY/STALL** — consumer exposes `ready_out()` computed in
-  `compute_ready()` from its own `current_*` only. Producer reads
-  `consumer.ready_out()` during its own `evaluate()`. Used for backpressure.
+- **READY/STALL** — consumer exposes a `const` `ready_out()` accessor
+  that reads its own `current_*` only. Producer reads
+  `consumer.ready_out()` during its own `evaluate()`. The value is
+  stable across the evaluate phase, so the producer's position in the
+  sweep does not affect what it reads. Used for backpressure.
 
 Rules:
 
@@ -423,8 +420,8 @@ Rules:
   `current_[]` / `next_[]` / `seed_next()` / `commit()` shape verbatim.
 - **Pre-evaluate setters that latch live state from another stage**
   (e.g. `set_opcoll_free`, `set_decode_pending_warp`, `set_units_drained`,
-  `set_unit_ready_fn`) are forbidden. Replace with `compute_ready()` +
-  `ready_out()`.
+  `set_unit_ready_fn`) are forbidden. Expose the signal as a `const`
+  `ready_out()` accessor on the consumer instead.
 - **Mid-tick mutations of committed state that bypass `commit()`**
   (side-channel `redirect_warp`, `invalidate_warp`, `reset()` cascades) are
   forbidden. Express the request as a REGISTERED signal and let each stage

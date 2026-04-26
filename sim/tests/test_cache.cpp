@@ -31,8 +31,8 @@ struct CacheFixture {
         }
     }
 
-    // Tick the gather buffer's per-cycle commit (flips the per-buffer
-    // next_port_claimed/current_port_claimed REGISTERED pair).
+    // Tick the gather buffer's per-cycle commit (clears the shared
+    // next_port_claimed_ flag at end-of-cycle).
     void end_cycle() {
         cache.commit();
         gather_file.commit();

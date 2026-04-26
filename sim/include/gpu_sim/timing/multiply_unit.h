@@ -19,12 +19,18 @@ public:
     MultiplyUnit(uint32_t pipeline_stages, Stats& stats)
         : pipeline_stages_(pipeline_stages), stats_(stats) {}
 
-    void compute_ready() override;
-    bool ready_out() const override { return ready_out_; }
+    bool ready_out() const override {
+        // Pipeline is "stalled" if last cycle the head was ready but the
+        // result buffer was occupied — that's when accept() must be refused.
+        if (current_result_buffer_.valid && !current_pipeline_.empty() &&
+            current_pipeline_.front().cycles_remaining == 0) {
+            return false;
+        }
+        return true;
+    }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool is_ready() const override;
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::MULTIPLY; }
@@ -53,15 +59,12 @@ private:
     // accept() / evaluate() / consume_result() write only next_*; commit()
     // flips next_* -> current_*. has_result() and result_entry() read next_*
     // (COMBINATIONAL same-tick edge with the writeback arbiter to preserve
-    // zero cycle delta); is_ready() reads current_* (queried by scheduler
+    // zero cycle delta); ready_out() reads current_* (queried by scheduler
     // before unit evaluate, sees committed end-of-last-cycle state).
     std::deque<PipelineEntry> current_pipeline_;
     std::deque<PipelineEntry> next_pipeline_;
     WritebackEntry current_result_buffer_;
     WritebackEntry next_result_buffer_;
-    // Phase 4 READY/STALL slot: derived from committed state by
-    // compute_ready(); read by the scheduler this same cycle.
-    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

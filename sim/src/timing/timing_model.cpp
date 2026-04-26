@@ -274,12 +274,12 @@ void TimingModel::dispatch_to_unit(const DispatchInput& input) {
 }
 
 bool TimingModel::pipeline_drained() const {
-    return opcoll_->is_free() &&
-           alu_->is_ready() && !alu_->has_result() &&
-           mul_->is_ready() && !mul_->has_result() &&
-           div_->is_ready() && !div_->has_result() &&
-           tlookup_->is_ready() && !tlookup_->has_result() &&
-           ldst_->is_ready() && ldst_->fifo_empty() &&
+    return opcoll_->ready_out() &&
+           alu_->ready_out() && !alu_->has_result() &&
+           mul_->ready_out() && !mul_->has_result() &&
+           div_->ready_out() && !div_->has_result() &&
+           tlookup_->ready_out() && !tlookup_->has_result() &&
+           ldst_->ready_out() && ldst_->fifo_empty() &&
            coalescing_->is_idle() &&
            cache_->is_idle() &&
            mem_if_->is_idle() &&
@@ -287,12 +287,12 @@ bool TimingModel::pipeline_drained() const {
 }
 
 bool TimingModel::execution_units_drained() const {
-    return opcoll_->is_free() &&
-           alu_->is_ready() && !alu_->has_result() &&
-           mul_->is_ready() && !mul_->has_result() &&
-           div_->is_ready() && !div_->has_result() &&
-           tlookup_->is_ready() && !tlookup_->has_result() &&
-           ldst_->is_ready() && ldst_->fifo_empty() &&
+    return opcoll_->ready_out() &&
+           alu_->ready_out() && !alu_->has_result() &&
+           mul_->ready_out() && !mul_->has_result() &&
+           div_->ready_out() && !div_->has_result() &&
+           tlookup_->ready_out() && !tlookup_->has_result() &&
+           ldst_->ready_out() && ldst_->fifo_empty() &&
            !wb_arbiter_->has_pending_work();
 }
 
@@ -384,10 +384,11 @@ bool TimingModel::tick() {
     scoreboard_.seed_next();
     // Phase 5 REGISTERED branch-shadow tracker: seed next_ from current_ so
     // unmodified slots carry forward; scheduler.evaluate() reads current_
-    // (via tracker.is_in_flight) and may write next_ (set_in_flight on
-    // issue), opcoll.evaluate() may write next_ (clear_in_flight on
-    // resolve), and tracker.commit() flips at end-of-cycle alongside
-    // scoreboard_.commit().
+    // (via tracker.is_in_flight) and may write next_ (note_branch_issued on
+    // issue), opcoll.evaluate() may write next_ (note_resolved_correctly on
+    // correct-prediction resolve), fetch.commit() may write next_
+    // (note_redirect_applied on mispredict-redirect apply), and
+    // tracker.commit() flips at end-of-cycle alongside scoreboard_.commit().
     branch_tracker_.seed_next();
 
     // Phase 6 REGISTERED ebreak observation. decode.commit() at end of the
@@ -408,57 +409,30 @@ bool TimingModel::tick() {
     cache_->evaluate();
 
     // -------------------------------------------------------------------
-    // Tick discipline (formalized in Phase 8). See
-    // resources/timing_discipline.md for the full contract.
+    // Tick discipline. See resources/timing_discipline.md for the full
+    // contract.
     //
-    // Each non-panic tick has three phases:
+    // Each non-panic tick has two phases:
     //
-    // 1. compute_ready phase (backward sweep). Every consumer that exposes a
-    //    READY/STALL signal computes its ready_out_ from committed (current_*)
-    //    state only. No compute_ready() reads another stage's ready_out_, so
-    //    intra-group order does not affect correctness; the order below is
-    //    chosen for readability (scheduler-consumed signals first, then
-    //    decode which is consumed by fetch). Participants today: opcoll,
-    //    ALU, MUL, DIV, TLOOKUP, LDST, decode. Stages without a ready
-    //    output (FetchStage, WarpScheduler, WritebackArbiter, CoalescingUnit,
-    //    MemoryInterface, L1Cache, PanicController) inherit the
-    //    PipelineStage default no-op.
-    //
-    // 2. evaluate phase (forward sweep, dataflow order). Each stage reads
-    //    its inputs (committed state for REGISTERED edges, the live
-    //    next_*/ready_out_ of upstream for COMBINATIONAL/READY-STALL edges)
-    //    and writes its own next_* slot. Order in this tick:
+    // 1. evaluate phase (forward sweep, dataflow order). Each stage reads
+    //    its inputs — committed state for REGISTERED edges, the live next_*
+    //    of upstream for COMBINATIONAL edges, the const ready_out() accessor
+    //    of a downstream consumer for READY/STALL edges — and writes its
+    //    own next_* slot. ready_out() reads only the consumer's own
+    //    committed state, so the value is stable through the cycle
+    //    regardless of where in the evaluate sweep it is queried. Order in
+    //    this tick:
     //      cache -> fetch -> decode -> scheduler -> opcoll.accept -> opcoll
     //      -> dispatch -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if
     //      -> cache.drain_write_buffer -> wb_arbiter.
     //
-    // 3. commit phase. Every stage flips its next_* into current_*. The
+    // 2. commit phase. Every stage flips its next_* into current_*. The
     //    stages are independent at commit time (no commit() reads another
     //    stage's state), so order is for traceability only. The current
     //    order is fetch, decode, scheduler, opcoll, units, coalescing,
     //    cache, mem_if, wb_arbiter, gather_file, scoreboard, branch_tracker,
     //    followed by the optional panic-flush cascade armed at top-of-tick.
     // -------------------------------------------------------------------
-
-    // Phase 4 READY/STALL discipline: each consumer reads only its own
-    // committed (current_*) state and writes its ready_out_ slot. Producers
-    // (scheduler / fetch) then read those signals during their evaluate()
-    // this same cycle. Within this group, no compute_ready() reads another
-    // stage's ready_out_, so the order does not matter for correctness;
-    // scheduler-consumed signals (opcoll, units) come first for readability,
-    // followed by decode (consumed by fetch) per Phase 3.
-    //
-    // Phase 8: the explicit per-stage list (rather than a vector iteration)
-    // is intentional. The list is short, every entry is meaningful, and
-    // making a stage participate in the backward sweep is a deliberate
-    // architectural decision worth tracking by name.
-    opcoll_->compute_ready();
-    alu_->compute_ready();
-    mul_->compute_ready();
-    div_->compute_ready();
-    tlookup_->compute_ready();
-    ldst_->compute_ready();
-    decode_->compute_ready();
 
     fetch_->evaluate();
     decode_->evaluate();
@@ -543,9 +517,11 @@ bool TimingModel::tick() {
     gather_file_->commit();
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage
-    // that may have written into next_ (scheduler set_in_flight on issue,
-    // opcoll clear_in_flight on resolve), and after every reader's
-    // evaluate() has already observed current_ from this same cycle.
+    // that may have written into next_ (scheduler note_branch_issued on
+    // issue; opcoll note_resolved_correctly on correct-prediction resolve;
+    // fetch note_redirect_applied on mispredict-redirect apply), and after
+    // every reader's evaluate() has already observed current_ from this
+    // same cycle.
     branch_tracker_.commit();
 
     // Phase 6: panic-flush cascade at the commit-phase boundary. Replaces
@@ -1130,12 +1106,12 @@ void TimingModel::trace_cycle() const {
         std::cerr << " issue=--";
     }
 
-    std::cerr << " opcoll=" << (opcoll_->is_free() ? "free" : "busy");
-    std::cerr << " alu=" << (alu_->is_ready() ? "rdy" : "bsy");
-    std::cerr << " mul=" << (mul_->is_ready() ? "rdy" : "bsy");
-    std::cerr << " div=" << (div_->is_ready() ? "rdy" : "bsy");
-    std::cerr << " tlk=" << (tlookup_->is_ready() ? "rdy" : "bsy");
-    std::cerr << " ldst=" << (ldst_->is_ready() ? "rdy" : "bsy");
+    std::cerr << " opcoll=" << (opcoll_->ready_out() ? "free" : "busy");
+    std::cerr << " alu=" << (alu_->ready_out() ? "rdy" : "bsy");
+    std::cerr << " mul=" << (mul_->ready_out() ? "rdy" : "bsy");
+    std::cerr << " div=" << (div_->ready_out() ? "rdy" : "bsy");
+    std::cerr << " tlk=" << (tlookup_->ready_out() ? "rdy" : "bsy");
+    std::cerr << " ldst=" << (ldst_->ready_out() ? "rdy" : "bsy");
 
     if (wb_arbiter_->committed_entry()) {
         const auto& wb = *wb_arbiter_->committed_entry();

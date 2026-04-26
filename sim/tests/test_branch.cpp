@@ -245,7 +245,7 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     // now expressed via the BranchShadowTracker; we set next_ and commit so
     // current_ reflects the in-flight bit at the start of the next cycle.
     BranchShadowTracker branch_tracker;
-    branch_tracker.set_in_flight(0);
+    branch_tracker.note_branch_issued(0);
     branch_tracker.commit();
 
     WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
@@ -274,7 +274,7 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     // collector. Phase 5: this clears the tracker's next_ slot, and a
     // commit() flips it into current_ so the scheduler's eligibility check
     // (which reads current_) sees the warp as no longer in flight.
-    branch_tracker.clear_in_flight(0);
+    branch_tracker.note_resolved_correctly(0);
     branch_tracker.commit();
 
     scoreboard.seed_next();

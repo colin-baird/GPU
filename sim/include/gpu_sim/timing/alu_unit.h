@@ -11,12 +11,12 @@ class ALUUnit : public ExecutionUnit {
 public:
     explicit ALUUnit(Stats& stats) : stats_(stats) {}
 
-    void compute_ready() override;
-    bool ready_out() const override { return ready_out_; }
+    bool ready_out() const override {
+        return !current_result_buffer_.valid && !current_has_pending_;
+    }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool is_ready() const override;
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::ALU; }
@@ -49,10 +49,6 @@ private:
     DispatchInput next_pending_input_;
     uint64_t current_pending_cycle_ = 0;
     uint64_t next_pending_cycle_ = 0;
-    // Phase 4 READY/STALL slot: written by compute_ready() from committed
-    // state; read by WarpScheduler::evaluate() this same cycle. Initial
-    // value matches an idle unit so pre-tick reads are correct.
-    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim

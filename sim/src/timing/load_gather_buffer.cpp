@@ -72,9 +72,7 @@ void LoadGatherBufferFile::evaluate() {
 }
 
 void LoadGatherBufferFile::commit() {
-    // Phase 7: REGISTERED single-port flip. Move next -> current and clear
-    // next so the upcoming cycle starts with the port free.
-    current_port_claimed_ = next_port_claimed_;
+    // Clear the port-claim flag so the next tick starts with the port free.
     next_port_claimed_ = false;
 }
 
@@ -84,23 +82,10 @@ void LoadGatherBufferFile::reset() {
     }
     rr_pointer_ = 0;
     next_port_claimed_ = false;
-    current_port_claimed_ = false;
 }
 
 void LoadGatherBufferFile::flush() {
-    // Phase 6: panic-flush. Same body as reset() — clear every gather
-    // buffer, reset the round-robin pointer, and clear the shared port
-    // arbitration flags.
-    for (auto& buf : buffers_) {
-        buf = LoadGatherBuffer{};
-    }
-    rr_pointer_ = 0;
-    next_port_claimed_ = false;
-    current_port_claimed_ = false;
-}
-
-bool LoadGatherBufferFile::is_ready() const {
-    return true;
+    reset();
 }
 
 bool LoadGatherBufferFile::has_result() const {

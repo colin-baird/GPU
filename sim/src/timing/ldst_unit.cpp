@@ -5,11 +5,6 @@ namespace gpu_sim {
 LdStUnit::LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats)
     : num_ldst_units_(num_ldst_units), fifo_depth_(fifo_depth), stats_(stats) {}
 
-void LdStUnit::compute_ready() {
-    // Phase 4 READY/STALL: read only committed state. Mirrors is_ready().
-    ready_out_ = !current_busy_;
-}
-
 void LdStUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: writes only into next_* slots. ceil(32 / num_ldst_units)
     // cycles for address generation.
@@ -51,7 +46,8 @@ void LdStUnit::commit() {
     current_busy_ = next_busy_;
     current_cycles_remaining_ = next_cycles_remaining_;
     current_pending_entry_ = next_pending_entry_;
-    current_addr_gen_fifo_ = next_addr_gen_fifo_;
+    // next_addr_gen_fifo_ is the live FIFO read combinationally by
+    // CoalescingUnit; nothing to copy.
 }
 
 void LdStUnit::reset() {
@@ -61,15 +57,7 @@ void LdStUnit::reset() {
     next_cycles_remaining_ = 0;
     current_pending_entry_.valid = false;
     next_pending_entry_.valid = false;
-    current_addr_gen_fifo_.clear();
     next_addr_gen_fifo_.clear();
-    ready_out_ = true;
-}
-
-bool LdStUnit::is_ready() const {
-    // Queried by scheduler before this tick's evaluate; reads committed
-    // end-of-last-cycle state.
-    return !current_busy_;
 }
 
 bool LdStUnit::has_result() const {

@@ -388,7 +388,7 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     // The remaining propagation (coalescing -> ldst -> scheduler -> warp trace
     // WAIT_L1_WRITE_BUFFER) is structural: each stage forwards `is_stalled()`
     // or its own busy bit unchanged. CoalescingUnit::evaluate early-returns on
-    // cache.is_stalled(); LdStUnit::is_ready() returns !busy_ which stays high
+    // cache.is_stalled(); LdStUnit::ready_out() returns !busy_ which stays high
     // when addr_gen_fifo is full; the warp scheduler's unit-ready check stalls
     // any LDST issuer; build_cycle_snapshot maps stall_reason ==
     // WRITE_BUFFER_FULL to WarpRestReason::WAIT_L1_WRITE_BUFFER (timing_model.cpp

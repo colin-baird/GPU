@@ -2,16 +2,6 @@
 
 namespace gpu_sim {
 
-void MultiplyUnit::compute_ready() {
-    // Phase 4 READY/STALL: read only committed (current_*) state. Mirrors
-    // is_ready(): pipeline is "stalled" when last cycle's head reached zero
-    // but the result buffer was already occupied.
-    bool head_blocked = current_result_buffer_.valid &&
-                        !current_pipeline_.empty() &&
-                        current_pipeline_.front().cycles_remaining == 0;
-    ready_out_ = !head_blocked;
-}
-
 void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: writes only into next_* slots. The newly-pushed
     // entry is visible to this same tick's evaluate() through next_pipeline_.
@@ -36,14 +26,9 @@ void MultiplyUnit::evaluate() {
     // cycles_remaining, and pop the head into next_result_buffer_ when ready.
     stats_.mul_stats.busy_cycles += next_pipeline_.empty() ? 0 : 1;
 
-    // Intra-stage same-cycle read: head_blocked needs the live, this-cycle
-    // value of next_result_buffer_.valid. The hint from Phase 0 explicitly
-    // forbids reading current_result_buffer_.valid here -- if a prior
-    // mid-evaluate write had set next_result_buffer_, current_ would still
-    // be stale and we'd issue an extra entry into a blocked head. (Today the
-    // single set point is the pop below, which has not yet run, so current_
-    // and next_ happen to be equal at this point; reading next_ keeps the
-    // invariant correct under future intra-evaluate mutations as well.)
+    // result_buffer_ is double-buffered with mutations routed through next_*;
+    // read next_ so we observe the live value if anything earlier this tick
+    // mutated it.
     bool head_blocked = next_result_buffer_.valid && !next_pipeline_.empty() &&
                         next_pipeline_.front().cycles_remaining == 0;
 
@@ -79,18 +64,6 @@ void MultiplyUnit::reset() {
     next_pipeline_.clear();
     current_result_buffer_.valid = false;
     next_result_buffer_.valid = false;
-    ready_out_ = true;
-}
-
-bool MultiplyUnit::is_ready() const {
-    // Queried by scheduler BEFORE this tick's evaluate; reads committed
-    // end-of-last-cycle state. Pipeline is "stalled" if last cycle the head
-    // was ready but the result buffer was occupied.
-    if (current_result_buffer_.valid && !current_pipeline_.empty() &&
-        current_pipeline_.front().cycles_remaining == 0) {
-        return false;
-    }
-    return true;
 }
 
 bool MultiplyUnit::has_result() const {

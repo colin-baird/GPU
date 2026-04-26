@@ -2,11 +2,6 @@
 
 namespace gpu_sim {
 
-void TLookupUnit::compute_ready() {
-    // Phase 4 READY/STALL: read only committed state. Mirrors is_ready().
-    ready_out_ = !current_busy_ && !current_result_buffer_.valid;
-}
-
 void TLookupUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // Phase 1 discipline: writes only into next_* slots.
     next_busy_ = true;
@@ -51,13 +46,6 @@ void TLookupUnit::reset() {
     next_result_buffer_.valid = false;
     current_pending_result_.valid = false;
     next_pending_result_.valid = false;
-    ready_out_ = true;
-}
-
-bool TLookupUnit::is_ready() const {
-    // Queried by scheduler before this tick's evaluate; reads committed
-    // end-of-last-cycle state.
-    return !current_busy_ && !current_result_buffer_.valid;
 }
 
 bool TLookupUnit::has_result() const {

@@ -21,12 +21,10 @@ class LdStUnit : public ExecutionUnit {
 public:
     LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats);
 
-    void compute_ready() override;
-    bool ready_out() const override { return ready_out_; }
+    bool ready_out() const override { return !current_busy_; }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool is_ready() const override;
     bool has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
@@ -65,10 +63,11 @@ private:
     uint32_t next_cycles_remaining_ = 0;
     AddrGenFIFOEntry current_pending_entry_;
     AddrGenFIFOEntry next_pending_entry_;
-    std::deque<AddrGenFIFOEntry> current_addr_gen_fifo_;
+    // The address-generation FIFO is read by CoalescingUnit later in the same
+    // tick (COMBINATIONAL edge), so accessors expose the live next_* deque and
+    // there is no current_* mirror — commit() simply leaves next_addr_gen_fifo_
+    // unchanged for the following tick.
     std::deque<AddrGenFIFOEntry> next_addr_gen_fifo_;
-    // Phase 4 READY/STALL slot.
-    bool ready_out_ = true;
 };
 
 } // namespace gpu_sim
