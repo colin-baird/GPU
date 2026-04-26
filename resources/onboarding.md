@@ -57,6 +57,7 @@ resources/                 All design and simulator documentation
   gpu_architectural_spec.md   THE source of truth for all architecture decisions
   perf_sim_arch.md            Every simulator file documented (start here for the codebase map)
   cpp_coding_standard.md      Naming, formatting, ownership conventions
+  timing_discipline.md        Cross-stage signaling discipline for timing-model stages
   riscv_card.md               RISC-V ISA reference card
 ```
 
@@ -94,6 +95,10 @@ The two models communicate through **`TraceEvent`** structs (see `include/gpu_si
 ### Scoreboard
 
 The scoreboard (`include/gpu_sim/timing/scoreboard.h`) tracks in-flight destination registers. An instruction cannot issue if any of its source registers (or `rd` for `VDOT8`) has a pending write. The scoreboard is double-buffered: `set_pending` at issue, `clear_pending` at writeback, with `seed_next`/`commit` called once per cycle.
+
+### Cross-stage signaling discipline
+
+Every stage above implements the four-method `PipelineStage` contract — `compute_ready` / `evaluate` / `commit` / `reset` — and each per-cycle `tick()` runs them in three phases: a backward sweep of `compute_ready()` (consumers publish READY/STALL signals from committed state), a forward sweep of `evaluate()` (each stage reads upstream and downstream signals and writes its own `next_*`), and a `commit()` flip that latches `next_* → current_*`. The Scoreboard is the canonical reference. Cross-stage signals are classified REGISTERED, COMBINATIONAL, or READY/STALL at every call site. Plain mutable members read by one stage and written by another mid-evaluate are forbidden — see [`/resources/timing_discipline.md`](timing_discipline.md) for the full per-boundary inventory and the rules.
 
 ### Memory system
 
@@ -234,6 +239,7 @@ When you add a new source file to the simulator, also add a description entry to
 | How do traces and perf counters work? | `resources/trace_and_perf_counters.md` |
 | How is the memory system designed? | `resources/gpu_architectural_spec.md` §5 |
 | What are the C++ conventions? | `resources/cpp_coding_standard.md` |
+| How are cross-stage signals classified? | `resources/timing_discipline.md` |
 | What is RISC-V RV32IM? | `resources/riscv_card.md` |
 | What changes lack test coverage? | `UNTESTED.md` |
 | What is the change workflow? | `AGENTS.md` | 
