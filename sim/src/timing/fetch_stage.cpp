@@ -38,14 +38,32 @@ void FetchStage::evaluate() {
 
     const std::optional<uint32_t> decode_pending_warp = query_decode_pending_warp();
 
-    // Scan forward from the RR pointer to find the first eligible warp
+    // Scan forward from the RR pointer to find the first eligible warp.
+    // A warp is ineligible if pushing this cycle's pick would land in a full
+    // buffer once *all* upstream in-flight instructions targeting that warp
+    // commit. Two slots can already hold an instruction destined for w:
+    //   1. decode.pending_  — will push at end of this cycle.
+    //   2. fetch.current_output_ — held in the fetch→decode register; decode
+    //      will pull it next cycle and push it the cycle after.
+    // The new pick adds a third push, so the eligibility check must reserve
+    // a slot for each of the three. Missing the current_output_ term causes
+    // head-of-line decode stalls when the scheduler is backend-bound (e.g.
+    // LDST saturated): fetch picks the same warp twice in a row, the second
+    // push fails, decode goes pending, and fetch backpressures every cycle
+    // until the warp drains.
+    const std::optional<uint32_t> current_output_warp =
+        current_output_.has_value() ? std::optional<uint32_t>(current_output_->warp_id)
+                                    : std::nullopt;
+
     bool fetched = false;
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
         auto& buf = warps_[w].instr_buffer;
-        bool will_be_full = buf.is_full() ||
-            (decode_pending_warp.has_value() && *decode_pending_warp == w &&
-             buf.size() + 1 >= buf.capacity());
+        uint32_t inflight_to_w = 0;
+        if (decode_pending_warp.has_value() && *decode_pending_warp == w) inflight_to_w++;
+        if (current_output_warp.has_value() && *current_output_warp == w) inflight_to_w++;
+        const bool will_be_full = buf.is_full() ||
+            (buf.size() + inflight_to_w + 1 > buf.capacity());
         if (warps_[w].active && !will_be_full) {
             uint32_t pc = warps_[w].pc;
             FetchOutput out;

@@ -517,6 +517,52 @@ TEST_CASE("Fetch: will_be_full gate skips warp when decode-pending + buf near fu
     // the REQUIRE_FALSE above would fail.
 }
 
+TEST_CASE("Fetch: will_be_full gate counts the fetch→decode register",
+          "[fetch][timing]") {
+    // The will_be_full gate must reserve a buffer slot for fetch.current_output_'s
+    // target warp in addition to decode.pending_. current_output_ holds an
+    // instruction that decode will pull next cycle and push the cycle after; if
+    // fetch picks the same warp again before that push lands, the second push
+    // overflows the buffer (commit fails, decode goes pending, fetch
+    // backpressures). Setup: depth-3 buffer with 2 entries pre-pushed and no
+    // decode pending. First fetch.evaluate picks warp 0 (2 + 0 + 1 = 3 ≤ 3,
+    // eligible) and seeds current_output_ with warp 0. The next cycle, warp 0
+    // must be ineligible because 2 + 1 (current_output_) + 1 = 4 > 3.
+    Stats stats;
+    StaticDirectionalBranchPredictor predictor;
+    InstructionMemory imem(64);
+    imem.write(0, encode_addi(5, 0, 1));
+    imem.write(1, encode_addi(6, 0, 2));
+
+    std::vector<WarpState> warps;
+    warps.emplace_back(3);  // depth 3
+    warps[0].reset(0);
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
+    REQUIRE(warps[0].instr_buffer.size() == 2);
+
+    FetchStage fetch(1, warps.data(), imem, predictor, stats);
+
+    // Cycle 1: no current_output_, no decode pending. 2 + 0 + 1 == 3, eligible.
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
+    REQUIRE(fetch.current_output()->warp_id == 0);
+
+    // Cycle 2: current_output_ targets warp 0. With the fix, the gate must skip
+    // warp 0 (only warp), incrementing fetch_skip_all_full. Without the fix,
+    // fetch would pick warp 0 again and produce a second output destined for
+    // the already-near-full buffer.
+    const uint64_t skip_all_full_before = stats.fetch_skip_all_full;
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE(stats.fetch_skip_all_full == skip_all_full_before + 1);
+
+    // Self-check: removing the current_output_warp arm of will_be_full would
+    // leave size=2, decode_pending=none, inflight_to_w=0, and the gate would
+    // reduce to 2 + 0 + 1 = 3 ≤ 3 — eligible — so the REQUIRE above would fail.
+}
+
 TEST_CASE("Fetch: stalls only when all decode FIFOs are truly full", "[fetch]") {
     // With decode FIFO visibility, fetch should not stall unless a buffer
     // is actually full (accounting for decode's pending entry).  The only
