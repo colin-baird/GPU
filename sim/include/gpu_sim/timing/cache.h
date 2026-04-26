@@ -143,13 +143,16 @@ private:
     CacheFillTraceEvent last_fill_event_;
     CacheSecondaryDrainTraceEvent last_drain_event_;
     CachePinStallTraceEvent last_pin_stall_event_;
-    // Per-cycle gather-buffer extraction-port bookkeeping. The cache has one
-    // line-to-gather-buffer extraction path per cycle shared by FILL, HIT, and
-    // secondary-drain. Arbitration priority is FILL > secondary > HIT; the
-    // gather file's own per-buffer port flag enforces FILL > HIT already, so
-    // this flag exists specifically to gate the secondary-drain path so it
-    // never competes with a FILL or HIT that already ran this cycle.
-    bool gather_extract_port_used_ = false;
+    // Phase 7: the prior `gather_extract_port_used_` scratch flag has been
+    // removed. The shared gather-extract port (spec §5.3 — one line-to-
+    // gather-buffer extraction per cycle) is now arbitrated by
+    // `LoadGatherBufferFile` via a single REGISTERED `next_port_claimed_` /
+    // `current_port_claimed_` pair; the cache observes claim outcomes
+    // through `try_write()`'s bool return. The FILL > secondary > HIT
+    // priority is encoded in tick order: cache_->evaluate() runs at the top
+    // of the non-panic tick (FILL first via handle_responses, secondary
+    // second via drain_secondary_chain_head); coalescing_->evaluate() runs
+    // later in the tick (HIT third).
 };
 
 } // namespace gpu_sim

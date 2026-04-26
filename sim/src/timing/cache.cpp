@@ -33,23 +33,21 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     uint32_t line_addr = get_line_addr(addr);
 
     if (tags_[set].valid && tags_[set].tag == tag) {
-        // Cache hit: attempt to deposit lane values into the gather buffer.
-        // Per §5.3 port model (FILL > secondary drain > HIT), the HIT path
-        // must lose to any in-cycle FILL or secondary-drain extraction on the
-        // single cache gather-extract port. The gather-file try_write already
-        // enforces the per-buffer FILL-vs-HIT edge; the cache-level flag here
-        // covers the secondary-drain-vs-HIT edge when the drain and hit
-        // target different gather buffers.
-        if (gather_extract_port_used_) {
-            return false;
-        }
+        // Cache hit: deposit lane values into the gather buffer. Phase 7:
+        // arbitration is owned by LoadGatherBufferFile via a single shared
+        // REGISTERED next_port_claimed flag (models spec §5.3 — one
+        // line-to-gather-buffer extraction per cycle). A same-tick FILL or
+        // secondary drain (which ran earlier from cache.handle_responses /
+        // cache.drain_secondary_chain_head) will have claimed the port, so
+        // try_write() returns false and the caller retries next cycle.
+        // Tick ordering preserves FILL > secondary > HIT priority without a
+        // cache-side scratch flag.
         if (!gather_file_.try_write(warp_id, lane_mask, results,
                                     LoadGatherBufferFile::GatherWriteSource::HIT)) {
             return false;
         }
         stats_.cache_hits++;
         stats_.load_hits++;
-        gather_extract_port_used_ = true;
         return true;
     }
 
@@ -240,16 +238,17 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         write_buffer_.push_back(mshr.cache_line_addr);
     } else {
         // Load miss fill: deposit lane values into the owning warp's gather
-        // buffer. FILL wins its per-buffer port over HIT; the cache-level
-        // extraction port is also marked used so any secondary-drain this
-        // cycle defers.
+        // buffer. FILL runs first in the tick (cache.handle_responses is
+        // invoked at the top of cache.evaluate()), so try_write() lands and
+        // sets the buffer's `next_port_claimed`. Any same-tick HIT to the
+        // same buffer (later via coalescing_->evaluate -> process_load) will
+        // see the live `next_port_claimed` and bail.
         tags_[set].valid = true;
         tags_[set].tag = get_tag(addr);
         tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
         bool ok = gather_file_.try_write(mshr.warp_id, mshr.lane_mask, mshr.results,
                                          LoadGatherBufferFile::GatherWriteSource::FILL);
         (void)ok;
-        gather_extract_port_used_ = true;
     }
 
     last_fill_event_.valid = true;
@@ -342,17 +341,19 @@ void L1Cache::drain_secondary_chain_head() {
             }
             return;
         } else {
-            // Load secondary: share the cache extraction port with FILL/HIT.
-            if (gather_extract_port_used_) {
-                return;
-            }
+            // Load secondary: arbitration via the gather buffer's per-buffer
+            // next_port_claimed flag. If a same-tick FILL to this same warp's
+            // buffer already ran (handle_responses ran earlier in
+            // cache.evaluate), try_write() returns false and we defer.
+            // Secondary drains tagged as FILL-source so a HIT-vs-secondary
+            // collision counts as a HIT loss in stats — consistent with the
+            // pre-Phase-7 priority order (HIT loses to FILL and secondary).
             bool ok = gather_file_.try_write(cand.warp_id, cand.lane_mask, cand.results,
                                              LoadGatherBufferFile::GatherWriteSource::FILL);
             if (!ok) {
                 // Per-buffer port already used; defer.
                 return;
             }
-            gather_extract_port_used_ = true;
             stats_.secondary_drain_cycles++;
             last_drain_event_.valid = true;
             last_drain_event_.warp_id = cand.warp_id;
@@ -394,23 +395,23 @@ void L1Cache::evaluate() {
     last_drain_event_.valid = false;
     last_pin_stall_event_.valid = false;
 
-    // FILL takes priority over HIT for the gather-buffer write port: run the
-    // fill path first so a same-cycle hit-path write sees port_used_this_cycle
-    // set and stalls one cycle.
+    // Phase 7: FILL > secondary > HIT priority is encoded in tick order.
+    // handle_responses() (FILL) runs first; drain_secondary_chain_head()
+    // (secondary) runs second; HIT path runs later in the tick when
+    // coalescing_->evaluate() calls process_load(). The shared gather-
+    // extract port is arbitrated by LoadGatherBufferFile's REGISTERED
+    // next_port_claimed_ flag (written by try_write, latched by
+    // gather_file.commit).
     handle_responses();
-
-    // Secondary drain runs after FILL (priority: FILL > secondary > HIT). A
-    // same-cycle HIT from process_load() called later will see HIT still
-    // possible only if neither FILL nor secondary drain used the port.
     drain_secondary_chain_head();
 }
 
 void L1Cache::commit() {
-    // Per-cycle reset: the gather-extract port is a one-extraction-per-cycle
-    // resource shared by FILL, secondary drain, and HIT. It is set inside
-    // evaluate() and consulted by process_load() within the same cycle; we
-    // clear it in commit() so the next cycle starts with the port free.
-    gather_extract_port_used_ = false;
+    // Phase 7: per-cycle gather-extract scratch flag removed. Port-claim
+    // state is owned by LoadGatherBufferFile (REGISTERED next/current pair).
+    // Cache-internal state (tags_, mshrs_, write_buffer_, pending_fill_) is
+    // intentionally direct-mutated synchronously by process_load/process_store
+    // and handle_responses — see resources/timing_discipline.md row 10.
 }
 
 bool L1Cache::is_idle() const {
@@ -453,7 +454,6 @@ void L1Cache::reset() {
     last_fill_event_.deferred = false;
     last_drain_event_.valid = false;
     last_pin_stall_event_.valid = false;
-    gather_extract_port_used_ = false;
 }
 
 uint32_t L1Cache::pinned_line_count() const {

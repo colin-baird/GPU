@@ -416,8 +416,9 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
 
     f.tick_mem(MEM_LATENCY);
 
-    // Cycle A: P1 (line 0) fill retires into warp 0's gather. This sets
-    // gather_extract_port_used_ = true, so the warp-1 secondary defers.
+    // Cycle A: P1 (line 0) fill retires into warp 0's gather. The FILL
+    // claims the gather-extract port (LoadGatherBufferFile.next_port_claimed_
+    // = true), so the warp-1 secondary defers.
     auto drains_before = f.stats.secondary_drain_cycles;
     f.cache.evaluate();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before); // no drain
@@ -475,8 +476,9 @@ TEST_CASE("MSHR merging: exhaustion via 4 same-line misses stalls a new line",
     REQUIRE(f.stats.load_misses == misses_before);
 
     // Deliver fill. Primary retires + one secondary drains in same cycle
-    // (FILL + secondary on different buffers -> but gather_extract_port_used
-    // is shared; secondary defers). Either way, at least the primary retires.
+    // (FILL + secondary on different buffers -> but the gather-extract port
+    // is shared at the LoadGatherBufferFile level; secondary defers). Either
+    // way, at least the primary retires.
     f.tick_mem(MEM_LATENCY);
     f.cache.evaluate();
     REQUIRE(f.cache.active_mshr_count() <= 3);

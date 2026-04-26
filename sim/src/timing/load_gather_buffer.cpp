@@ -22,24 +22,36 @@ void LoadGatherBufferFile::claim(uint32_t warp_id, uint8_t dest_reg, uint32_t pc
     buf.pc = pc;
     buf.issue_cycle = issue_cycle;
     buf.raw_instruction = raw_instruction;
-    buf.port_used_this_cycle = false;
+    // Phase 7: claim() does NOT touch the shared port-claim flag —
+    // arbitration is owned at the LoadGatherBufferFile level (single
+    // physical extraction port per spec §5.3). A fresh claim does not
+    // imply a port write; the subsequent try_write does.
 }
 
 bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
                                      const std::array<uint32_t, WARP_SIZE>& values,
                                      GatherWriteSource source) {
-    auto& buf = buffers_[warp_id];
-    if (buf.port_used_this_cycle) {
-        // HIT vs FILL port conflict. FILL is scheduled first each cycle, so
-        // a false return here is always the HIT path losing to a same-cycle
-        // FILL. Two FILLs on one buffer cannot occur because a warp has at
-        // most one outstanding load.
+    // Phase 7: read the live `next_port_claimed_` flag — within a single
+    // tick, multiple try_write() calls happen sequentially (FILL first via
+    // cache.handle_responses, then secondary via drain_secondary_chain_head,
+    // then HIT via coalescing.evaluate -> cache.process_load). The first
+    // writer wins; subsequent same-tick writers see the updated `next_*` and
+    // bail out. `commit()` moves next -> current at the end of the cycle.
+    // The port is a single shared resource (spec §5.3 Port model: one
+    // line-to-gather-buffer extraction per cycle, FILL > secondary > HIT).
+    if (next_port_claimed_) {
+        // FILL > secondary > HIT priority; a false return is always either
+        // the HIT path losing to an earlier FILL/secondary in the same cycle,
+        // or a secondary losing to a prior FILL. Two FILLs in one cycle
+        // cannot occur because the cache accepts at most one fill response
+        // per cycle.
         if (source == GatherWriteSource::HIT) {
             stats_.gather_buffer_port_conflict_cycles++;
         }
         return false;
     }
 
+    auto& buf = buffers_[warp_id];
     uint32_t newly_valid = 0;
     for (uint32_t i = 0; i < WARP_SIZE; ++i) {
         if ((lane_mask >> i) & 1u) {
@@ -51,7 +63,7 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
         }
     }
     buf.filled_count += newly_valid;
-    buf.port_used_this_cycle = true;
+    next_port_claimed_ = true;
     return true;
 }
 
@@ -60,9 +72,10 @@ void LoadGatherBufferFile::evaluate() {
 }
 
 void LoadGatherBufferFile::commit() {
-    for (auto& buf : buffers_) {
-        buf.port_used_this_cycle = false;
-    }
+    // Phase 7: REGISTERED single-port flip. Move next -> current and clear
+    // next so the upcoming cycle starts with the port free.
+    current_port_claimed_ = next_port_claimed_;
+    next_port_claimed_ = false;
 }
 
 void LoadGatherBufferFile::reset() {
@@ -70,15 +83,20 @@ void LoadGatherBufferFile::reset() {
         buf = LoadGatherBuffer{};
     }
     rr_pointer_ = 0;
+    next_port_claimed_ = false;
+    current_port_claimed_ = false;
 }
 
 void LoadGatherBufferFile::flush() {
     // Phase 6: panic-flush. Same body as reset() — clear every gather
-    // buffer and reset the round-robin pointer.
+    // buffer, reset the round-robin pointer, and clear the shared port
+    // arbitration flags.
     for (auto& buf : buffers_) {
         buf = LoadGatherBuffer{};
     }
     rr_pointer_ = 0;
+    next_port_claimed_ = false;
+    current_port_claimed_ = false;
 }
 
 bool LoadGatherBufferFile::is_ready() const {

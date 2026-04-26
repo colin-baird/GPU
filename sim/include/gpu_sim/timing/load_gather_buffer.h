@@ -21,8 +21,6 @@ struct LoadGatherBuffer {
     uint32_t pc = 0;
     uint64_t issue_cycle = 0;
     uint32_t raw_instruction = 0;
-    // Scratch: cleared every commit(); limits buffer writes to one per cycle.
-    bool port_used_this_cycle = false;
 };
 
 // One gather buffer per resident warp, registered with the writeback arbiter
@@ -68,12 +66,24 @@ public:
 
     uint32_t num_buffers() const { return num_warps_; }
     const LoadGatherBuffer& buffer(uint32_t warp_id) const { return buffers_[warp_id]; }
+    // Phase 7: visibility into the shared write-port claim (REGISTERED). Tests
+    // and tooling read the post-commit `current_port_claimed_` snapshot.
+    bool current_port_claimed() const { return current_port_claimed_; }
 
 private:
     uint32_t num_warps_;
     Stats& stats_;
     std::vector<LoadGatherBuffer> buffers_;
     uint32_t rr_pointer_ = 0;
+    // Phase 7: REGISTERED single-port arbitration flag for the cache's
+    // line-to-gather-buffer extraction port (§5.3 Port model: FILL >
+    // secondary > HIT). Writers (cache.handle_responses, cache
+    // .drain_secondary_chain_head, cache.process_load HIT path) all funnel
+    // through `try_write()`; the first writer in a tick wins by reading the
+    // live `next_port_claimed_` and the others bail. `commit()` latches
+    // next -> current at end-of-cycle.
+    bool next_port_claimed_ = false;
+    bool current_port_claimed_ = false;
 };
 
 } // namespace gpu_sim

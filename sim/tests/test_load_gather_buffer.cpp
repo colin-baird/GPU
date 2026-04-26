@@ -239,14 +239,18 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
     Stats stats;
     LoadGatherBufferFile file(NUM_WARPS, stats);
 
-    // Complete buffers 1 and 3 in the same cycle. rr_pointer_ starts at 0,
-    // so consume_result() should return warp 1 first, then warp 3.
+    // Phase 7: the gather-buffer write port is a single shared resource
+    // (spec §5.3 Port model — one line-to-gather-buffer extraction per
+    // cycle). Two buffers completing therefore requires two cycles of
+    // try_write with a commit between them. rr_pointer_ starts at 0, so
+    // consume_result() should return warp 1 first, then warp 3.
     file.claim(1, 5, 0, 0, 0);
     file.claim(3, 7, 0, 0, 0);
     auto v1 = make_values(100);
     auto v3 = make_values(200);
     REQUIRE(file.try_write(1, FULL_MASK, v1,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
+    file.commit();
     REQUIRE(file.try_write(3, FULL_MASK, v3,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
     file.commit();
@@ -272,6 +276,7 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
     auto v2 = make_values(400);
     REQUIRE(file.try_write(0, FULL_MASK, v0,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
+    file.commit();
     REQUIRE(file.try_write(2, FULL_MASK, v2,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
     file.commit();
