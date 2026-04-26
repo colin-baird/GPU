@@ -459,6 +459,10 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
         cache.handle_responses();
 
         // Try one store hit per cycle (cache hits since kHitLine is resident).
+        // Phase 9: cache observable stall state is REGISTERED, so we record
+        // whether the attempt was rejected this cycle and observe is_stalled
+        // / stall_reason after the end-of-cycle commit below.
+        bool rejected_this_cycle = false;
         if (stores_accepted < kStoresToIssue) {
             const bool ok = cache.process_store(kHitLine, /*warp_id=*/0,
                                                 /*issue_cycle=*/cycle, 0, 0);
@@ -466,19 +470,22 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
                 ++stores_accepted;
             } else {
                 ++stores_rejected_by_cache;
-                CHECK(cache.is_stalled());
-                CHECK(cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
+                rejected_this_cycle = true;
             }
-        }
-
-        if (cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
-            ++observed_wb_full_cycles;
         }
 
         mem.evaluate();
         cache.drain_write_buffer();
         cache.commit();
         gather_file.commit();
+
+        if (rejected_this_cycle) {
+            CHECK(cache.is_stalled());
+            CHECK(cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
+        }
+        if (cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+            ++observed_wb_full_cycles;
+        }
     }
 
     // Drain remaining writes to confirm nothing was lost.

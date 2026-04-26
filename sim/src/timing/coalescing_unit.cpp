@@ -9,6 +9,14 @@ CoalescingUnit::CoalescingUnit(LdStUnit& ldst, L1Cache& cache,
       line_size_(line_size), stats_(stats) {}
 
 void CoalescingUnit::evaluate() {
+    // Phase 9 COMBINATIONAL same-tick read. cache.is_stalled() reflects
+    // this cycle's outcome from cache.evaluate() (handle_responses /
+    // drain_secondary_chain_head), which runs earlier in TimingModel::tick().
+    // Models a same-cycle backpressure handshake; the stall signal is
+    // combinationally driven from registered tag, write-buffer, and
+    // pending_fill state. Tick order (cache.evaluate before
+    // coalescing.evaluate) is part of the contract — see inventory row 9
+    // in resources/timing_discipline.md.
     if (cache_.is_stalled()) return;
 
     if (!processing_) {

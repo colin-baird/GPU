@@ -201,9 +201,9 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     panic_->set_drained_query([this]() { return execution_units_drained(); });
 
     // Phase 4 wiring: scheduler reads each consumer's ready_out() directly.
-    // Each consumer's compute_ready() runs at the top of tick() to populate
-    // ready_out_ from committed state, replacing the prior pre-evaluate
-    // setter pair (set_opcoll_free / set_unit_ready_fn).
+    // ready_out() is now a const accessor over each consumer's committed
+    // state, replacing the prior pre-evaluate setter pair
+    // (set_opcoll_free / set_unit_ready_fn).
     scheduler_->set_consumers(opcoll_.get(), alu_.get(), mul_.get(), div_.get(),
                               tlookup_.get(), ldst_.get());
 

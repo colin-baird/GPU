@@ -79,12 +79,14 @@ TEST_CASE("MSHR merging: load secondary behind store-miss primary serializes (RA
     REQUIRE(f.stats.external_memory_reads == 1); // no second external read
     REQUIRE(f.stats.mshr_merged_loads == 1);
     REQUIRE(f.stats.load_misses == 1);
+    f.cache.commit(); // observe REGISTERED scratch state
     REQUIRE(f.cache.last_miss_event().valid);
     REQUIRE(f.cache.last_miss_event().merged_secondary);
 
     // Deliver the fill: primary retires, tag installed and pinned.
     f.tick_mem(MEM_LATENCY);
     f.cache.evaluate(); // handle_responses + drain_secondary_chain_head
+    f.cache.commit();
     REQUIRE(f.cache.last_fill_event().valid);
     REQUIRE(f.cache.last_fill_event().is_store == true);
     REQUIRE(f.cache.last_fill_event().chain_length_at_fill == 2);
@@ -136,6 +138,7 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     // Cycle N: primary store fill retires, pushes to write buffer, pin set.
     size_t wb_before = f.cache.write_buffer_size();
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.cache.last_fill_event().is_store);
     REQUIRE(f.cache.last_fill_event().chain_length_at_fill == 3);
     // Store primary pushes one wb entry; store-fill does NOT use gather
@@ -163,6 +166,7 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     auto rX = make_results();
     uint32_t conflict_line = NUM_SETS; // different tag, same set 0
     REQUIRE(f.cache.process_store(conflict_line, 0, 10, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.stall_reason() != CacheStallReason::LINE_PINNED);
 }
 
@@ -237,6 +241,7 @@ TEST_CASE("MSHR merging: different-tag miss into pinned set stalls LINE_PINNED",
     f.claim(2, 3);
     REQUIRE_FALSE(f.cache.process_load(conflict_line * LINE_SIZE, 2, FULL_MASK,
                                        r, 3, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.stall_reason() == CacheStallReason::LINE_PINNED);
     REQUIRE(f.stats.line_pin_stall_cycles == pin_stalls_before + 1);
     // Rejection path: load_misses and cache_misses must NOT increment.
@@ -260,6 +265,7 @@ TEST_CASE("MSHR merging: different-tag miss into pinned set stalls LINE_PINNED",
     f.claim(3, 4);
     REQUIRE(f.cache.process_load(conflict_line * LINE_SIZE, 3, FULL_MASK, r, 4, 0, 0));
     REQUIRE(f.stats.load_misses == misses_before + 1);
+    f.cache.commit();
     REQUIRE(f.cache.stall_reason() != CacheStallReason::LINE_PINNED);
 }
 
@@ -306,6 +312,7 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     // gets its data, pin clears.
     auto pin_stall_before = f.stats.line_pin_stall_cycles;
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.stats.line_pin_stall_cycles == pin_stall_before + 1);
     REQUIRE(f.cache.pending_fill().valid); // P2 still deferred
     REQUIRE(f.gather_file.has_result()); // warp 1 drained
@@ -317,6 +324,7 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
 
     // Cycle C: pin is now clear; pending P2 fill can complete.
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE_FALSE(f.cache.pending_fill().valid);
     REQUIRE(f.cache.active_mshr_count() == 0);
     REQUIRE(f.gather_file.has_result()); // warp 2 gets its data
@@ -468,6 +476,7 @@ TEST_CASE("MSHR merging: exhaustion via 4 same-line misses stalls a new line",
     auto stalls_before = f.stats.mshr_stall_cycles;
     auto misses_before = f.stats.load_misses;
     REQUIRE_FALSE(f.cache.process_load(2 * LINE_SIZE, 0, FULL_MASK, r, 10, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.stall_reason() == CacheStallReason::MSHR_FULL);
     REQUIRE(f.stats.mshr_stall_cycles == stalls_before + 1);
     // Rejection must NOT bump load_misses: the miss counter only advances on
@@ -534,6 +543,7 @@ TEST_CASE("MSHR merging: reset() clears pinned tags, MSHRs, and port state",
     f.claim(0, 1);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r, 1, 0, 0));
     REQUIRE(f.stats.external_memory_reads >= 1);
+    f.cache.commit();
     REQUIRE_FALSE(f.cache.last_miss_event().merged_secondary);
     REQUIRE(f.cache.active_mshr_count() == 1);
 }
@@ -631,6 +641,7 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     // appears this cycle -- not before.
     f.mem_if.evaluate();
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.cache.last_fill_event().valid);
     REQUIRE(f.cache.last_fill_event().is_store);
     REQUIRE(f.cache.last_fill_event().chain_length_at_fill == 2);

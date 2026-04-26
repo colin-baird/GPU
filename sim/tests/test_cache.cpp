@@ -169,6 +169,8 @@ TEST_CASE("Cache: MSHR exhaustion returns false and signals stall", "[cache]") {
     uint32_t addr = NUM_MSHRS * LINE_SIZE * 100;
     REQUIRE_FALSE(f.cache.process_load(addr, 0, FULL_MASK, results, 2, 0, 0));
     REQUIRE(f.stats.mshr_stall_cycles == 1);
+    // Phase 9: cache observable state is REGISTERED — commit to observe.
+    f.cache.commit();
     REQUIRE(f.cache.is_stalled());
     REQUIRE(f.cache.stall_reason() == CacheStallReason::MSHR_FULL);
 }
@@ -188,6 +190,7 @@ TEST_CASE("Cache: MSHR stall clears once a fill completes", "[cache]") {
     // MSHR exhaustion before touching the gather buffer.
     REQUIRE_FALSE(f.cache.process_load(NUM_MSHRS * LINE_SIZE * 100, 0, FULL_MASK,
                                        results, 2, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.is_stalled());
 
     f.tick_mem(MEM_LATENCY);
@@ -263,6 +266,7 @@ TEST_CASE("Cache: write buffer full stalls store hits", "[cache]") {
 
     REQUIRE_FALSE(f.cache.process_store(0, 0, 1, 0, 0));
     REQUIRE(f.stats.write_buffer_stall_cycles == 1);
+    f.cache.commit();
     REQUIRE(f.cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
 }
 
@@ -287,13 +291,18 @@ TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") 
     REQUIRE(f.cache.process_store(1, 0, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    f.cache.commit();
     REQUIRE(f.cache.is_stalled());
     REQUIRE_FALSE(f.cache.is_idle());
 
-    // Drain one write-buffer entry and retry the pending fill.
+    // Drain one write-buffer entry and retry the pending fill. evaluate()
+    // calls handle_responses() internally; the explicit redundant call from
+    // the pre-Phase-9 test is dropped since handle_responses now writes
+    // next_pending_fill_ and a second call in the same cycle would re-run
+    // complete_fill against the not-yet-flipped current_pending_fill_.
     f.cache.drain_write_buffer();
     f.cache.evaluate();
-    f.cache.handle_responses();
+    f.cache.commit();
     REQUIRE_FALSE(f.cache.is_stalled());
 }
 

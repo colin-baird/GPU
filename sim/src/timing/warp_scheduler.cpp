@@ -39,8 +39,9 @@ bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d
 
 bool WarpScheduler::query_opcoll_ready() const {
     // Phase 4 READY/STALL: prefer test override, then wired opcoll's
-    // ready_out() (set by opcoll.compute_ready() before scheduler.evaluate()
-    // in TimingModel::tick()). Fallback for tests that wire neither: free.
+    // ready_out() (a const accessor over committed state) during
+    // scheduler.evaluate() in TimingModel::tick(). Fallback for tests that
+    // wire neither: free.
     if (opcoll_ready_override_) return *opcoll_ready_override_;
     if (opcoll_) return opcoll_->ready_out();
     return true;
@@ -75,9 +76,9 @@ void WarpScheduler::evaluate() {
     BufferEntry selected_entry{};
     bool has_selected_entry = false;
 
-    // Phase 4 READY/STALL: query opcoll once per evaluate. ready_out() is
-    // derived from committed (current_busy_) state by opcoll.compute_ready(),
-    // which TimingModel::tick() invokes earlier in the same cycle.
+    // Phase 4 READY/STALL: query opcoll once per evaluate. ready_out() reads
+    // only committed (current_busy_) state, so the value is stable for the
+    // entire cycle and does not require a separate pre-pass.
     const bool opcoll_ready = query_opcoll_ready();
 
     for (uint32_t i = 0; i < num_warps_; ++i) {

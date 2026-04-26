@@ -103,18 +103,32 @@ public:
     void commit();
     void reset();
 
+    // Phase 9 cache external boundary: each accessor declares its
+    // discipline class. See resources/timing_discipline.md.
+    //
+    // COMBINATIONAL same-tick (single-slot, direct mutation, reset at top
+    // of evaluate). Coalescing reads is_stalled() / stall_reason() during
+    // its own evaluate, after cache.evaluate has already produced this
+    // cycle's stall outcome. Models a same-cycle backpressure handshake
+    // where the cache's stall signal is combinationally driven from
+    // registered tag / write-buffer / pending_fill state.
     bool is_stalled() const { return stalled_; }
-    bool is_idle() const;
     CacheStallReason stall_reason() const { return stall_reason_; }
+    //
+    // REGISTERED (next/current pair flipped by commit()). Trace recording
+    // runs at end-of-tick after cache.commit(); reads return committed
+    // state. pending_fill_ also persists across cycles as a deferred-fill
+    // carrier.
+    bool is_idle() const;
     uint32_t active_mshr_count() const;
     std::vector<uint32_t> active_mshr_warps() const;
     size_t write_buffer_size() const { return write_buffer_.size(); }
-    const PendingCacheFill& pending_fill() const { return pending_fill_; }
+    const PendingCacheFill& pending_fill() const { return current_pending_fill_; }
     const MSHRFile& mshrs() const { return mshrs_; }
-    const CacheMissTraceEvent& last_miss_event() const { return last_miss_event_; }
-    const CacheFillTraceEvent& last_fill_event() const { return last_fill_event_; }
-    const CacheSecondaryDrainTraceEvent& last_drain_event() const { return last_drain_event_; }
-    const CachePinStallTraceEvent& last_pin_stall_event() const { return last_pin_stall_event_; }
+    const CacheMissTraceEvent& last_miss_event() const { return current_last_miss_event_; }
+    const CacheFillTraceEvent& last_fill_event() const { return current_last_fill_event_; }
+    const CacheSecondaryDrainTraceEvent& last_drain_event() const { return current_last_drain_event_; }
+    const CachePinStallTraceEvent& last_pin_stall_event() const { return current_last_pin_stall_event_; }
     uint32_t pinned_line_count() const;
     uint32_t secondary_mshr_count() const;
 
@@ -136,13 +150,25 @@ private:
     ExternalMemoryInterface& mem_if_;
     LoadGatherBufferFile& gather_file_;
     Stats& stats_;
+    // COMBINATIONAL same-tick scratch: reset at top of evaluate(), written
+    // by handle_responses / process_load / process_store / complete_fill,
+    // observed mid-tick by CoalescingUnit::evaluate. No next/current pair —
+    // coalescing reads this cycle's value to make a same-cycle bail
+    // decision (single-cycle backpressure path; tags_/write_buffer_/
+    // pending_fill_ all source from registered state).
     bool stalled_ = false;
     CacheStallReason stall_reason_ = CacheStallReason::NONE;
-    PendingCacheFill pending_fill_;
-    CacheMissTraceEvent last_miss_event_;
-    CacheFillTraceEvent last_fill_event_;
-    CacheSecondaryDrainTraceEvent last_drain_event_;
-    CachePinStallTraceEvent last_pin_stall_event_;
+    // REGISTERED next/current pairs (flipped by commit()).
+    PendingCacheFill current_pending_fill_;
+    PendingCacheFill next_pending_fill_;
+    CacheMissTraceEvent current_last_miss_event_;
+    CacheMissTraceEvent next_last_miss_event_;
+    CacheFillTraceEvent current_last_fill_event_;
+    CacheFillTraceEvent next_last_fill_event_;
+    CacheSecondaryDrainTraceEvent current_last_drain_event_;
+    CacheSecondaryDrainTraceEvent next_last_drain_event_;
+    CachePinStallTraceEvent current_last_pin_stall_event_;
+    CachePinStallTraceEvent next_last_pin_stall_event_;
     // Phase 7: the prior `gather_extract_port_used_` scratch flag has been
     // removed. The shared gather-extract port (spec §5.3 — one line-to-
     // gather-buffer extraction per cycle) is now arbitrated by

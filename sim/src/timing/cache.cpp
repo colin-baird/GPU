@@ -58,11 +58,11 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         stats_.line_pin_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
-        last_pin_stall_event_.valid = true;
-        last_pin_stall_event_.warp_id = warp_id;
-        last_pin_stall_event_.requested_line_addr = line_addr;
-        last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
-        last_pin_stall_event_.is_store = false;
+        next_last_pin_stall_event_.valid = true;
+        next_last_pin_stall_event_.warp_id = warp_id;
+        next_last_pin_stall_event_.requested_line_addr = line_addr;
+        next_last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
+        next_last_pin_stall_event_.is_store = false;
         return false;
     }
 
@@ -93,13 +93,13 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     int mshr_idx = mshrs_.allocate(entry);
     assert(mshr_idx >= 0);
 
-    last_miss_event_.valid = true;
-    last_miss_event_.warp_id = warp_id;
-    last_miss_event_.line_addr = line_addr;
-    last_miss_event_.is_store = false;
-    last_miss_event_.pc = pc;
-    last_miss_event_.raw_instruction = raw_instruction;
-    last_miss_event_.merged_secondary = (tail_idx >= 0);
+    next_last_miss_event_.valid = true;
+    next_last_miss_event_.warp_id = warp_id;
+    next_last_miss_event_.line_addr = line_addr;
+    next_last_miss_event_.is_store = false;
+    next_last_miss_event_.pc = pc;
+    next_last_miss_event_.raw_instruction = raw_instruction;
+    next_last_miss_event_.merged_secondary = (tail_idx >= 0);
 
     if (tail_idx >= 0) {
         // Secondary: inherit the primary's external fetch. Link to the tail.
@@ -139,11 +139,11 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         stats_.line_pin_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
-        last_pin_stall_event_.valid = true;
-        last_pin_stall_event_.warp_id = warp_id;
-        last_pin_stall_event_.requested_line_addr = line_addr;
-        last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
-        last_pin_stall_event_.is_store = true;
+        next_last_pin_stall_event_.valid = true;
+        next_last_pin_stall_event_.warp_id = warp_id;
+        next_last_pin_stall_event_.requested_line_addr = line_addr;
+        next_last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
+        next_last_pin_stall_event_.is_store = true;
         return false;
     }
 
@@ -172,13 +172,13 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     int mshr_idx = mshrs_.allocate(entry);
     assert(mshr_idx >= 0);
 
-    last_miss_event_.valid = true;
-    last_miss_event_.warp_id = warp_id;
-    last_miss_event_.line_addr = line_addr;
-    last_miss_event_.is_store = true;
-    last_miss_event_.pc = pc;
-    last_miss_event_.raw_instruction = raw_instruction;
-    last_miss_event_.merged_secondary = (tail_idx >= 0);
+    next_last_miss_event_.valid = true;
+    next_last_miss_event_.warp_id = warp_id;
+    next_last_miss_event_.line_addr = line_addr;
+    next_last_miss_event_.is_store = true;
+    next_last_miss_event_.pc = pc;
+    next_last_miss_event_.raw_instruction = raw_instruction;
+    next_last_miss_event_.merged_secondary = (tail_idx >= 0);
 
     if (tail_idx >= 0) {
         mshrs_.at(static_cast<uint32_t>(tail_idx)).next_in_chain =
@@ -206,14 +206,14 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // will be retried next cycle.
     if (tags_[set].valid && tags_[set].pinned && tags_[set].tag != new_tag) {
         stats_.line_pin_stall_cycles++;
-        last_fill_event_.valid = true;
-        last_fill_event_.warp_id = mshr.warp_id;
-        last_fill_event_.line_addr = mshr.cache_line_addr;
-        last_fill_event_.is_store = mshr.is_store;
-        last_fill_event_.pc = mshr.pc;
-        last_fill_event_.raw_instruction = mshr.raw_instruction;
-        last_fill_event_.chain_length_at_fill = 0;
-        last_fill_event_.deferred = true;
+        next_last_fill_event_.valid = true;
+        next_last_fill_event_.warp_id = mshr.warp_id;
+        next_last_fill_event_.line_addr = mshr.cache_line_addr;
+        next_last_fill_event_.is_store = mshr.is_store;
+        next_last_fill_event_.pc = mshr.pc;
+        next_last_fill_event_.raw_instruction = mshr.raw_instruction;
+        next_last_fill_event_.chain_length_at_fill = 0;
+        next_last_fill_event_.deferred = true;
         return false;
     }
 
@@ -251,21 +251,24 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         (void)ok;
     }
 
-    last_fill_event_.valid = true;
-    last_fill_event_.warp_id = mshr.warp_id;
-    last_fill_event_.line_addr = mshr.cache_line_addr;
-    last_fill_event_.is_store = mshr.is_store;
-    last_fill_event_.pc = mshr.pc;
-    last_fill_event_.raw_instruction = mshr.raw_instruction;
-    last_fill_event_.chain_length_at_fill = chain_length;
+    next_last_fill_event_.valid = true;
+    next_last_fill_event_.warp_id = mshr.warp_id;
+    next_last_fill_event_.line_addr = mshr.cache_line_addr;
+    next_last_fill_event_.is_store = mshr.is_store;
+    next_last_fill_event_.pc = mshr.pc;
+    next_last_fill_event_.raw_instruction = mshr.raw_instruction;
+    next_last_fill_event_.chain_length_at_fill = chain_length;
     mshrs_.free(resp.mshr_id);
     return true;
 }
 
 void L1Cache::handle_responses() {
-    if (pending_fill_.valid) {
-        if (complete_fill(pending_fill_.response)) {
-            pending_fill_.valid = false;
+    // pending_fill_ is REGISTERED: read from current_, write next_. seed_next
+    // at the top of evaluate() copies current_ -> next_ so a deferred fill
+    // carries forward unless this cycle's complete_fill succeeds.
+    if (current_pending_fill_.valid) {
+        if (complete_fill(current_pending_fill_.response)) {
+            next_pending_fill_.valid = false;
         }
         return;
     }
@@ -277,11 +280,11 @@ void L1Cache::handle_responses() {
             continue;
         }
 
-        pending_fill_.valid = true;
-        pending_fill_.response = resp;
+        next_pending_fill_.valid = true;
+        next_pending_fill_.response = resp;
 
         if (complete_fill(resp)) {
-            pending_fill_.valid = false;
+            next_pending_fill_.valid = false;
         }
         return;
     }
@@ -328,12 +331,12 @@ void L1Cache::drain_secondary_chain_head() {
             }
             write_buffer_.push_back(line_addr);
             stats_.secondary_drain_cycles++;
-            last_drain_event_.valid = true;
-            last_drain_event_.warp_id = cand.warp_id;
-            last_drain_event_.line_addr = line_addr;
-            last_drain_event_.is_store = true;
-            last_drain_event_.pc = cand.pc;
-            last_drain_event_.raw_instruction = cand.raw_instruction;
+            next_last_drain_event_.valid = true;
+            next_last_drain_event_.warp_id = cand.warp_id;
+            next_last_drain_event_.line_addr = line_addr;
+            next_last_drain_event_.is_store = true;
+            next_last_drain_event_.pc = cand.pc;
+            next_last_drain_event_.raw_instruction = cand.raw_instruction;
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
@@ -355,12 +358,12 @@ void L1Cache::drain_secondary_chain_head() {
                 return;
             }
             stats_.secondary_drain_cycles++;
-            last_drain_event_.valid = true;
-            last_drain_event_.warp_id = cand.warp_id;
-            last_drain_event_.line_addr = line_addr;
-            last_drain_event_.is_store = false;
-            last_drain_event_.pc = cand.pc;
-            last_drain_event_.raw_instruction = cand.raw_instruction;
+            next_last_drain_event_.valid = true;
+            next_last_drain_event_.warp_id = cand.warp_id;
+            next_last_drain_event_.line_addr = line_addr;
+            next_last_drain_event_.is_store = false;
+            next_last_drain_event_.pc = cand.pc;
+            next_last_drain_event_.raw_instruction = cand.raw_instruction;
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
@@ -387,13 +390,19 @@ void L1Cache::drain_write_buffer() {
 }
 
 void L1Cache::evaluate() {
+    // seed_next: scratch fields (stall flags, trace events) clear to false
+    // so an unwritten cycle commits a quiescent observable state. The
+    // pending_fill_ slot is a multi-cycle deferred-fill carrier, so it
+    // copies forward; complete_fill clears next_pending_fill_.valid on
+    // success, leaving current_pending_fill_ set across the cycle.
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
-    last_miss_event_.valid = false;
-    last_fill_event_.valid = false;
-    last_fill_event_.deferred = false;
-    last_drain_event_.valid = false;
-    last_pin_stall_event_.valid = false;
+    next_last_miss_event_.valid = false;
+    next_last_fill_event_.valid = false;
+    next_last_fill_event_.deferred = false;
+    next_last_drain_event_.valid = false;
+    next_last_pin_stall_event_.valid = false;
+    next_pending_fill_ = current_pending_fill_;
 
     // Phase 7: FILL > secondary > HIT priority is encoded in tick order.
     // handle_responses() (FILL) runs first; drain_secondary_chain_head()
@@ -407,15 +416,27 @@ void L1Cache::evaluate() {
 }
 
 void L1Cache::commit() {
-    // Phase 7: per-cycle gather-extract scratch flag removed. Port-claim
-    // state is owned by LoadGatherBufferFile (REGISTERED next/current pair).
-    // Cache-internal state (tags_, mshrs_, write_buffer_, pending_fill_) is
-    // intentionally direct-mutated synchronously by process_load/process_store
-    // and handle_responses — see resources/timing_discipline.md row 10.
+    // Phase 9: flip the REGISTERED observable state (pending_fill_,
+    // trace events). stalled_ / stall_reason_ are COMBINATIONAL same-tick
+    // scratch (single slot, reset at top of evaluate, observed mid-tick
+    // by CoalescingUnit::evaluate as a same-cycle backpressure signal),
+    // so they are not flipped here. Internal hardware state (tags_,
+    // mshrs_, write_buffer_) is direct-mutated synchronously by
+    // process_load/process_store, complete_fill, and
+    // drain_secondary_chain_head — see resources/timing_discipline.md
+    // row 10. The gather-extract port-claim flag is owned by
+    // LoadGatherBufferFile (separate REGISTERED pair).
+    current_pending_fill_ = next_pending_fill_;
+    current_last_miss_event_ = next_last_miss_event_;
+    current_last_fill_event_ = next_last_fill_event_;
+    current_last_drain_event_ = next_last_drain_event_;
+    current_last_pin_stall_event_ = next_last_pin_stall_event_;
 }
 
 bool L1Cache::is_idle() const {
-    return !pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty();
+    // Idle reflects committed observable state. current_pending_fill_ is
+    // set when a deferred fill is carrying across cycles.
+    return !current_pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty();
 }
 
 uint32_t L1Cache::active_mshr_count() const {
@@ -448,12 +469,16 @@ void L1Cache::reset() {
     write_buffer_.clear();
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
-    pending_fill_.valid = false;
-    last_miss_event_.valid = false;
-    last_fill_event_.valid = false;
-    last_fill_event_.deferred = false;
-    last_drain_event_.valid = false;
-    last_pin_stall_event_.valid = false;
+    current_pending_fill_ = PendingCacheFill{};
+    next_pending_fill_ = PendingCacheFill{};
+    current_last_miss_event_ = CacheMissTraceEvent{};
+    next_last_miss_event_ = CacheMissTraceEvent{};
+    current_last_fill_event_ = CacheFillTraceEvent{};
+    next_last_fill_event_ = CacheFillTraceEvent{};
+    current_last_drain_event_ = CacheSecondaryDrainTraceEvent{};
+    next_last_drain_event_ = CacheSecondaryDrainTraceEvent{};
+    current_last_pin_stall_event_ = CachePinStallTraceEvent{};
+    next_last_pin_stall_event_ = CachePinStallTraceEvent{};
 }
 
 uint32_t L1Cache::pinned_line_count() const {
