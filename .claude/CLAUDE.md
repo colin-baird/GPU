@@ -27,6 +27,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Timing Discipline:** [/resources/timing_discipline.md](/resources/timing_discipline.md) — cross-stage signaling discipline (REGISTERED / COMBINATIONAL / READY/STALL) for the timing model, with a per-boundary inventory and the phased refactor plan
 - **Untested Changes Log:** [/UNTESTED.md](/UNTESTED.md) — tracker for changes that passed regression but lack targeted test coverage
 - **Onboarding Guide:** [/resources/onboarding.md](/resources/onboarding.md) — introduction to the project, codebase map, build/test/run instructions, and workflow overview for new contributors
+- **Refactor Workflow:** [/resources/refactor_workflow.md](/resources/refactor_workflow.md) — phased checklist for behavior-preserving multi-step refactors (regression-as-contract, consolidation review, no test-authoring round). Distinct from `multi-agent-workflow`, which is shaped for feature additions.
 
 ## Project Structure
 
@@ -76,12 +77,15 @@ Agent prompts live in `.claude/agents/`. Each agent has a focused responsibility
 | **Implementation** | [`.claude/agents/implement.md`](.claude/agents/implement.md) | Writes code and updates the architectural spec. Does not test or benchmark. |
 | **Validation** | [`.claude/agents/validate.md`](.claude/agents/validate.md) | Builds, runs regression suite, runs benchmarks, runs A/B benchmark comparisons. Reports structured results. Does not modify code. |
 | **Test Authoring** | [`.claude/agents/test-author.md`](.claude/agents/test-author.md) | Writes targeted Catch2 tests adversarially against the spec. Does not modify implementation code. |
+| **Consolidation Review** | [`.claude/agents/consolidation-reviewer.md`](.claude/agents/consolidation-reviewer.md) | Reads recent diffs over a git range and reports duplication, dead code, and accumulated cruft. Does not modify code. Used before final commits in both workflows. |
 
 ## Orchestration Model
 
 **Default: single-agent.** Handle user requests directly in the main conversation. Do not dispatch sub-agents unless the user explicitly asks for the multi-agent workflow (e.g., "use the multi-agent workflow", "run this through the orchestrator", "use implement/validate/test-author").
 
 When the user invokes the multi-agent workflow, follow the `multi-agent-workflow` skill (`.claude/skills/multi-agent-workflow/SKILL.md`). It defines the implementation → validation → test-author sequence, the regression hard gate, the adversarial fix loop, decision criteria, and commit integration rules.
+
+For **behavior-preserving multi-phase refactors** (regression-as-contract, no new behavior to test-author against), follow the lighter checklist in [`/resources/refactor_workflow.md`](/resources/refactor_workflow.md) instead. It skips the test-author / fix-loop machinery and makes consolidation review a first-class phase. Worked example: Phase 1–8 cross-stage signaling refactor + the consolidation pass that landed once Phase 8 shipped.
 
 The rules below (documentation verification, commit ownership, doc sync) apply in **both** single-agent and multi-agent modes.
 
@@ -137,6 +141,7 @@ This rule applies in every context — multi-agent workflow, direct implementati
 | `resources/perf_sim_arch.md` | Every source file in the simulator and runner: purpose, key types, relationships | Implementation agent (writes); orchestrator (verifies) |
 | `resources/trace_and_perf_counters.md` | Operator/tooling reference for `--trace`, `--trace-file`, the Chrome/Perfetto schema, and the `Stats` counter catalog | Implementation agent (writes); orchestrator (verifies) |
 | `resources/onboarding.md` | Repository layout, key concepts, build/test/run instructions for new contributors | Orchestrator |
+| `resources/refactor_workflow.md` | Phased checklist for behavior-preserving multi-step refactors | Orchestrator |
 | `README.md` | Quick-start reference: features, layout, build, run, test, benchmark instructions | Orchestrator |
 | `AGENTS.md` | Project context, agent definitions, orchestration workflow, documentation rules | Orchestrator |
 | `UNTESTED.md` | Changes that passed regression but lack targeted test coverage | Orchestrator |

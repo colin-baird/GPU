@@ -11,8 +11,11 @@ Sub-agent prompts:
 - Implementation: `.claude/agents/implement.md` — writes code + spec updates.
 - Validation: `.claude/agents/validate.md` — builds, runs regression, runs benchmarks. Does not modify code.
 - Test Authoring: `.claude/agents/test-author.md` — writes adversarial Catch2 tests. Does not modify implementation.
+- Consolidation Review: `.claude/agents/consolidation-reviewer.md` — reads recent diffs and reports duplication, dead code, and accumulated cruft. Does not modify code.
 
 Sub-agents run sequentially; each phase must complete before the next begins.
+
+> **For behavior-preserving multi-phase refactors** (no new behavior, regression-as-contract), use the lighter `resources/refactor_workflow.md` checklist instead of this skill. It skips test-authoring and the adversarial fix loop, and makes consolidation review a first-class phase.
 
 ## Architectural Change Workflow
 
@@ -52,6 +55,27 @@ User requests change (with multi-agent workflow)
     Revert or stash the change
 ```
 
+## Consolidation Review (before final commit)
+
+Before the final commit of any change that has either (a) accumulated across
+2+ iterations of the adversarial fix loop, (b) ships ≥ 200 lines of net diff,
+or (c) touches ≥ 5 files, dispatch the consolidation-reviewer agent
+(`.claude/agents/consolidation-reviewer.md`) with the diff range from the
+change's starting point to `HEAD`.
+
+The agent reads the range and reports duplication, dead code, override-field
+sprawl, and similar accumulated cruft. It does NOT fix issues — the
+orchestrator decides whether to apply consolidation as part of the final
+commit, defer it to a follow-up commit in the same session, or ignore the
+findings.
+
+**Why it matters:** the implement → fix-loop → fix-loop sequence tends to
+layer new abstractions on top of old ones. Each iteration is locally correct
+but no one looks back. The reviewer's pre-commit pass catches the residue.
+
+For small single-iteration changes (one fix, no loop, < 200 line diff),
+skip this step.
+
 ## Adversarial Test Failure Loop
 
 When adversarial tests expose a bug:
@@ -83,6 +107,7 @@ If a change is kept but targeted tests are deferred, log it in `/UNTESTED.md`. R
 - Classify bugs before entering the fix loop.
 - Consult the user at every decision sub-agents cannot resolve.
 - Never proceed past a failed regression gate or past the fix-loop limit without user input.
+- Run consolidation review before the final commit when the trigger conditions above apply.
 - Create all commits — sub-agents do not commit. Bundle implementation, spec, and tests in one atomic commit.
 - Before committing, verify documentation per the Documentation Sync rules in `CLAUDE.md` (the trigger table there is authoritative and applies to both workflow and single-agent changes).
 
