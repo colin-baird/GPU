@@ -407,6 +407,39 @@ bool TimingModel::tick() {
 
     cache_->evaluate();
 
+    // -------------------------------------------------------------------
+    // Tick discipline (formalized in Phase 8). See
+    // resources/timing_discipline.md for the full contract.
+    //
+    // Each non-panic tick has three phases:
+    //
+    // 1. compute_ready phase (backward sweep). Every consumer that exposes a
+    //    READY/STALL signal computes its ready_out_ from committed (current_*)
+    //    state only. No compute_ready() reads another stage's ready_out_, so
+    //    intra-group order does not affect correctness; the order below is
+    //    chosen for readability (scheduler-consumed signals first, then
+    //    decode which is consumed by fetch). Participants today: opcoll,
+    //    ALU, MUL, DIV, TLOOKUP, LDST, decode. Stages without a ready
+    //    output (FetchStage, WarpScheduler, WritebackArbiter, CoalescingUnit,
+    //    MemoryInterface, L1Cache, PanicController) inherit the
+    //    PipelineStage default no-op.
+    //
+    // 2. evaluate phase (forward sweep, dataflow order). Each stage reads
+    //    its inputs (committed state for REGISTERED edges, the live
+    //    next_*/ready_out_ of upstream for COMBINATIONAL/READY-STALL edges)
+    //    and writes its own next_* slot. Order in this tick:
+    //      cache -> fetch -> decode -> scheduler -> opcoll.accept -> opcoll
+    //      -> dispatch -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if
+    //      -> cache.drain_write_buffer -> wb_arbiter.
+    //
+    // 3. commit phase. Every stage flips its next_* into current_*. The
+    //    stages are independent at commit time (no commit() reads another
+    //    stage's state), so order is for traceability only. The current
+    //    order is fetch, decode, scheduler, opcoll, units, coalescing,
+    //    cache, mem_if, wb_arbiter, gather_file, scoreboard, branch_tracker,
+    //    followed by the optional panic-flush cascade armed at top-of-tick.
+    // -------------------------------------------------------------------
+
     // Phase 4 READY/STALL discipline: each consumer reads only its own
     // committed (current_*) state and writes its ready_out_ slot. Producers
     // (scheduler / fetch) then read those signals during their evaluate()
@@ -414,6 +447,11 @@ bool TimingModel::tick() {
     // stage's ready_out_, so the order does not matter for correctness;
     // scheduler-consumed signals (opcoll, units) come first for readability,
     // followed by decode (consumed by fetch) per Phase 3.
+    //
+    // Phase 8: the explicit per-stage list (rather than a vector iteration)
+    // is intentional. The list is short, every entry is meaningful, and
+    // making a stage participate in the backward sweep is a deliberate
+    // architectural decision worth tracking by name.
     opcoll_->compute_ready();
     alu_->compute_ready();
     mul_->compute_ready();

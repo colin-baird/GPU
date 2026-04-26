@@ -31,8 +31,9 @@ public:
     // state (pending_) and exposes ready_to_consume_fetch() for
     // FetchStage::evaluate() to query as a backpressure gate. Called by
     // TimingModel::tick() before fetch_->evaluate() so fetch sees a stable,
-    // committed-state-derived signal.
-    void compute_ready();
+    // committed-state-derived signal. Phase 8: overrides PipelineStage's
+    // virtual default no-op so the backward sweep can dispatch via base.
+    void compute_ready() override;
     void evaluate() override;
     void commit() override;
     void reset() override;

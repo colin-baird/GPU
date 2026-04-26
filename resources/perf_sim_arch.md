@@ -176,6 +176,7 @@ Top-level functional execution engine.
 
 Abstract base for pipeline stages. Header-only.
 
+- **`compute_ready()`**: Phase 8 backward-sweep hook. Reads only committed (`current_*`) state and updates the stage's `ready_out_` slot if it has one. Default is a virtual no-op — only stages that expose a READY/STALL signal override it (today: `DecodeStage`, `OperandCollector`; the five execution units inherit a parallel hook from `ExecutionUnit`). Stages without a ready output (`FetchStage`, `WarpScheduler`, `WritebackArbiter`, plus the non-`PipelineStage` `CoalescingUnit`/`MemoryInterface`/`L1Cache`/`PanicController`) inherit the default. See `resources/timing_discipline.md`.
 - **`evaluate()`**: Reads current state, computes next state.
 - **`commit()`**: Flips double-buffered state (next -> current).
 - **`reset()`**: Returns to initial state.
@@ -185,7 +186,7 @@ Abstract base for pipeline stages. Header-only.
 Abstract base for execution units plus the writeback data structure. Header-only.
 
 - **Struct `WritebackEntry`**: `valid`, `warp_id`, `dest_reg`, `values[WARP_SIZE]`, `source_unit`, `pc`, `raw_instruction`, `issue_cycle`.
-- **Class `ExecutionUnit`**: Extends pipeline stage interface with `compute_ready()` (default no-op), pure-virtual `ready_out()`, `is_ready()`, `has_result()`, `consume_result()`, and `get_type()`. Phase 4 READY/STALL discipline: each concrete unit overrides `compute_ready()` to read only its committed `current_*` state and write its `ready_out_` slot; `WarpScheduler::evaluate()` reads each unit's `ready_out()` directly, replacing the prior `unit_ready_fn_` callback. `is_ready()` is retained for post-commit drain checks (`pipeline_drained` / `execution_units_drained` / `trace_cycle`) and reads the same committed state.
+- **Class `ExecutionUnit`**: A separate hierarchy from `PipelineStage` (units have a different lifecycle — they produce results consumed by `WritebackArbiter` rather than participating in the unified evaluate/commit fan-in), but it shares the same four-method convention: `compute_ready()` (default no-op), pure-virtual `ready_out()`, `evaluate()`, `commit()`, `reset()`, plus the unit-specific `is_ready()`, `has_result()`, `consume_result()`, and `get_type()`. Phase 4 READY/STALL discipline: each concrete unit overrides `compute_ready()` to read only its committed `current_*` state and write its `ready_out_` slot; `WarpScheduler::evaluate()` reads each unit's `ready_out()` directly, replacing the prior `unit_ready_fn_` callback. `is_ready()` is retained for post-commit drain checks (`pipeline_drained` / `execution_units_drained` / `trace_cycle`) and reads the same committed state. Phase 8: `ExecutionUnit::compute_ready()` is intentionally retained as a parallel virtual to `PipelineStage::compute_ready()` because the two hierarchies are distinct; the convention is identical.
 
 ### `include/gpu_sim/timing/warp_state.h`
 

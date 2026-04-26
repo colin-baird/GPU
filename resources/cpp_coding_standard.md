@@ -356,22 +356,35 @@ Prefer explicit loops over STL algorithms when the loop body involves domain-spe
 
 ## Pipeline Stage Pattern
 
-All timing model components follow the double-buffered evaluate/commit pattern:
+All timing model components follow the double-buffered four-method
+pattern (`compute_ready` / `evaluate` / `commit` / `reset`):
 
 ```cpp
 class MyStage : public PipelineStage {
 public:
-    void evaluate() override;  // Read current_ state, compute next_ state
-    void commit() override;    // current_ = next_
-    void reset() override;     // Return to initial state
+    void compute_ready() override; // Read own current_ state, write ready_out_
+                                   // (omit / inherit default no-op if no
+                                   // READY/STALL output is exposed)
+    void evaluate() override;      // Read current_ state, compute next_ state
+    void commit() override;        // current_ = next_
+    void reset() override;         // Return to initial state
 };
 ```
 
-Execution units extend this with the accept/ready/result interface:
+`compute_ready()` is a virtual default no-op on `PipelineStage`. Only
+override it when the stage exposes a `ready_out()` consumed by an
+upstream producer (today: `DecodeStage`, `OperandCollector`, the five
+execution units via the parallel `ExecutionUnit::compute_ready()`
+hook).
+
+Execution units extend `ExecutionUnit` (a separate hierarchy that
+shares the same four-method convention) with the accept/ready/result
+interface:
 
 ```cpp
 class MyUnit : public ExecutionUnit {
 public:
+    void compute_ready() override;             // Same convention as PipelineStage
     void accept(const DispatchInput& input, uint64_t cycle);
     bool is_ready() const override;
     bool has_result() const override;

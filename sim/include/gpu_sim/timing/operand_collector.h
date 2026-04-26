@@ -57,8 +57,9 @@ public:
     // (current_busy_) state and updates ready_out_. WarpScheduler::evaluate()
     // queries ready_out() during the same tick; TimingModel::tick() invokes
     // compute_ready() before scheduler_->evaluate() so the signal is stable
-    // and derived from end-of-last-cycle state.
-    void compute_ready();
+    // and derived from end-of-last-cycle state. Phase 8: overrides
+    // PipelineStage's virtual default no-op.
+    void compute_ready() override;
     bool ready_out() const { return ready_out_; }
 
     void evaluate() override;

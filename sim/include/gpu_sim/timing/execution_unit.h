@@ -28,6 +28,15 @@ public:
     // before scheduler_->evaluate() so the signal is stable. Default no-op
     // is appropriate for units whose readiness never depends on cross-stage
     // state (e.g. QueuedWritebackSource, which is always ready).
+    //
+    // Phase 8 note: ExecutionUnit is a separate hierarchy from PipelineStage
+    // (units have a different lifecycle — they produce results consumed by
+    // WritebackArbiter rather than participating in the unified
+    // evaluate/commit fan-in). Both hierarchies expose the same
+    // compute_ready() convention: a backward-sweep hook that reads only
+    // committed state. Keep this duplicate virtual default here; the two
+    // hierarchies share the convention but not the base class. See
+    // resources/timing_discipline.md.
     virtual void compute_ready() {}
     virtual bool ready_out() const = 0;
     virtual void evaluate() = 0;

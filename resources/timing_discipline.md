@@ -15,6 +15,49 @@ frontend throughput at 1 instr per 2 cycles. This document classifies every
 cross-stage signal in the timing model so that future stages can be added
 (or reordered) without re-discovering hazards of this kind.
 
+## Tick discipline
+
+Each non-panic tick of `TimingModel::tick()` runs three phases in this
+fixed order. The structure is documented in `tick()` itself (see
+`sim/src/timing/timing_model.cpp`); the summary below is the contract
+every new stage must respect.
+
+1. **compute_ready phase (backward sweep).** Every consumer that exposes
+   a READY/STALL signal computes its `ready_out_` from committed
+   (`current_*`) state only. Today's participants:
+   `OperandCollector`, `ALUUnit`, `MultiplyUnit`, `DivideUnit`,
+   `TLookupUnit`, `LdStUnit`, `DecodeStage`. Stages without a ready
+   output (`FetchStage`, `WarpScheduler`, `WritebackArbiter`,
+   `CoalescingUnit`, `MemoryInterface`, `L1Cache`, `PanicController`)
+   inherit the default no-op from `PipelineStage::compute_ready()`
+   (formalized in Phase 8) or from the parallel
+   `ExecutionUnit::compute_ready()` virtual.
+
+2. **evaluate phase (forward sweep, dataflow order).** Each stage reads
+   its inputs (committed state for REGISTERED edges, the live
+   `next_*` / `ready_out_` of upstream for COMBINATIONAL or READY/STALL
+   edges) and writes its own `next_*` slot. Order:
+   `cache -> fetch -> decode -> scheduler -> opcoll.accept -> opcoll
+   -> dispatch -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if
+   -> cache.drain_write_buffer -> wb_arbiter`.
+
+3. **commit phase.** Every stage flips `next_* -> current_*`. Stages
+   are independent at commit time, so the order is for traceability
+   only: `fetch, decode, scheduler, opcoll, units, coalescing, cache,
+   mem_if, wb_arbiter, gather_file, scoreboard, branch_tracker`,
+   followed by the optional Phase 6 panic-flush cascade if armed at
+   top-of-tick.
+
+`PipelineStage` (`sim/include/gpu_sim/timing/pipeline_stage.h`)
+formally exposes all four methods — `compute_ready`, `evaluate`,
+`commit`, `reset` — as part of the discipline contract. `compute_ready`
+defaults to a virtual no-op so stages without a READY/STALL output do
+not need an empty override. `ExecutionUnit` is a separate hierarchy
+(units have a different lifecycle: they produce results consumed by
+`WritebackArbiter` rather than participating in the unified
+evaluate/commit fan-in) but shares the same four-method convention via
+its own `compute_ready` virtual default.
+
 ## Signal classifications
 
 Every cross-stage signal in the timing model belongs to exactly one of
@@ -251,6 +294,14 @@ The full refactor plan lives in
 - **Phase 7**: Gather-buffer port arbitration cleanup. `claim()` writes
   `next_*`; `commit()` flips. Cache internals stay direct-mutation by
   design. Inventory rows: 9 (boundary only), 11.
-- **Phase 8**: Lift `compute_ready()` into `PipelineStage` base; formalize
-  the backward sweep in `tick()`. Done last so every stage already
-  exposes its own `ready_out()` before the base-class hook is added.
+- **Phase 8** (landed): `PipelineStage::compute_ready()` added as a
+  virtual default no-op so the four-method discipline (`compute_ready`,
+  `evaluate`, `commit`, `reset`) is formally part of the base-class
+  contract. `DecodeStage::compute_ready()` and
+  `OperandCollector::compute_ready()` now carry `override`. The
+  `ExecutionUnit::compute_ready()` parallel virtual is retained because
+  units are a separate hierarchy; both hierarchies share the convention.
+  A block comment in `TimingModel::tick()` formalizes the
+  compute_ready / evaluate / commit phasing (see "Tick discipline"
+  above). No code-flow changes; cycle counts byte-identical to Phase 7.
+  Inventory: every row above is now compliant with a phase tag.
