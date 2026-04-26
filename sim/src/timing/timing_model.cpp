@@ -193,6 +193,12 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     wb_arbiter_->add_source(gather_file_.get());
 
     panic_ = std::make_unique<PanicController>(config.num_warps, warps_.data(), func_model);
+    // Phase 6: wire the drained-query callable into the panic controller.
+    // Replaces the prior pre-evaluate set_units_drained() setter that
+    // latched live state from another stage in violation of the
+    // discipline. The callable reads only committed (current_*) accessors
+    // on each unit / opcoll / ldst / wb_arbiter.
+    panic_->set_drained_query([this]() { return execution_units_drained(); });
 
     // Phase 4 wiring: scheduler reads each consumer's ready_out() directly.
     // Each consumer's compute_ready() runs at the top of tick() to populate
@@ -340,7 +346,10 @@ bool TimingModel::tick() {
 
     if (panic_->is_active()) {
         cache_->evaluate();
-        panic_->set_units_drained(execution_units_drained());
+        // Phase 6: PanicController queries the wired drained_query_
+        // callable inside evaluate() rather than via a pre-evaluate
+        // setter. The callable composes execution_units_drained() from
+        // committed-state accessors.
         panic_->evaluate();
 
         alu_->evaluate();
@@ -380,6 +389,22 @@ bool TimingModel::tick() {
     // resolve), and tracker.commit() flips at end-of-cycle alongside
     // scoreboard_.commit().
     branch_tracker_.seed_next();
+
+    // Phase 6 REGISTERED ebreak observation. decode.commit() at end of the
+    // previous cycle latched current_ebreak_request_. Trigger the panic
+    // controller at the *top* of this tick (one cycle later than the
+    // pre-Phase-6 same-cycle trigger; Option A). Set
+    // pending_panic_flush_ so the commit-phase cascade at end of tick
+    // calls flush() on scheduler / opcoll / gather_file / wb_arbiter
+    // instead of the prior mid-evaluate reset() cascade.
+    const auto& ebreak_req = decode_->current_ebreak_request();
+    bool panic_triggered_this_tick = false;
+    if (ebreak_req.valid && !panic_->is_active()) {
+        panic_->trigger(ebreak_req.warp_id, ebreak_req.pc);
+        pending_panic_flush_ = true;
+        panic_triggered_this_tick = true;
+    }
+
     cache_->evaluate();
 
     // Phase 4 READY/STALL discipline: each consumer reads only its own
@@ -400,23 +425,12 @@ bool TimingModel::tick() {
     fetch_->evaluate();
     decode_->evaluate();
 
-    if (decode_->ebreak_detected()) {
-        panic_->trigger(decode_->ebreak_warp(), decode_->ebreak_pc());
-        fetch_->commit();
-        decode_->commit();
-        scheduler_->reset();
-        opcoll_->reset();
-        gather_file_->reset();
-        wb_arbiter_->reset();
-        // Phase 5: branch_tracker_.seed_next() was already called this
-        // tick; commit it (current_ <- next_, both equal current_) so the
-        // double-buffer state stays self-consistent. The tracker is also
-        // explicitly reset on panic completion below.
-        branch_tracker_.commit();
-        branch_tracker_.reset();
-        record_cycle_trace(true);
-        return true;
-    }
+    // Phase 6: EBREAK detection no longer short-circuits the tick. Decode
+    // writes next_ebreak_request_ in its own evaluate(); commit() flips
+    // it; the *next* tick's top-of-tick observation (above) calls
+    // panic_->trigger() and arms pending_panic_flush_, which the
+    // commit-phase block at the end of this tick honors via
+    // scheduler/opcoll/gather_file/wb_arbiter -> flush().
 
     // Phase 4: scheduler reads opcoll_->ready_out() and each unit's ready_out()
     // directly inside evaluate(); the prior pre-evaluate set_opcoll_free
@@ -496,10 +510,27 @@ bool TimingModel::tick() {
     // evaluate() has already observed current_ from this same cycle.
     branch_tracker_.commit();
 
+    // Phase 6: panic-flush cascade at the commit-phase boundary. Replaces
+    // the prior mid-evaluate reset() cascade. pending_panic_flush_ was
+    // armed at the top of this tick when current_ebreak_request_ was
+    // observed valid. Each stage's flush() body matches its reset() body
+    // for the panic case; the call site moves from mid-evaluate to
+    // commit-phase, fixing the discipline violation. The branch_tracker
+    // is also reset to its pre-panic clean state, mirroring the prior
+    // arm's behavior.
+    if (pending_panic_flush_) {
+        scheduler_->flush();
+        opcoll_->flush();
+        gather_file_->flush();
+        wb_arbiter_->flush();
+        branch_tracker_.reset();
+        pending_panic_flush_ = false;
+    }
+
     if (trace_enabled_) {
         trace_cycle();
     }
-    record_cycle_trace(false);
+    record_cycle_trace(panic_triggered_this_tick);
 
     if (all_warps_done() && pipeline_drained()) {
         return false;

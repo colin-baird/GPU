@@ -28,13 +28,18 @@ void PanicController::evaluate() {
         func_model_.latch_panic(panic_warp_, panic_pc_, panic_cause_);
         step_ = 2;
         break;
-    case 2:
+    case 2: {
         // Drain already-dispatched work until the machine is quiescent.
+        // Phase 6: query the wired callable instead of a pre-evaluate setter.
+        // When unwired (test fixtures that don't supply one), treat as
+        // drained so the state machine progresses.
         drain_cycles_++;
-        if (units_drained_ || drain_cycles_ >= MAX_DRAIN_CYCLES) {
+        const bool drained = drained_query_ ? drained_query_() : true;
+        if (drained || drain_cycles_ >= MAX_DRAIN_CYCLES) {
             step_ = 3;
         }
         break;
+    }
     case 3:
         // Halt the full SM once the pipeline has drained.
         for (uint32_t w = 0; w < num_warps_; ++w) {
@@ -51,7 +56,8 @@ void PanicController::reset() {
     step_ = 0;
     drain_cycles_ = 0;
     panic_cause_ = 0;
-    units_drained_ = false;
+    // drained_query_ is not cleared; it represents wiring, not transient
+    // state, and is owned by the construction-time setup.
 }
 
 } // namespace gpu_sim

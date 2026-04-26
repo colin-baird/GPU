@@ -93,6 +93,12 @@ TEST_CASE("PanicController: state machine progression", "[panic]") {
 
     PanicController panic(2, warps.data(), model);
 
+    // Phase 6: replace the prior set_units_drained() pre-evaluate setter
+    // with a wired callable that the controller queries inside
+    // evaluate(). The test drives the bool through a captured local.
+    bool drained = false;
+    panic.set_drained_query([&drained]() { return drained; });
+
     REQUIRE_FALSE(panic.is_active());
     REQUIRE_FALSE(panic.is_done());
 
@@ -109,12 +115,12 @@ TEST_CASE("PanicController: state machine progression", "[panic]") {
     REQUIRE(model.panic_pc() == 0x04);
 
     // Drain step -- report units not drained
-    panic.set_units_drained(false);
+    drained = false;
     panic.evaluate(); // still draining
     REQUIRE_FALSE(panic.is_done());
 
     // Now report units drained
-    panic.set_units_drained(true);
+    drained = true;
     panic.evaluate(); // drain -> halt
     REQUIRE_FALSE(panic.is_done());
     panic.evaluate();

@@ -159,9 +159,13 @@ TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
     decode.evaluate();
     decode.commit();
 
-    REQUIRE(decode.ebreak_detected());
-    REQUIRE(decode.ebreak_warp() == 0);
-    REQUIRE(decode.ebreak_pc() == 0);
+    // Phase 6: ebreak signal is REGISTERED. evaluate() writes next_;
+    // commit() flips it to current_; the reader (TimingModel) observes
+    // it at the top of the *next* tick. Here we assert against
+    // current_ebreak_request() after the first commit() call.
+    REQUIRE(decode.current_ebreak_request().valid);
+    REQUIRE(decode.current_ebreak_request().warp_id == 0);
+    REQUIRE(decode.current_ebreak_request().pc == 0);
     REQUIRE(warps[0].instr_buffer.is_empty());
 }
 

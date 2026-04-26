@@ -95,4 +95,18 @@ void OperandCollector::reset() {
     next_redirect_request_ = RedirectRequest{};
 }
 
+void OperandCollector::flush() {
+    // Phase 6: panic-flush. Same body as reset() — drop the resident
+    // instruction and any pending redirect request.
+    current_busy_ = false;
+    next_busy_ = false;
+    current_cycles_remaining_ = 0;
+    next_cycles_remaining_ = 0;
+    current_output_ = std::nullopt;
+    next_output_ = std::nullopt;
+    ready_out_ = true;
+    current_redirect_request_ = RedirectRequest{};
+    next_redirect_request_ = RedirectRequest{};
+}
+
 } // namespace gpu_sim

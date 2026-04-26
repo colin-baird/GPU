@@ -146,8 +146,8 @@ last column is responsible for fixing it.
 | 10 | `L1Cache` internal members (`tags_`, `mshrs_`, `write_buffer_`, `pending_fill_`) | itself; cache test expectations | direct mutation of cache state | trusted internal subsystem (double-buffering descoped — `test_cache.cpp` and `test_cache_mshr_merging.cpp` assert MSHR/tag state synchronously) | compliant by design | none |
 | 11 | `LoadGatherBufferFile::try_write` (sets `port_used_this_cycle = true`); `L1Cache` (sets `gather_extract_port_used_ = true` for FILL/secondary/HIT priority) | each other within the same cycle | intra-cycle write-port arbitration scratch flags | **COMBINATIONAL** (FILL > secondary drain > HIT priority is enforced by tick ordering) | semantically correct but encoded as plain mutable booleans | partially compliant | 7 (cleanup; preserve semantics) |
 | 12 | `OperandCollector::resolve_branch` writes `next_redirect_request_{valid, warp_id, target_pc}` on misprediction | `FetchStage::commit` and `DecodeStage::commit` read `opcoll.current_redirect_request()` and apply the flush there | flush request and redirect target PC | **REGISTERED** redirect-request via `RedirectRequest` produced by opcoll, consumed by fetch/decode at their own `commit()`. Mispredict-recovery now takes one additional cycle (Option A) | tick-order: producer writes `next_` during evaluate; opcoll.commit flips to `current_` at end of cycle N; fetch.commit and decode.commit read `current_` at cycle N+1 (their commits run before opcoll.commit within the same cycle, so they observe last cycle's latched signal) | compliant (Phase 5) | 5 |
-| 13 | `DecodeStage::ebreak_detected()` and the cascade `panic_->trigger(...)` + `scheduler/opcoll/gather_file/wb_arbiter->reset()` mid-tick from `timing_model.cpp` | `PanicController`, scheduler, opcoll, gather buffer, writeback arbiter | EBREAK request and machine flush | should be **REGISTERED** `next_ebreak_request_{valid, warp_id, pc}`; per-stage `flush()` invoked at commit when the panic signal becomes active | mid-tick `reset()` cascade is the only path | non-compliant | 6 |
-| 14 | `TimingModel::execution_units_drained()` (queries each unit's live state) | `PanicController` (via `set_units_drained` setter called pre-`panic.evaluate`) | drained bit | should be **READY/STALL** via per-unit `ready_out()` queries inside `PanicController::compute_ready()` | currently pre-evaluate setter aggregating live state | non-compliant | 6 |
+| 13 | `DecodeStage::current_ebreak_request()` (REGISTERED `next_`/`current_` pair, latched by `decode.commit()`); panic-flush cascade `scheduler/opcoll/gather_file/wb_arbiter->flush()` invoked at commit-phase boundary when `pending_panic_flush_` is armed | `TimingModel::tick()` (observes `current_ebreak_request()` at top of cycle to call `panic_->trigger`); scheduler/opcoll/gather buffer/writeback arbiter (consume `flush()` at commit-phase) | EBREAK request and machine flush | **REGISTERED** ebreak side-channel; per-stage `flush()` at commit-phase replaces the prior mid-evaluate `reset()` cascade. Trigger takes one additional cycle vs. the pre-Phase-6 mid-tick path (Option A) | tick order: decode.commit latches ebreak request at end of cycle N; tick top of cycle N+1 reads current_ebreak_request_ and calls panic_->trigger / arms pending_panic_flush_; commit-phase of cycle N+1 invokes flush() on each panic-flush target | compliant (Phase 6) | 6 |
+| 14 | `PanicController::set_drained_query` wires a callable that the controller invokes inside `evaluate()`; the callable composes `execution_units_drained()` from each unit's committed-state accessors (`is_ready`, `has_result`, `fifo_empty`, `ready_out`) | `PanicController::evaluate()` (case 2 drain step) | drained bit | wired callable; the prior `set_units_drained()` pre-evaluate setter (which latched live state from another stage) is removed | controller queries drained_query_ inside its own evaluate(); the callable reads only committed-state accessors | compliant (Phase 6) | 6 |
 
 If a future change adds a new cross-stage edge, append a row here with
 its classification and the phase that lands it.
@@ -231,10 +231,23 @@ The full refactor plan lives in
   `branch_tracker_.seed_next()` near `scoreboard_.seed_next()` and
   `branch_tracker_.commit()` near `scoreboard_.commit()`. Inventory rows:
   5, 12.
-- **Phase 6**: Panic / EBREAK side-channel. Decode publishes a REGISTERED
-  `next_ebreak_request_`; `PanicController::compute_ready()` queries unit
-  ready signals; `reset()` cascade replaced by per-stage `flush()` at
-  commit. Inventory rows: 13, 14.
+- **Phase 6** (landed): Panic / EBREAK side-channel. Decode publishes a
+  REGISTERED `EBreakRequest{valid, warp_id, pc}` via `next_`/`current_`
+  pair; `decode.commit()` latches; `TimingModel::tick()` observes
+  `current_ebreak_request()` at the top of the next tick and calls
+  `panic_->trigger`. `PanicController` replaces the prior
+  `set_units_drained` pre-evaluate setter with a wired callable
+  (`set_drained_query`) that composes `execution_units_drained()` from
+  committed-state accessors and is invoked inside the controller's
+  own `evaluate()`. The mid-evaluate `reset()` cascade
+  (`scheduler_/opcoll_/gather_file_/wb_arbiter_->reset()`) is replaced
+  by per-stage `flush()` methods invoked at the commit-phase boundary
+  when `pending_panic_flush_` is armed. Trigger takes one additional
+  cycle vs. pre-Phase-6 (Option A); benchmark cycle counts unchanged
+  because workloads do not invoke EBREAK (they ECALL out). Test
+  assertions in `test_panic.cpp` use `< 1000` upper bounds and remain
+  green; the state-machine test was migrated from `set_units_drained()`
+  to the wired callable. Inventory rows: 13, 14.
 - **Phase 7**: Gather-buffer port arbitration cleanup. `claim()` writes
   `next_*`; `commit()` flips. Cache internals stay direct-mutation by
   design. Inventory rows: 9 (boundary only), 11.

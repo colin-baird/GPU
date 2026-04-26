@@ -17,6 +17,12 @@ public:
     void commit() override;
     void reset() override;
 
+    // Phase 6: panic flush hook. Same body as reset() — drops any
+    // committed/pending writeback and resets the round-robin pointer.
+    // Called at the commit-phase boundary when the panic signal becomes
+    // active.
+    void flush();
+
     // Register writeback sources.
     void add_source(ExecutionUnit* unit);
 

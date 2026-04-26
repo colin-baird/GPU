@@ -50,6 +50,12 @@ public:
     void evaluate() override;
     void commit() override;
     void reset() override;
+
+    // Phase 6: panic flush hook. Same body as reset() — clears every
+    // gather buffer (including any in-flight values) and resets the
+    // round-robin pointer. Called at the commit-phase boundary when the
+    // panic signal becomes active.
+    void flush();
     bool is_ready() const override;
     bool has_result() const override;
     WritebackEntry consume_result() override;

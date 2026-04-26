@@ -65,6 +65,12 @@ public:
     void commit() override;
     void reset() override;
 
+    // Phase 6: panic flush hook. Called from TimingModel::tick() at the
+    // commit-phase boundary when the panic signal becomes active. Same
+    // body as reset() — drops the in-flight instruction, clears
+    // busy/cycles, and clears the redirect-request slot.
+    void flush();
+
     // Alias of ready_out() retained for post-commit observers and tests:
     // pipeline_drained() / execution_units_drained() / trace_cycle() / unit
     // tests query "is operand collector idle?" after commit and need to read

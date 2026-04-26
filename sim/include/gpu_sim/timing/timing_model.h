@@ -113,6 +113,12 @@ private:
     std::unique_ptr<ChromeTraceWriter> structured_trace_;
 
     uint64_t cycle_ = 0;
+    // Phase 6: latched at the top of the tick when the REGISTERED ebreak
+    // request is observed. The panic-flush cascade
+    // (scheduler/opcoll/gather_file/wb_arbiter -> flush()) runs at the
+    // commit-phase boundary at the end of the same tick, replacing the
+    // prior mid-evaluate reset() cascade.
+    bool pending_panic_flush_ = false;
     bool trace_enabled_ = false;
     bool trace_metadata_written_ = false;
     std::optional<CycleTraceSnapshot> last_cycle_snapshot_;

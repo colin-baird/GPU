@@ -10,6 +10,19 @@ namespace gpu_sim {
 
 class OperandCollector;  // forward decl: decode reads opcoll.current_redirect_request()
 
+// Phase 6 REGISTERED EBREAK side-channel. evaluate() writes
+// next_ebreak_request_ when it sees an EBREAK at decode; commit() flips
+// next_ -> current_; TimingModel::tick() observes current_ebreak_request()
+// at the top of the *next* tick (one cycle later) and triggers the panic
+// controller. This replaces the prior plain-bool ebreak_detected_ that was
+// mutated and read in the same evaluate() phase. The +1 cycle delay
+// matches Option A from the orchestrator design choice.
+struct EBreakRequest {
+    bool valid = false;
+    uint32_t warp_id = 0;
+    uint32_t pc = 0;
+};
+
 class DecodeStage : public PipelineStage {
 public:
     DecodeStage(WarpState* warps, FetchStage& fetch);
@@ -24,10 +37,14 @@ public:
     void commit() override;
     void reset() override;
 
-    // Returns true if EBREAK was detected this cycle
-    bool ebreak_detected() const { return ebreak_detected_; }
-    uint32_t ebreak_warp() const { return ebreak_warp_id_; }
-    uint32_t ebreak_pc() const { return ebreak_pc_; }
+    // Phase 6 REGISTERED ebreak signal: TimingModel reads
+    // current_ebreak_request() at the top of the next cycle (after this
+    // cycle's commit() flipped next_ -> current_) to decide whether to
+    // call panic_->trigger(). Replaces the prior same-cycle ebreak_detected
+    // accessors (ebreak_detected/ebreak_warp/ebreak_pc).
+    const EBreakRequest& current_ebreak_request() const {
+        return current_ebreak_request_;
+    }
     bool has_pending() const { return pending_.valid; }
     std::optional<uint32_t> pending_warp() const {
         if (!pending_.valid) return std::nullopt;
@@ -72,9 +89,11 @@ private:
     FetchStage& fetch_;
     const OperandCollector* opcoll_ = nullptr;
 
-    bool ebreak_detected_ = false;
-    uint32_t ebreak_warp_id_ = 0;
-    uint32_t ebreak_pc_ = 0;
+    // Phase 6 REGISTERED ebreak side-channel: evaluate() writes next_;
+    // commit() flips next_ -> current_; TimingModel reads current_ at the
+    // top of the next tick.
+    EBreakRequest current_ebreak_request_{};
+    EBreakRequest next_ebreak_request_{};
     bool ready_to_consume_fetch_ = true;
 
     // Pending decode result (staged for commit). pending_ is committed

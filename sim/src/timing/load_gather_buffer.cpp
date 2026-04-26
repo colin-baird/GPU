@@ -72,6 +72,15 @@ void LoadGatherBufferFile::reset() {
     rr_pointer_ = 0;
 }
 
+void LoadGatherBufferFile::flush() {
+    // Phase 6: panic-flush. Same body as reset() — clear every gather
+    // buffer and reset the round-robin pointer.
+    for (auto& buf : buffers_) {
+        buf = LoadGatherBuffer{};
+    }
+    rr_pointer_ = 0;
+}
+
 bool LoadGatherBufferFile::is_ready() const {
     return true;
 }

@@ -185,4 +185,15 @@ void WarpScheduler::reset() {
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
 }
 
+void WarpScheduler::flush() {
+    // Phase 6: panic-flush. Same body as reset() — drop any in-flight
+    // issue, reset round-robin pointer, and clear diagnostics. Called at
+    // the commit phase when panic becomes active.
+    rr_pointer_ = 0;
+    current_output_ = std::nullopt;
+    next_output_ = std::nullopt;
+    current_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+    next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+}
+
 } // namespace gpu_sim

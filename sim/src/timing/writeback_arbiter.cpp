@@ -82,4 +82,12 @@ void WritebackArbiter::reset() {
     pending_commit_ = std::nullopt;
 }
 
+void WritebackArbiter::flush() {
+    // Phase 6: panic-flush. Same body as reset() — clear committed and
+    // pending writeback slots and reset the round-robin pointer.
+    rr_pointer_ = 0;
+    committed_ = std::nullopt;
+    pending_commit_ = std::nullopt;
+}
+
 } // namespace gpu_sim

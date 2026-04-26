@@ -17,7 +17,10 @@ void DecodeStage::compute_ready() {
 }
 
 void DecodeStage::evaluate() {
-    ebreak_detected_ = false;
+    // Phase 6: write only into next_ slot. commit() flips it; TimingModel
+    // observes current_ at the top of the *next* tick. Reset next_ to
+    // invalid each evaluate to prevent a stale request from carrying.
+    next_ebreak_request_ = EBreakRequest{};
 
     if (pending_.valid) return;
 
@@ -27,9 +30,9 @@ void DecodeStage::evaluate() {
     DecodedInstruction decoded = Decoder::decode(fetch_out->raw_instruction);
 
     if (decoded.type == InstructionType::EBREAK) {
-        ebreak_detected_ = true;
-        ebreak_warp_id_ = fetch_out->warp_id;
-        ebreak_pc_ = fetch_out->pc;
+        next_ebreak_request_.valid = true;
+        next_ebreak_request_.warp_id = fetch_out->warp_id;
+        next_ebreak_request_.pc = fetch_out->pc;
         return;
     }
 
@@ -45,6 +48,11 @@ void DecodeStage::evaluate() {
 }
 
 void DecodeStage::commit() {
+    // Phase 6: latch the REGISTERED ebreak side-channel. TimingModel reads
+    // current_ebreak_request() at the *top* of the next tick to decide
+    // whether to panic_->trigger().
+    current_ebreak_request_ = next_ebreak_request_;
+
     // Phase 5: apply REGISTERED redirect-request from the OperandCollector
     // BEFORE the pending->buffer push. The signal here is opcoll's
     // current_redirect_request_ latched by opcoll.commit() on the previous
@@ -74,7 +82,8 @@ void DecodeStage::commit() {
 }
 
 void DecodeStage::reset() {
-    ebreak_detected_ = false;
+    current_ebreak_request_ = EBreakRequest{};
+    next_ebreak_request_ = EBreakRequest{};
     pending_.valid = false;
     ready_to_consume_fetch_ = true;
     has_redirect_override_ = false;

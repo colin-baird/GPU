@@ -55,6 +55,13 @@ public:
     void commit() override;
     void reset() override;
 
+    // Phase 6: panic flush hook. Called from TimingModel::tick() at the
+    // commit-phase boundary when the panic signal becomes active. Clears
+    // the same scheduler state that reset() did when this was previously
+    // a mid-tick reset cascade — no functional difference, but the call
+    // site is now the commit phase rather than mid-evaluate.
+    void flush();
+
     // Phase 4 wiring: TimingModel calls this once at construction with the
     // owned opcoll and five typed execution units. evaluate() reads each
     // consumer's ready_out() during its own evaluate(); the prior pre-tick
