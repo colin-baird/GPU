@@ -1,0 +1,68 @@
+flowchart LR
+  subgraph Frontend_and_Issue["Frontend & Issue"]
+    FetchStage
+    DecodeStage
+    WarpScheduler
+    Scoreboard
+    BranchShadowTracker
+    OperandCollector
+  end
+  subgraph Execute["Execute"]
+    ALUUnit
+    MultiplyUnit
+    DivideUnit
+    TLookupUnit
+    LdStUnit
+  end
+  subgraph Memory["Memory"]
+    CoalescingUnit
+    LoadGatherBufferFile
+    L1Cache
+    ExternalMemoryInterface
+  end
+  subgraph Writeback["Writeback"]
+    WritebackArbiter
+  end
+  subgraph Control["Control"]
+    PanicController
+    TimingModel
+  end
+  ALUUnit -. drained .-> PanicController
+  ALUUnit -. ready .-> WarpScheduler
+  ALUUnit -->|result| WritebackArbiter
+  BranchShadowTracker -->|in_flight| WarpScheduler
+  CoalescingUnit -->|load/store| L1Cache
+  CoalescingUnit -->|FIFO pop| LdStUnit
+  CoalescingUnit -->|claim| LoadGatherBufferFile
+  DecodeStage -. ready / pending .-> FetchStage
+  DecodeStage -->|ebreak| TimingModel
+  DivideUnit -. drained .-> PanicController
+  DivideUnit -. ready .-> WarpScheduler
+  DivideUnit -->|result| WritebackArbiter
+  FetchStage -->|redirect applied| BranchShadowTracker
+  L1Cache -.->|stalled| CoalescingUnit
+  L1Cache -->|mem req/resp| ExternalMemoryInterface
+  L1Cache -->|gather port| LoadGatherBufferFile
+  L1Cache -->|trace events| TimingModel
+  LdStUnit -.->|addr_gen FIFO| CoalescingUnit
+  LdStUnit -. drained .-> PanicController
+  LdStUnit -. ready .-> WarpScheduler
+  LdStUnit -->|result| WritebackArbiter
+  MultiplyUnit -. drained .-> PanicController
+  MultiplyUnit -. ready .-> WarpScheduler
+  MultiplyUnit -->|result| WritebackArbiter
+  OperandCollector -->|branch resolved| BranchShadowTracker
+  OperandCollector -->|redirect| DecodeStage
+  OperandCollector -->|redirect| FetchStage
+  OperandCollector -. opcoll ready .-> WarpScheduler
+  PanicController -->|flush| LoadGatherBufferFile
+  PanicController -->|flush| OperandCollector
+  PanicController -->|flush| WarpScheduler
+  PanicController -->|flush| WritebackArbiter
+  Scoreboard -->|scoreboard| WarpScheduler
+  TLookupUnit -. drained .-> PanicController
+  TLookupUnit -. ready .-> WarpScheduler
+  TLookupUnit -->|result| WritebackArbiter
+  WarpScheduler -->|branch issued| BranchShadowTracker
+  WritebackArbiter -->|scoreboard| Scoreboard
+  WritebackArbiter -->|scoreboard| WarpScheduler
