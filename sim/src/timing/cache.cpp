@@ -107,6 +107,12 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
             static_cast<uint32_t>(mshr_idx);
         stats_.mshr_merged_loads++;
     } else {
+        // Phase M5: the new REGISTERED set_next_read_request path is
+        // available, but cache uses the synchronous submit_read here for
+        // back-compat with the existing test API surface that calls
+        // process_load directly. The mem_if provides both APIs; the
+        // REGISTERED path is land-only and ready for adoption when the
+        // pipeline plan rewires production cache → mem_if interactions.
         mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
     }
 
@@ -185,6 +191,7 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
             static_cast<uint32_t>(mshr_idx);
         stats_.mshr_merged_stores++;
     } else {
+        // Phase M5: see process_load comment.
         mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
     }
 
@@ -273,7 +280,7 @@ void L1Cache::handle_responses() {
         return;
     }
 
-    while (mem_if_.next_has_response()) {
+    while (mem_if_.current_has_response()) {
         auto resp = mem_if_.get_response();
         if (resp.is_write) {
             // Write ack from write buffer drain -- nothing to do
@@ -383,6 +390,11 @@ void L1Cache::drain_write_buffer() {
     // and external_memory_writes go astray and the line is never marked
     // observed by the memory model).
     if (!write_buffer_.empty()) {
+        // Phase M5: synchronous submit_write retains the bool return for
+        // DRAMSim3 backpressure (write-region full). The new REGISTERED
+        // set_next_write_request + next_request_stall API is available but
+        // its adoption is deferred until the pipeline plan rewires this
+        // path.
         if (mem_if_.submit_write(write_buffer_.front())) {
             write_buffer_.pop_front();
         }

@@ -27,10 +27,18 @@ public:
     void commit() override;
     void reset() override;
 
+    // Phase M5: REGISTERED forward request path.
+    void set_next_read_request(uint32_t line_addr, uint32_t mshr_id) override;
+    void set_next_write_request(uint32_t line_addr) override;
+    // COMBINATIONAL backward stall — true when the write region of the
+    // request FIFO can't accept another write's worth of chunks. Reads
+    // are never stalled (the read region is sized to num_mshrs * chunks_per_line).
+    bool next_request_stall() const override;
+
     bool submit_read(uint32_t line_addr, uint32_t mshr_id) override;
     bool submit_write(uint32_t line_addr) override;
 
-    bool next_has_response() const override { return !responses_.empty(); }
+    bool current_has_response() const override { return !responses_.empty(); }
     MemoryResponse get_response() override;
     bool is_idle() const override;
     size_t in_flight_count() const override;
@@ -126,6 +134,12 @@ private:
     // Peak response queue depth observed; used by tests to assert the
     // architectural bound is respected under stress.
     size_t max_response_queue_ = 0;
+
+    // Phase M5: REGISTERED request slots.
+    PendingMemoryRequest current_read_request_;
+    PendingMemoryRequest next_read_request_;
+    PendingMemoryRequest current_write_request_;
+    PendingMemoryRequest next_write_request_;
 };
 
 } // namespace gpu_sim

@@ -115,7 +115,38 @@ bool DRAMSim3Memory::submit_write(uint32_t line_addr) {
     return true;
 }
 
+void DRAMSim3Memory::set_next_read_request(uint32_t line_addr, uint32_t mshr_id) {
+    next_read_request_.valid = true;
+    next_read_request_.line_addr = line_addr;
+    next_read_request_.mshr_id = mshr_id;
+}
+
+void DRAMSim3Memory::set_next_write_request(uint32_t line_addr) {
+    next_write_request_.valid = true;
+    next_write_request_.line_addr = line_addr;
+}
+
+bool DRAMSim3Memory::next_request_stall() const {
+    // Stall when the write region of the request FIFO can't accept another
+    // line's worth of chunks. Reads have their own reserved region and
+    // are never stalled (the architectural invariant in the file's class
+    // doc above guarantees this). Conservative for the cache's purposes:
+    // stall any cmd when writes can't drain.
+    return write_chunks_in_fifo_ + chunks_per_line_ > write_region_capacity_;
+}
+
 void DRAMSim3Memory::evaluate() {
+    // Phase M5: drain current_*_request_ into the request FIFO at top of
+    // evaluate.
+    if (current_read_request_.valid) {
+        submit_read(current_read_request_.line_addr, current_read_request_.mshr_id);
+        current_read_request_.valid = false;
+    }
+    if (current_write_request_.valid) {
+        submit_write(current_write_request_.line_addr);
+        current_write_request_.valid = false;
+    }
+
     ++fabric_cycle_;
     phase_ += ticks_per_fabric_;
     while (phase_ >= 1.0) {
@@ -138,7 +169,13 @@ void DRAMSim3Memory::evaluate() {
     }
 }
 
-void DRAMSim3Memory::commit() {}
+void DRAMSim3Memory::commit() {
+    // Phase M5: flip REGISTERED request slots.
+    current_read_request_ = next_read_request_;
+    next_read_request_ = PendingMemoryRequest{};
+    current_write_request_ = next_write_request_;
+    next_write_request_ = PendingMemoryRequest{};
+}
 
 MemoryResponse DRAMSim3Memory::get_response() {
     MemoryResponse r = responses_.front();
@@ -171,6 +208,10 @@ void DRAMSim3Memory::reset() {
     write_assembly_.clear();
     read_chunk_to_mshr_.clear();
     write_chunk_to_line_.clear();
+    current_read_request_ = PendingMemoryRequest{};
+    next_read_request_ = PendingMemoryRequest{};
+    current_write_request_ = PendingMemoryRequest{};
+    next_write_request_ = PendingMemoryRequest{};
     phase_ = 0.0;
     fabric_cycle_ = 0;
     dram_ticks_ = 0;

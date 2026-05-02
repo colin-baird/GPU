@@ -545,6 +545,22 @@ The full refactor plan lives in
   Workload benchmark cycle counts byte-identical to the pre-refactor
   baseline at every phase boundary. See
   `/project-plans/naming-and-access-discipline.md`.
+- **Phase M5** (landed, infrastructure-only): Cache ↔ mem_if REGISTERED
+  forward request slots + COMBINATIONAL backward stall added to
+  `ExternalMemoryInterface`. Both `FixedLatencyMemory` and `DRAMSim3Memory`
+  now expose `set_next_read_request` / `set_next_write_request` /
+  `next_request_stall`. `current_has_response()` is the canonical name for
+  the response poll; `next_has_response()` remains as a compatibility
+  alias. The cache's miss/wb-drain paths still use the synchronous
+  `submit_read` / `submit_write` API — adoption of the REGISTERED path
+  is deferred so that test surgery (which would be substantial: ~12+ test
+  call sites would need cycle-boundary fixups) is rolled into the broader
+  pipeline plan rather than this memory-only commit. The new accessors
+  satisfy the discipline doc's classification for the boundary; the
+  conversion itself can be applied later by switching cache.cpp's two
+  submit calls and updating tests in lockstep. Zero cycle delta vs
+  `6c6d624` (post-M4) baseline. Inventory rows: 12, 13, 14, 15. See
+  `/project-plans/phase-10-memory-discipline.md`.
 - **Phase M4** (landed): Gather → WritebackArbiter result-ready converted to
   REGISTERED. Added `current_has_result_` and `next_has_result_` flags on
   `LoadGatherBufferFile`. `try_write` sets `next_has_result_ = true` when a
