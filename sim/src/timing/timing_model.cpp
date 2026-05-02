@@ -697,8 +697,27 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
                  pending->is_load || pending->is_store ? pending->trace.mem_addresses[0] : 0);
     }
 
+    // Phase M3: classify the FIFO head warp as AT_REST with the cmd-stall
+    // reason when cmd_stall fires. With M3, coalescing bails early on
+    // cmd_stall and never sets processing_=true, so WAIT_L1_MSHR /
+    // WAIT_L1_WRITE_BUFFER must be surfaced from the FIFO front instead
+    // of from coalescing's current_entry.
+    bool first_fifo_entry = true;
     for (const auto& entry : ldst_->current_fifo_entries()) {
-        set_warp(entry.warp_id, WarpTraceState::LDST_FIFO, WarpRestReason::NONE,
+        WarpTraceState state = WarpTraceState::LDST_FIFO;
+        WarpRestReason reason = WarpRestReason::NONE;
+        if (first_fifo_entry && cache_->next_cmd_stall()) {
+            CacheStallReason r = cache_->next_cmd_stall_reason();
+            if (r == CacheStallReason::MSHR_FULL) {
+                state = WarpTraceState::AT_REST;
+                reason = WarpRestReason::WAIT_L1_MSHR;
+            } else if (r == CacheStallReason::WRITE_BUFFER_FULL) {
+                state = WarpTraceState::AT_REST;
+                reason = WarpRestReason::WAIT_L1_WRITE_BUFFER;
+            }
+        }
+        first_fifo_entry = false;
+        set_warp(entry.warp_id, state, reason,
                  entry.trace.pc, entry.trace.decoded.raw, ExecUnit::LDST, entry.dest_reg,
                  entry.is_load || entry.is_store,
                  entry.is_load || entry.is_store ? entry.trace.mem_addresses[0] : 0);
@@ -707,10 +726,20 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     if (const auto* entry = coalescing_->current_entry()) {
         WarpTraceState state = WarpTraceState::COALESCING;
         WarpRestReason reason = WarpRestReason::NONE;
-        if (cache_->next_stall_reason() == CacheStallReason::MSHR_FULL) {
+        // Phase M3: combine the in-evaluate stall_reason_ (set by
+        // process_load/store at cmd-processing time) with the cmd-stall
+        // reason (cmd_stall preempts the cmd before processing). The
+        // cmd-stall path now subsumes the prior stall surface for
+        // structural backpressure (MSHR/WB/pin); the in-evaluate path
+        // still fires for in-cycle pin-stall events.
+        CacheStallReason r = cache_->next_stall_reason();
+        if (r == CacheStallReason::NONE) {
+            r = cache_->next_cmd_stall_reason();
+        }
+        if (r == CacheStallReason::MSHR_FULL) {
             state = WarpTraceState::AT_REST;
             reason = WarpRestReason::WAIT_L1_MSHR;
-        } else if (cache_->next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+        } else if (r == CacheStallReason::WRITE_BUFFER_FULL) {
             state = WarpTraceState::AT_REST;
             reason = WarpRestReason::WAIT_L1_WRITE_BUFFER;
         }
@@ -863,15 +892,21 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                        {"mode", std::string(coalescing_->is_coalesced()
                                                 ? "coalesced" : "serialized")},
                        {"serial_index", static_cast<uint64_t>(coalescing_->serial_index())}};
-        if (cache_->next_stall_reason() == CacheStallReason::MSHR_FULL) {
+        // Phase M3: combine in-evaluate and cmd-stall reasons (see comment
+        // in build_cycle_snapshot).
+        CacheStallReason stall_r = cache_->next_stall_reason();
+        if (stall_r == CacheStallReason::NONE) {
+            stall_r = cache_->next_cmd_stall_reason();
+        }
+        if (stall_r == CacheStallReason::MSHR_FULL) {
             args.emplace_back("stall_reason", std::string("mshr_full"));
-        } else if (cache_->next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+        } else if (stall_r == CacheStallReason::WRITE_BUFFER_FULL) {
             args.emplace_back("stall_reason", std::string("write_buffer_full"));
         }
         update_track_slice(hardware_trace_slices_[6], kHardwarePid, kCoalescerTid,
                            "coalescer:" + std::to_string(entry->warp_id) + ":" +
                                std::to_string(coalescing_->serial_index()) + ":" +
-                               std::to_string(static_cast<int>(cache_->next_stall_reason())),
+                               std::to_string(static_cast<int>(stall_r)),
                            coalescing_->is_coalesced() ? "coalesced" : "serialized",
                            args, snapshot.cycle);
     } else {

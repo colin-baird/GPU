@@ -404,15 +404,100 @@ void L1Cache::evaluate() {
     next_last_pin_stall_event_.valid = false;
     next_pending_fill_ = current_pending_fill_;
 
-    // Phase 7: FILL > secondary > HIT priority is encoded in tick order.
+    // Phase 7 + M3: FILL > secondary > HIT priority encoded by tick order.
     // handle_responses() (FILL) runs first; drain_secondary_chain_head()
-    // (secondary) runs second; HIT path runs later in the tick when
-    // coalescing_->evaluate() calls process_load(). The shared gather-
-    // extract port is arbitrated by LoadGatherBufferFile's REGISTERED
-    // next_port_claimed_ flag (written by try_write, latched by
-    // gather_file.commit).
+    // (secondary) runs second; the HIT slot processes the REGISTERED
+    // current_load_cmd_ / current_store_cmd_ that coalescing submitted at
+    // the prior cycle. The shared gather-extract port is arbitrated by
+    // LoadGatherBufferFile's REGISTERED next_port_claimed_ flag.
     handle_responses();
     drain_secondary_chain_head();
+
+    // Phase M3: process the cmd staged by coalescing at the previous cycle.
+    // If processing fails (port lost to FILL/secondary, MSHR alloc failed,
+    // pin conflict, write-buffer full), leave the cmd valid for next cycle's
+    // retry. cmd_stall keeps coalescing from staging a new cmd while the
+    // current one is in flight, so retry semantics preserve correctness
+    // without losing data. Throughput drops to 1 cmd / N cycles when
+    // failures persist, matching pre-M3 behavior where coalescing stalled
+    // synchronously on the same conditions.
+    if (current_load_cmd_.valid) {
+        bool ok = process_load(current_load_cmd_.addr, current_load_cmd_.warp_id,
+                               current_load_cmd_.lane_mask, current_load_cmd_.results,
+                               current_load_cmd_.issue_cycle, current_load_cmd_.pc,
+                               current_load_cmd_.raw_instruction);
+        if (ok) current_load_cmd_.valid = false;
+    }
+    if (current_store_cmd_.valid) {
+        bool ok = process_store(current_store_cmd_.line_addr, current_store_cmd_.warp_id,
+                                current_store_cmd_.issue_cycle, current_store_cmd_.pc,
+                                current_store_cmd_.raw_instruction);
+        if (ok) current_store_cmd_.valid = false;
+    }
+}
+
+void L1Cache::set_next_load_cmd(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
+                                const std::array<uint32_t, WARP_SIZE>& results,
+                                uint64_t issue_cycle, uint32_t pc,
+                                uint32_t raw_instruction) {
+    assert(!next_load_cmd_.valid && "set_next_load_cmd with pending cmd");
+    next_load_cmd_.valid = true;
+    next_load_cmd_.addr = addr;
+    next_load_cmd_.warp_id = warp_id;
+    next_load_cmd_.lane_mask = lane_mask;
+    next_load_cmd_.results = results;
+    next_load_cmd_.issue_cycle = issue_cycle;
+    next_load_cmd_.pc = pc;
+    next_load_cmd_.raw_instruction = raw_instruction;
+}
+
+void L1Cache::set_next_store_cmd(uint32_t line_addr, uint32_t warp_id,
+                                 uint64_t issue_cycle, uint32_t pc,
+                                 uint32_t raw_instruction) {
+    assert(!next_store_cmd_.valid && "set_next_store_cmd with pending cmd");
+    next_store_cmd_.valid = true;
+    next_store_cmd_.line_addr = line_addr;
+    next_store_cmd_.warp_id = warp_id;
+    next_store_cmd_.issue_cycle = issue_cycle;
+    next_store_cmd_.pc = pc;
+    next_store_cmd_.raw_instruction = raw_instruction;
+}
+
+bool L1Cache::any_pinned_tag() const {
+    for (const auto& t : tags_) {
+        if (t.valid && t.pinned) return true;
+    }
+    return false;
+}
+
+bool L1Cache::next_cmd_stall() const {
+    // Phase M3: COMBINATIONAL backward stall. Coalescing reads this same-cycle
+    // (cache.evaluate has run; the predicate sees end-of-evaluate state)
+    // and bails before staging a new cmd if true.
+    //
+    // The simplest sufficient condition is "a cmd is in flight". Cache's
+    // evaluate consumes the cmd if processing succeeds; if it fails (port
+    // lost to FILL/secondary, MSHR alloc fails, pin/wb conflict), the slot
+    // stays valid and is retried next cycle. Coalescing waits.
+    //
+    // We also stall on cache pressure (MSHR/WB) so the trace classification
+    // can report a structural reason via next_cmd_stall_reason() — but the
+    // retry loop in cache.evaluate would handle these conditions correctly
+    // even without preemptive stall. The any_pinned_tag check is for parity
+    // with the plan's spec; over-conservative on throughput in pin-heavy
+    // workloads but trace-friendly.
+    if (current_load_cmd_.valid || next_load_cmd_.valid) return true;
+    if (current_store_cmd_.valid || next_store_cmd_.valid) return true;
+    if (!mshrs_.has_free()) return true;
+    if (write_buffer_.size() >= write_buffer_depth_) return true;
+    return false;
+}
+
+CacheStallReason L1Cache::next_cmd_stall_reason() const {
+    if (!mshrs_.has_free()) return CacheStallReason::MSHR_FULL;
+    if (write_buffer_.size() >= write_buffer_depth_) return CacheStallReason::WRITE_BUFFER_FULL;
+    if (any_pinned_tag()) return CacheStallReason::LINE_PINNED;
+    return CacheStallReason::NONE;
 }
 
 void L1Cache::commit() {
@@ -431,12 +516,33 @@ void L1Cache::commit() {
     current_last_fill_event_ = next_last_fill_event_;
     current_last_drain_event_ = next_last_drain_event_;
     current_last_pin_stall_event_ = next_last_pin_stall_event_;
+    // Phase M3: flip cmd slots. If a cmd is still in flight (processing
+    // failed and is being retried), don't clobber it with next_'s value —
+    // cmd_stall should have prevented coalescing from staging a new cmd
+    // while one was in flight, so next_*_cmd_ should be empty in that case.
+    if (!current_load_cmd_.valid) {
+        current_load_cmd_ = next_load_cmd_;
+        next_load_cmd_ = LoadCommand{};
+    } else {
+        assert(!next_load_cmd_.valid &&
+               "load cmd staged while another is in flight (cmd_stall bug)");
+    }
+    if (!current_store_cmd_.valid) {
+        current_store_cmd_ = next_store_cmd_;
+        next_store_cmd_ = StoreCommand{};
+    } else {
+        assert(!next_store_cmd_.valid &&
+               "store cmd staged while another is in flight (cmd_stall bug)");
+    }
 }
 
 bool L1Cache::is_idle() const {
     // Idle reflects committed observable state. current_pending_fill_ is
-    // set when a deferred fill is carrying across cycles.
-    return !current_pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty();
+    // set when a deferred fill is carrying across cycles. Phase M3:
+    // current_/next_ cmd slots also count — an in-flight cmd is not idle.
+    return !current_pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty()
+           && !current_load_cmd_.valid && !next_load_cmd_.valid
+           && !current_store_cmd_.valid && !next_store_cmd_.valid;
 }
 
 uint32_t L1Cache::active_mshr_count() const {
@@ -479,6 +585,10 @@ void L1Cache::reset() {
     next_last_drain_event_ = CacheSecondaryDrainTraceEvent{};
     current_last_pin_stall_event_ = CachePinStallTraceEvent{};
     next_last_pin_stall_event_ = CachePinStallTraceEvent{};
+    current_load_cmd_ = LoadCommand{};
+    next_load_cmd_ = LoadCommand{};
+    current_store_cmd_ = StoreCommand{};
+    next_store_cmd_ = StoreCommand{};
 }
 
 uint32_t L1Cache::pinned_line_count() const {

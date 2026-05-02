@@ -56,6 +56,24 @@ struct CoalFixture {
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
     LdStUnit ldst{8, 4, stats};
     CoalescingUnit coal{ldst, cache, gather_file, LINE_SIZE, stats};
+
+    // Phase M3: drive one cycle of the memory pipeline. Order mirrors
+    // TimingModel::tick() — gather_file.evaluate (apply REGISTERED claim)
+    // → cache.evaluate (FILL + secondary + REGISTERED cmd processing) →
+    // coalescing.evaluate (stage cmd) → mem_if.evaluate → drain_write_buffer
+    // → commits.
+    void tick() {
+        gather_file.evaluate();
+        cache.evaluate();
+        coal.evaluate();
+        mem_if.evaluate();
+        cache.drain_write_buffer();
+        ldst.commit();
+        coal.commit();
+        cache.commit();
+        mem_if.commit();
+        gather_file.commit();
+    }
 };
 
 } // namespace
@@ -73,26 +91,24 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     settle_ldst(f.ldst);
     REQUIRE_FALSE(f.ldst.current_fifo_empty());
 
-    // One coalescing step should pop the FIFO, claim the gather buffer, and
-    // issue a single cache load request for the whole warp.
-    f.coal.evaluate();
-    f.coal.commit();
-    // Phase M2: gather_file.claim is REGISTERED — apply via commit + evaluate
-    // before checking current_busy.
-    f.gather_file.commit();
-    f.gather_file.evaluate();
+    // Tick 1: coalescing pops the FIFO, claims the gather buffer, and
+    // stages the REGISTERED load cmd. coalesced_requests increments here.
+    f.tick();
     REQUIRE(f.stats.coalesced_requests == 1);
     REQUIRE(f.stats.serialized_requests == 0);
+
+    // Tick 2: gather_file applies the claim (buf.busy=true); cache processes
+    // the REGISTERED cmd, takes a miss, allocates an MSHR. load_misses
+    // increments here.
+    f.tick();
     REQUIRE(f.stats.load_misses == 1);
     REQUIRE(f.cache.active_mshr_count() == 1);
     REQUIRE(f.gather_file.current_busy(0));
 
-    // Wait for the fill to complete and land in the gather buffer.
-    for (uint32_t i = 0; i < MEM_LATENCY; ++i) {
-        f.mem_if.evaluate();
+    // Pump until the fill arrives and lands in the gather buffer.
+    for (uint32_t i = 0; i < MEM_LATENCY + 4 && !f.gather_file.next_has_result(); ++i) {
+        f.tick();
     }
-    f.cache.evaluate();
-    f.cache.handle_responses();
     REQUIRE(f.gather_file.next_has_result());
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
 
@@ -115,39 +131,27 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
     settle_ldst(f.ldst);
     REQUIRE_FALSE(f.ldst.current_fifo_empty());
 
-    // First step: pop FIFO, claim buffer, issue lane-0 request.
-    f.coal.evaluate();
-    f.coal.commit();
-    // Phase M2: apply REGISTERED claim.
-    f.gather_file.commit();
-    f.gather_file.evaluate();
+    // Tick 1: coalescing pops FIFO, claims buffer, stages lane-0 cmd.
+    // serialized_requests increments here.
+    f.tick();
     REQUIRE(f.stats.serialized_requests == 1);
     REQUIRE(f.stats.coalesced_requests == 0);
+
+    // Drive ticks until coalescing finishes serializing all 32 lanes and
+    // all 32 cache cmds have been processed (load_misses == WARP_SIZE).
+    // Phase M3: each cmd takes one cycle to traverse coalescing → cache
+    // (REGISTERED), so 32 cmds take ~33 ticks plus settling.
+    for (uint32_t step = 0;
+         step < 256 && (f.stats.load_misses < WARP_SIZE || !f.coal.is_idle());
+         ++step) {
+        f.tick();
+    }
+    REQUIRE(f.stats.load_misses == WARP_SIZE);
     REQUIRE(f.gather_file.current_busy(0));
 
-    // Drive the remaining 31 serialized requests through. Each cycle the
-    // coalescing unit issues one more lane; memory ticks in lockstep.
-    // M1: coal.commit() applies the deferred FIFO pop staged at evaluate.
-    for (uint32_t step = 0; step < 64 && !f.coal.is_idle(); ++step) {
-        f.coal.evaluate();
-        f.cache.handle_responses();
-        f.mem_if.evaluate();
-        f.coal.commit();
-        f.gather_file.commit();
-    }
-
-    // Serialization must emit exactly one cache transaction per lane.
-    REQUIRE(f.stats.load_misses == WARP_SIZE);
-
-    // Gather buffer fills incrementally; drain completed fills. Writeback
-    // must not appear until all 32 slots are valid. Note: cache.evaluate()
-    // internally runs handle_responses() — calling both in the same cycle
-    // would attempt two FILL writes to the same gather buffer, and the
-    // second would collide on the shared write port and silently drop.
-    for (uint32_t i = 0; i < 4 * MEM_LATENCY + WARP_SIZE; ++i) {
-        f.mem_if.evaluate();
-        f.cache.evaluate();
-        f.gather_file.commit();
+    // Continue ticking to let fills come back and populate the gather buffer.
+    for (uint32_t i = 0; i < 8 * MEM_LATENCY + WARP_SIZE; ++i) {
+        f.tick();
         if (f.gather_file.buffer(0).filled_count == WARP_SIZE) break;
     }
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
@@ -171,7 +175,7 @@ TEST_CASE("Coalescing: boundary case — one lane in a different line serializes
     f.ldst.accept(input, 1);
     settle_ldst(f.ldst);
 
-    f.coal.evaluate();
+    f.tick();
     REQUIRE(f.stats.serialized_requests == 1);
     REQUIRE(f.stats.coalesced_requests == 0);
 }
@@ -202,20 +206,14 @@ TEST_CASE("Coalescing: store serialization walks 32 lanes without gather buffer 
     f.ldst.accept(input, 1);
     settle_ldst(f.ldst);
 
-    // Drive the coalescing unit to completion, ticking memory so fills can
-    // land and free MSHRs for further serialized requests. Loop runs while
-    // there is still work anywhere in the chain (FIFO non-empty, coal busy,
-    // or outstanding cache traffic) — not just while coal is busy, since coal
-    // starts idle.
+    // Drive the full memory pipeline (M3 tick helper) until coalescing
+    // and cache have drained. The loop runs while any work remains in the
+    // chain — FIFO non-empty, coal busy, cache busy.
     for (uint32_t step = 0;
-         step < 256 &&
+         step < 512 &&
          (!f.coal.is_idle() || !f.ldst.current_fifo_empty() || !f.cache.is_idle());
          ++step) {
-        f.coal.evaluate();
-        f.cache.evaluate();
-        f.mem_if.evaluate();
-        f.coal.commit();
-        f.gather_file.commit();
+        f.tick();
     }
 
     // Stores never claim the gather buffer.

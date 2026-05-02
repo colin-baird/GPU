@@ -73,23 +73,70 @@ struct CachePinStallTraceEvent {
     bool is_store = false;
 };
 
+// Phase M3: REGISTERED forward command path between coalescing and cache.
+struct LoadCommand {
+    bool valid = false;
+    uint32_t addr = 0;
+    uint32_t warp_id = 0;
+    uint32_t lane_mask = 0;
+    std::array<uint32_t, WARP_SIZE> results{};
+    uint64_t issue_cycle = 0;
+    uint32_t pc = 0;
+    uint32_t raw_instruction = 0;
+};
+
+struct StoreCommand {
+    bool valid = false;
+    uint32_t line_addr = 0;
+    uint32_t warp_id = 0;
+    uint64_t issue_cycle = 0;
+    uint32_t pc = 0;
+    uint32_t raw_instruction = 0;
+};
+
 class L1Cache {
 public:
     L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
             uint32_t write_buffer_depth, ExternalMemoryInterface& mem_if,
             LoadGatherBufferFile& gather_file, Stats& stats);
 
-    // Process one cache request. Returns true if the request was accepted.
-    // For loads: on a hit, attempts to write the lanes selected by `lane_mask`
-    // into the caller's gather buffer; returns false if the gather-buffer port
-    // was already used this cycle (caller must retry next cycle). On a miss,
-    // allocates an MSHR recording `lane_mask`. For stores: hit updates cache
-    // and write buffer; miss allocates an MSHR (write-allocate).
+    // Direct synchronous API. Used by tests and (until Phase M3 lands the
+    // production rewrite) called internally by L1Cache::evaluate to process
+    // the REGISTERED current_load_cmd_ / current_store_cmd_. Returns true
+    // when the request was accepted; tests rely on this bool. Production
+    // coalescing now goes through set_next_load_cmd / set_next_store_cmd
+    // gated by next_cmd_stall().
     bool process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
                       const std::array<uint32_t, WARP_SIZE>& results,
                       uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction);
     bool process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue_cycle,
                        uint32_t pc, uint32_t raw_instruction);
+
+    // Phase M3: REGISTERED command setters. Coalescing writes next_*_cmd_;
+    // commit() flips into current_*_cmd_; evaluate() processes the cmd and
+    // clears the valid bit. The bool return is gone — the cmd is guaranteed
+    // acceptable when received because next_cmd_stall() at submit time was
+    // false.
+    void set_next_load_cmd(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
+                           const std::array<uint32_t, WARP_SIZE>& results,
+                           uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction);
+    void set_next_store_cmd(uint32_t line_addr, uint32_t warp_id, uint64_t issue_cycle,
+                            uint32_t pc, uint32_t raw_instruction);
+
+    // Phase M3: COMBINATIONAL backward stall signal. Coalescing reads this
+    // same-cycle (cache.evaluate runs before coalescing.evaluate in tick
+    // order) before deciding whether to submit a cmd. Conservative: returns
+    // true when ANY of the cmd-acceptance failure modes might fire at next
+    // cycle's cmd processing. Lost throughput is bounded; correctness is
+    // guaranteed.
+    bool next_cmd_stall() const;
+    // Companion accessor: which cmd-stall condition fires this cycle (for
+    // trace classification). Returns NONE when next_cmd_stall() is false.
+    // Order: MSHR_FULL > WRITE_BUFFER_FULL > LINE_PINNED > NONE
+    // (FILL/secondary port conflicts surface as NONE since they are not
+    // a structural stall the trace needs to report — the warp is just
+    // waiting on memory).
+    CacheStallReason next_cmd_stall_reason() const;
 
     // Handle one pending memory response (MSHR fill) per cycle. Load fills
     // deposit lane data into the owning warp's gather buffer; store fills push
@@ -138,6 +185,7 @@ private:
     uint32_t get_set(uint32_t addr) const;
     uint32_t get_tag(uint32_t addr) const;
     uint32_t get_line_addr(uint32_t addr) const;
+    bool any_pinned_tag() const;
 
     uint32_t cache_size_;
     uint32_t line_size_;
@@ -179,6 +227,16 @@ private:
     // of the non-panic tick (FILL first via handle_responses, secondary
     // second via drain_secondary_chain_head); coalescing_->evaluate() runs
     // later in the tick (HIT third).
+
+    // Phase M3: REGISTERED forward command slots. Coalescing writes
+    // next_load_cmd_ / next_store_cmd_; commit() flips next → current;
+    // evaluate() consumes current_load_cmd_ / current_store_cmd_ after
+    // handle_responses + drain_secondary_chain_head (HIT slot in the
+    // FILL > secondary > HIT priority ladder).
+    LoadCommand current_load_cmd_;
+    LoadCommand next_load_cmd_;
+    StoreCommand current_store_cmd_;
+    StoreCommand next_store_cmd_;
 };
 
 } // namespace gpu_sim

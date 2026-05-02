@@ -545,6 +545,30 @@ The full refactor plan lives in
   Workload benchmark cycle counts byte-identical to the pre-refactor
   baseline at every phase boundary. See
   `/project-plans/naming-and-access-discipline.md`.
+- **Phase M3** (landed): Coalescing → Cache process_load/store converted to
+  REGISTERED forward command path + COMBINATIONAL backward stall. Coalescing
+  writes `next_load_cmd_` / `next_store_cmd_` via `set_next_load_cmd` /
+  `set_next_store_cmd` setters; cache.commit flips next → current; cache.evaluate
+  consumes `current_*_cmd_` after handle_responses (FILL) and
+  drain_secondary_chain_head (secondary), preserving the FILL > secondary >
+  HIT priority by tick order. The new `next_cmd_stall()` accessor is read
+  same-cycle by coalescing before staging. The retry semantic: if cmd
+  processing fails (port lost to FILL/secondary, MSHR alloc fails, pin/wb
+  conflict), `current_*_cmd_` stays valid and is retried next cycle;
+  `cmd_stall` keeps coalescing from staging a new cmd while one is in flight,
+  so retries preserve correctness. cache.commit only flips next → current
+  when current_*_cmd_.valid is false, asserting that next_*_cmd_ is empty
+  while a cmd is in flight (cmd_stall guarantees this). The legacy in-evaluate
+  `next_stalled()` / `next_stall_reason()` accessors remain for the FILL-vs-
+  HIT port path; trace classification reads them and falls back to
+  `next_cmd_stall_reason()` (a structural reason for the cmd-stall: MSHR_FULL,
+  WRITE_BUFFER_FULL, LINE_PINNED) so WAIT_L1_MSHR / WAIT_L1_WRITE_BUFFER
+  classification surfaces from the FIFO head when coalescing is preempted.
+  Cycle deltas vs `f71f5dd` (post-M2) baseline: matmul -1742 (-1.2%),
+  gemv +292 (+4.9%), fused_linear_activation -19 (-0.7%), softmax_row +25
+  (+1.1%), embedding_gather +2958 (+6.3%), layernorm_lite +1627 (+19.0%).
+  Inventory rows: 9 (cmd path), 9 (cmd_stall back-pressure). See
+  `/project-plans/phase-10-memory-discipline.md`.
 - **Phase M2** (landed): Coalescing.claim → LoadGatherBufferFile converted
   to REGISTERED. The synchronous `claim()` mutation that set buf.busy and
   metadata mid-evaluate is replaced with a single-slot `next_claim_request_`
