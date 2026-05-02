@@ -425,34 +425,51 @@ void L1Cache::evaluate() {
     handle_responses();
     drain_secondary_chain_head();
 
-    // Phase M3: process the cmd staged by coalescing at the previous cycle.
-    // If processing fails (port lost to FILL/secondary, MSHR alloc failed,
-    // pin conflict, write-buffer full), leave the cmd valid for next cycle's
-    // retry. cmd_stall keeps coalescing from staging a new cmd while the
-    // current one is in flight, so retry semantics preserve correctness
-    // without losing data. Throughput drops to 1 cmd / N cycles when
-    // failures persist, matching pre-M3 behavior where coalescing stalled
-    // synchronously on the same conditions.
+    // Phase M3 (valid/ready): process the cmd staged by coalescing at the
+    // previous cycle. Cache is memoryless — the slot is unconditionally
+    // cleared after the attempt. Whether the attempt succeeded is exposed
+    // to coalescing combinationally via next_cmd_ready_ (which coalescing
+    // reads later in the same tick to decide advance vs re-stage). On
+    // failure, the cmd is dropped; coalescing's processing_/current_entry_
+    // state holds the source data and re-stages next cycle.
+    next_cmd_ready_ = false;
+    int processed_count = 0;
     if (current_load_cmd_.valid) {
         bool ok = process_load(current_load_cmd_.addr, current_load_cmd_.warp_id,
                                current_load_cmd_.lane_mask, current_load_cmd_.results,
                                current_load_cmd_.issue_cycle, current_load_cmd_.pc,
                                current_load_cmd_.raw_instruction);
-        if (ok) current_load_cmd_.valid = false;
+        current_load_cmd_.valid = false;
+        if (ok) {
+            next_cmd_ready_ = true;
+            ++processed_count;
+        }
     }
     if (current_store_cmd_.valid) {
         bool ok = process_store(current_store_cmd_.line_addr, current_store_cmd_.warp_id,
                                 current_store_cmd_.issue_cycle, current_store_cmd_.pc,
                                 current_store_cmd_.raw_instruction);
-        if (ok) current_store_cmd_.valid = false;
+        current_store_cmd_.valid = false;
+        if (ok) {
+            next_cmd_ready_ = true;
+            ++processed_count;
+        }
     }
+    // Throughput invariant: at most one cmd per cycle (coalescing only
+    // stages one type at a time). When ready is asserted, exactly one cmd
+    // was processed.
+    assert(processed_count <= 1 &&
+           "valid/ready handshake: cache processed >1 cmd in a single cycle");
 }
 
 void L1Cache::set_next_load_cmd(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
                                 const std::array<uint32_t, WARP_SIZE>& results,
                                 uint64_t issue_cycle, uint32_t pc,
                                 uint32_t raw_instruction) {
-    assert(!next_load_cmd_.valid && "set_next_load_cmd with pending cmd");
+    // Phase M3 (valid/ready): the slot is memoryless — cleared every
+    // evaluate. Coalescing may stage every cycle (re-stage on hold) and
+    // overwriting an empty slot is harmless. Asserting that the prior
+    // value was empty is unnecessary now.
     next_load_cmd_.valid = true;
     next_load_cmd_.addr = addr;
     next_load_cmd_.warp_id = warp_id;
@@ -466,7 +483,6 @@ void L1Cache::set_next_load_cmd(uint32_t addr, uint32_t warp_id, uint32_t lane_m
 void L1Cache::set_next_store_cmd(uint32_t line_addr, uint32_t warp_id,
                                  uint64_t issue_cycle, uint32_t pc,
                                  uint32_t raw_instruction) {
-    assert(!next_store_cmd_.valid && "set_next_store_cmd with pending cmd");
     next_store_cmd_.valid = true;
     next_store_cmd_.line_addr = line_addr;
     next_store_cmd_.warp_id = warp_id;
@@ -482,30 +498,9 @@ bool L1Cache::any_pinned_tag() const {
     return false;
 }
 
-bool L1Cache::next_cmd_stall() const {
-    // Phase M3: COMBINATIONAL backward stall. Coalescing reads this same-cycle
-    // (cache.evaluate has run; the predicate sees end-of-evaluate state)
-    // and bails before staging a new cmd if true.
-    //
-    // The simplest sufficient condition is "a cmd is in flight". Cache's
-    // evaluate consumes the cmd if processing succeeds; if it fails (port
-    // lost to FILL/secondary, MSHR alloc fails, pin/wb conflict), the slot
-    // stays valid and is retried next cycle. Coalescing waits.
-    //
-    // We also stall on cache pressure (MSHR/WB) so the trace classification
-    // can report a structural reason via next_cmd_stall_reason() — but the
-    // retry loop in cache.evaluate would handle these conditions correctly
-    // even without preemptive stall. The any_pinned_tag check is for parity
-    // with the plan's spec; over-conservative on throughput in pin-heavy
-    // workloads but trace-friendly.
-    if (current_load_cmd_.valid || next_load_cmd_.valid) return true;
-    if (current_store_cmd_.valid || next_store_cmd_.valid) return true;
-    if (!mshrs_.has_free()) return true;
-    if (write_buffer_.size() >= write_buffer_depth_) return true;
-    return false;
-}
-
 CacheStallReason L1Cache::next_cmd_stall_reason() const {
+    // Trace classification: pure cache-state resource-exhaustion accessor.
+    // Independent of any in-flight cmd. Order: MSHR_FULL > WB_FULL > LINE_PINNED.
     if (!mshrs_.has_free()) return CacheStallReason::MSHR_FULL;
     if (write_buffer_.size() >= write_buffer_depth_) return CacheStallReason::WRITE_BUFFER_FULL;
     if (any_pinned_tag()) return CacheStallReason::LINE_PINNED;
@@ -528,24 +523,14 @@ void L1Cache::commit() {
     current_last_fill_event_ = next_last_fill_event_;
     current_last_drain_event_ = next_last_drain_event_;
     current_last_pin_stall_event_ = next_last_pin_stall_event_;
-    // Phase M3: flip cmd slots. If a cmd is still in flight (processing
-    // failed and is being retried), don't clobber it with next_'s value —
-    // cmd_stall should have prevented coalescing from staging a new cmd
-    // while one was in flight, so next_*_cmd_ should be empty in that case.
-    if (!current_load_cmd_.valid) {
-        current_load_cmd_ = next_load_cmd_;
-        next_load_cmd_ = LoadCommand{};
-    } else {
-        assert(!next_load_cmd_.valid &&
-               "load cmd staged while another is in flight (cmd_stall bug)");
-    }
-    if (!current_store_cmd_.valid) {
-        current_store_cmd_ = next_store_cmd_;
-        next_store_cmd_ = StoreCommand{};
-    } else {
-        assert(!next_store_cmd_.valid &&
-               "store cmd staged while another is in flight (cmd_stall bug)");
-    }
+    // Phase M3 (valid/ready): unconditional flip. Cache is memoryless —
+    // evaluate clears current_*_cmd_ every cycle regardless of success,
+    // so there's no retry slot to preserve. Coalescing's processing_/
+    // current_entry_ holds the source data and re-stages on a hold.
+    current_load_cmd_ = next_load_cmd_;
+    next_load_cmd_ = LoadCommand{};
+    current_store_cmd_ = next_store_cmd_;
+    next_store_cmd_ = StoreCommand{};
 }
 
 bool L1Cache::is_idle() const {

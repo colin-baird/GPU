@@ -545,6 +545,30 @@ The full refactor plan lives in
   Workload benchmark cycle counts byte-identical to the pre-refactor
   baseline at every phase boundary. See
   `/project-plans/naming-and-access-discipline.md`.
+- **Phase M3 (refactor)** (landed): Replace the retry-state cmd path
+  with a standard valid/ready handshake. Cache becomes a memoryless cmd
+  consumer — `cache.evaluate` always clears `current_*_cmd_` after the
+  attempt regardless of success. The consumer-side ready signal
+  `cache.next_cmd_ready()` is asserted iff this cycle's evaluate processed
+  a cmd from the slot; coalescing reads it combinationally (cache.evaluate
+  runs earlier in tick order) to advance vs re-stage. Producer-side retry
+  lives entirely in coalescing's `(current_entry_, serial_index_,
+  processing_)` state plus a new `cmd_in_flight_` flag tracking whether
+  we staged a cmd last cycle (to disambiguate "ready ack for our cmd"
+  from "cache is idle this cycle"). The throughput invariant — at most
+  one cmd processed per cycle, with `next_cmd_ready_` matching exactly
+  that — is enforced by an assert in `cache.evaluate`. Removed the coarse
+  `next_cmd_stall()` accessor (the retry-state version's "any cmd in
+  flight OR MSHR full OR WB full" predicate); `next_cmd_stall_reason()`
+  remains as a generic resource-exhaustion accessor for trace
+  classification only. Cycle deltas vs `857bf82` (post-retry-M3 +
+  M4-M6) baseline: matmul +1026 (+0.7%), gemv -148 (-2.3%),
+  fused_linear_activation -28 (-1.1%), softmax_row -59 (-2.5%),
+  embedding_gather -2571 (-5.2%), layernorm_lite -531 (-5.9%). Most
+  workloads improved because the prior cmd_stall preemptively blocked
+  coalescing on conditions (e.g., write-buffer near full) that didn't
+  affect the specific cmd being staged; valid/ready lets coalescing
+  attempt and re-stage on miss, recovering throughput. Inventory rows: 9.
 - **Phase M6** (landed): Test cycle-count recalibration. Most recalibration
   was performed inline with M1-M5 as the tests broke (commit-driven test
   surgery: insert `commit()` calls for REGISTERED accessors, drive

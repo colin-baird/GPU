@@ -9,20 +9,41 @@ CoalescingUnit::CoalescingUnit(LdStUnit& ldst, L1Cache& cache,
       line_size_(line_size), stats_(stats) {}
 
 void CoalescingUnit::evaluate() {
-    // Phase M3: replace the COMBINATIONAL same-tick stall read +
-    // synchronous process_load/process_store call with a COMBINATIONAL
-    // backward stall + REGISTERED forward cmd path. cache.evaluate runs
-    // earlier in the tick; cache.next_cmd_stall() reflects end-of-cache-
-    // evaluate state. When the stall is clear, we stage a cmd via
-    // cache.set_next_load_cmd / set_next_store_cmd; cache.commit flips
-    // the slot and cache.evaluate at the next cycle processes it. The
-    // stall guarantees acceptability — no rejection-retry handshake.
+    // Phase M3 (valid/ready handshake):
     //
-    // The legacy cache.next_stalled() / next_stall_reason() path is left
-    // intact for the FIFO-front gating below (gather buffer busy check
-    // remains REGISTERED back-pressure on the per-warp slot).
-    if (cache_.next_cmd_stall()) return;
+    //   producer (this)        consumer (cache)
+    //   ─────────────          ────────────────
+    //   stage cmd N → next_*_cmd_ (commit buffer)
+    //                          cache.commit flips next → current
+    //                          cache.evaluate processes current_*_cmd_
+    //                          and asserts next_cmd_ready iff accepted
+    //   read next_cmd_ready ← (this cycle's cache.evaluate, run earlier
+    //                          in tick order)
+    //   advance | re-stage
+    //
+    // Cache is memoryless: it clears current_*_cmd_ every evaluate
+    // regardless of success. Producer-side retry lives entirely in
+    // (current_entry_, serial_index_, processing_) — on !ready we leave
+    // those untouched and re-stage the same cmd at the bottom.
 
+    // Step 1: read this cycle's ack from cache. Only meaningful if we
+    // staged a cmd last cycle (cmd_in_flight_); otherwise the ready
+    // signal reflects an unrelated or stale cycle and must not advance us.
+    if (cmd_in_flight_) {
+        if (cache_.next_cmd_ready()) {
+            if (is_coalesced_) {
+                processing_ = false;
+            } else {
+                serial_index_++;
+                if (serial_index_ >= WARP_SIZE) {
+                    processing_ = false;
+                }
+            }
+        }
+        cmd_in_flight_ = false;
+    }
+
+    // Step 2: pop a new entry from the LDST FIFO if we're idle.
     if (!processing_) {
         if (ldst_.current_fifo_empty()) return;
         const auto& fifo_front = ldst_.current_fifo_front();
@@ -35,14 +56,11 @@ void CoalescingUnit::evaluate() {
         }
 
         current_entry_ = fifo_front;
-        // Phase M1: REGISTERED FIFO. Stage the pop intent; commit() will
-        // apply it via ldst_.pop_front(). Producer's commit only writes the
-        // back of the deque, so the front observed here is the same one
-        // pop_front() will remove next phase.
+        // Phase M1: REGISTERED FIFO — defer pop to commit().
         next_pop_ = true;
         processing_ = true;
 
-        // All-or-nothing coalescing check: do all 32 addresses fall in one cache line?
+        // All-or-nothing coalescing check.
         uint32_t first_line = current_entry_.trace.mem_addresses[0] / line_size_;
         is_coalesced_ = true;
         for (uint32_t i = 1; i < WARP_SIZE; ++i) {
@@ -67,9 +85,13 @@ void CoalescingUnit::evaluate() {
         }
     }
 
+    // Step 3: stage the current lane's cmd into the commit buffer. We
+    // stage every cycle we have work — on a hold (!ready last cycle), the
+    // re-stage repeats the same cmd so cache attempts it again next cycle.
+    // The slot's overwrite is harmless because cache cleared it at evaluate
+    // and our prior commit, if any, has already been consumed.
     if (processing_) {
         if (is_coalesced_) {
-            // Single REGISTERED cmd for all 32 threads; fires next cycle.
             uint32_t line_addr = current_entry_.trace.mem_addresses[0] / line_size_;
             if (current_entry_.is_load) {
                 cache_.set_next_load_cmd(
@@ -86,32 +108,26 @@ void CoalescingUnit::evaluate() {
                                           current_entry_.trace.pc,
                                           current_entry_.trace.decoded.raw);
             }
-            processing_ = false;
         } else {
-            // Serialized: one REGISTERED cmd per cycle (cache processes at N+1).
-            if (serial_index_ < WARP_SIZE) {
-                uint32_t addr = current_entry_.trace.mem_addresses[serial_index_];
-                uint32_t line_addr = addr / line_size_;
+            // Serialized: one lane per cycle. serial_index_ advances only
+            // when cache asserted ready (Step 1).
+            uint32_t addr = current_entry_.trace.mem_addresses[serial_index_];
+            uint32_t line_addr = addr / line_size_;
 
-                if (current_entry_.is_load) {
-                    uint32_t lane_mask = 1u << serial_index_;
-                    cache_.set_next_load_cmd(
-                        addr, current_entry_.warp_id, lane_mask,
-                        current_entry_.trace.results, current_entry_.issue_cycle,
-                        current_entry_.trace.pc, current_entry_.trace.decoded.raw);
-                } else {
-                    cache_.set_next_store_cmd(line_addr, current_entry_.warp_id,
-                                              current_entry_.issue_cycle,
-                                              current_entry_.trace.pc,
-                                              current_entry_.trace.decoded.raw);
-                }
-                serial_index_++;
-            }
-
-            if (serial_index_ >= WARP_SIZE) {
-                processing_ = false;
+            if (current_entry_.is_load) {
+                uint32_t lane_mask = 1u << serial_index_;
+                cache_.set_next_load_cmd(
+                    addr, current_entry_.warp_id, lane_mask,
+                    current_entry_.trace.results, current_entry_.issue_cycle,
+                    current_entry_.trace.pc, current_entry_.trace.decoded.raw);
+            } else {
+                cache_.set_next_store_cmd(line_addr, current_entry_.warp_id,
+                                          current_entry_.issue_cycle,
+                                          current_entry_.trace.pc,
+                                          current_entry_.trace.decoded.raw);
             }
         }
+        cmd_in_flight_ = true;
     }
 }
 
@@ -129,6 +145,7 @@ void CoalescingUnit::commit() {
 void CoalescingUnit::reset() {
     processing_ = false;
     serial_index_ = 0;
+    cmd_in_flight_ = false;
 }
 
 } // namespace gpu_sim

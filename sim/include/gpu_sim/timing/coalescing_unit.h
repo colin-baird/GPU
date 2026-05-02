@@ -49,6 +49,14 @@ private:
     // commit is identical to the front it observed at evaluate — the
     // `current_fifo_empty()` defensive check below should never fire.
     bool next_pop_ = false;
+
+    // Phase M3 (valid/ready): true iff we staged a cmd in the prior cycle
+    // (i.e., cache.evaluate this cycle is processing it). When true,
+    // cache.next_cmd_ready() is the consumer-side ack: ready → advance,
+    // !ready → re-stage from current_entry_/serial_index_. cmd_in_flight_
+    // is reset each evaluate after being read; it is then re-asserted at
+    // the bottom of evaluate iff we stage a fresh cmd this cycle.
+    bool cmd_in_flight_ = false;
 };
 
 } // namespace gpu_sim

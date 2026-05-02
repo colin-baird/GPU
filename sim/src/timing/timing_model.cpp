@@ -706,7 +706,11 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     for (const auto& entry : ldst_->current_fifo_entries()) {
         WarpTraceState state = WarpTraceState::LDST_FIFO;
         WarpRestReason reason = WarpRestReason::NONE;
-        if (first_fifo_entry && cache_->next_cmd_stall()) {
+        // Phase M3 (valid/ready): classify the FIFO head warp by the
+        // generic resource-exhaustion accessor. Independent of any specific
+        // in-flight cmd; reflects whether MSHR/WB/pin is currently
+        // exhausted such that a head-of-FIFO load/store would stall.
+        if (first_fifo_entry) {
             CacheStallReason r = cache_->next_cmd_stall_reason();
             if (r == CacheStallReason::MSHR_FULL) {
                 state = WarpTraceState::AT_REST;

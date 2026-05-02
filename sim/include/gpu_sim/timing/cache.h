@@ -100,42 +100,42 @@ public:
             uint32_t write_buffer_depth, ExternalMemoryInterface& mem_if,
             LoadGatherBufferFile& gather_file, Stats& stats);
 
-    // Direct synchronous API. Used by tests and (until Phase M3 lands the
-    // production rewrite) called internally by L1Cache::evaluate to process
-    // the REGISTERED current_load_cmd_ / current_store_cmd_. Returns true
-    // when the request was accepted; tests rely on this bool. Production
-    // coalescing now goes through set_next_load_cmd / set_next_store_cmd
-    // gated by next_cmd_stall().
+    // Direct synchronous API. Used by tests and called internally by
+    // L1Cache::evaluate to process the REGISTERED current_load_cmd_ /
+    // current_store_cmd_. Returns true when the request was accepted; tests
+    // rely on this bool.
     bool process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
                       const std::array<uint32_t, WARP_SIZE>& results,
                       uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction);
     bool process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue_cycle,
                        uint32_t pc, uint32_t raw_instruction);
 
-    // Phase M3: REGISTERED command setters. Coalescing writes next_*_cmd_;
-    // commit() flips into current_*_cmd_; evaluate() processes the cmd and
-    // clears the valid bit. The bool return is gone — the cmd is guaranteed
-    // acceptable when received because next_cmd_stall() at submit time was
-    // false.
+    // Phase M3 (valid/ready): REGISTERED command setters. Coalescing writes
+    // next_*_cmd_; commit() flips into current_*_cmd_; evaluate() processes
+    // the cmd this cycle and unconditionally clears the slot (cache is
+    // memoryless — no retry state). Whether processing succeeded is exposed
+    // via next_cmd_ready(); on failure (port lost to FILL/secondary, MSHR
+    // full, pin/wb conflict) the cmd is dropped and coalescing must
+    // re-stage from its own retry state (current_entry_/serial_index_).
     void set_next_load_cmd(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
                            const std::array<uint32_t, WARP_SIZE>& results,
                            uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction);
     void set_next_store_cmd(uint32_t line_addr, uint32_t warp_id, uint64_t issue_cycle,
                             uint32_t pc, uint32_t raw_instruction);
 
-    // Phase M3: COMBINATIONAL backward stall signal. Coalescing reads this
-    // same-cycle (cache.evaluate runs before coalescing.evaluate in tick
-    // order) before deciding whether to submit a cmd. Conservative: returns
-    // true when ANY of the cmd-acceptance failure modes might fire at next
-    // cycle's cmd processing. Lost throughput is bounded; correctness is
-    // guaranteed.
-    bool next_cmd_stall() const;
-    // Companion accessor: which cmd-stall condition fires this cycle (for
-    // trace classification). Returns NONE when next_cmd_stall() is false.
-    // Order: MSHR_FULL > WRITE_BUFFER_FULL > LINE_PINNED > NONE
-    // (FILL/secondary port conflicts surface as NONE since they are not
-    // a structural stall the trace needs to report — the warp is just
-    // waiting on memory).
+    // Phase M3 (valid/ready): the consumer-side ready signal. True iff
+    // this cycle's cache.evaluate processed (and accepted) a cmd from the
+    // current_*_cmd_ slot. Tick order has cache.evaluate before
+    // coalescing.evaluate so the producer reads ready combinationally
+    // after cache has set it. The throughput guarantee "1 cmd/cycle when
+    // ready" is enforced by an assert in evaluate.
+    bool next_cmd_ready() const { return next_cmd_ready_; }
+
+    // Generic resource-exhaustion accessor for trace classification only.
+    // Returns the structural reason the LDST FIFO head warp is waiting on
+    // the cache (MSHR_FULL / WRITE_BUFFER_FULL / LINE_PINNED) regardless
+    // of any specific in-flight cmd. NONE when no resources are exhausted.
+    // Order: MSHR_FULL > WRITE_BUFFER_FULL > LINE_PINNED > NONE.
     CacheStallReason next_cmd_stall_reason() const;
 
     // Handle one pending memory response (MSHR fill) per cycle. Load fills
@@ -237,6 +237,11 @@ private:
     LoadCommand next_load_cmd_;
     StoreCommand current_store_cmd_;
     StoreCommand next_store_cmd_;
+    // Phase M3 (valid/ready): consumer-side ready signal. Reset to false
+    // at top of evaluate; set true by evaluate when a cmd from
+    // current_*_cmd_ was processed and accepted. Read combinationally by
+    // coalescing later in the same tick. COMBINATIONAL same-tick scratch.
+    bool next_cmd_ready_ = false;
 };
 
 } // namespace gpu_sim
