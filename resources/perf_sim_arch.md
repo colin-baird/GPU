@@ -335,16 +335,16 @@ Pipelined dual-port BRAM table lookup, 17-cycle latency (2 lanes/cycle, ceil(32/
 
 ### `include/gpu_sim/timing/ldst_unit.h` -- `src/timing/ldst_unit.cpp`
 
-Address generation unit with output FIFO. Phase 1 discipline: `busy_`, `cycles_remaining_`, and `pending_entry_` are next/current double-buffered; `commit()` flips `next_* -> current_*`. The address-generation FIFO is single-buffered (live `next_addr_gen_fifo_`) because `CoalescingUnit` pops it later in the same tick over a COMBINATIONAL edge — `commit()` simply leaves the deque untouched for the next tick. The FIFO accessors used by `CoalescingUnit` (`fifo_empty()`, `fifo_front()`, `fifo_pop()`, `fifo_entries()`) read/mutate that live deque so a fresh entry is visible in the same cycle it completes address generation.
+Address generation unit with output FIFO. Phase 1 discipline: `busy_`, `cycles_remaining_`, and `pending_entry_` are next/current double-buffered; `commit()` flips `next_* -> current_*`. Phase M1: the address-generation FIFO is REGISTERED. The single-deque `addr_gen_fifo_` is mutated only at commit phase — producer (`evaluate()`) stages a push in `next_push_` and applies it at `commit()`; consumer (`CoalescingUnit::commit()`) calls `pop_front()` to apply a pop staged at its own evaluate. Reads during evaluate see the stable cycle-start state. The accessors consumed by `CoalescingUnit` (`current_fifo_empty()`, `current_fifo_front()`, `pop_front()`, `current_fifo_entries()`, `current_fifo_size()`) all reflect this REGISTERED contract. The eligibility check in `evaluate()` uses the start-of-cycle FIFO size and intentionally does not account for the consumer's same-cycle commit-time pop — a one-cycle bubble in the FIFO-full case, parity with `fetch_stage.cpp`'s `will_be_full` check.
 
 - **Struct `AddrGenFIFOEntry`**: `valid`, `warp_id`, `dest_reg`, `is_load`, `is_store`, `trace`, `issue_cycle`.
 - **`LdStUnit(num_ldst_units, fifo_depth, stats_ref)`**
-- **`ready_out()`**: `const` accessor returning `!current_busy_`.
+- **`current_busy()`**: `const` accessor returning `current_busy_`.
 - **`accept()`**: Begins address generation. Latency = `ceil(32 / num_ldst_units)` cycles.
-- **`evaluate()`**: When address gen completes, pushes entry to FIFO. If the FIFO is full, the completed entry is held at 0 cycles remaining until space opens instead of underflowing and disappearing.
-- **`fifo_empty()`**, **`fifo_front()`**, **`fifo_pop()`**: Interface consumed by `CoalescingUnit`.
-- **`has_result()`**: Always false -- LD/ST results flow through cache/MSHR fill path, not through the execution unit result buffer.
-- **Snapshot helpers**: `busy()`, `cycles_remaining()`, `pending_entry()`, `fifo_entries()`.
+- **`evaluate()`**: When address gen completes, stages the entry in `next_push_` (applied at commit). If the FIFO is full at start of cycle, the completed entry is held at 0 cycles remaining until space opens instead of underflowing.
+- **`current_fifo_empty()`**, **`current_fifo_front()`**, **`pop_front()`**, **`current_fifo_size()`**: REGISTERED interface consumed by `CoalescingUnit`. `pop_front()` is invoked from `CoalescingUnit::commit()` to apply the deferred pop.
+- **`next_has_result()`**: Always false -- LD/ST results flow through cache/MSHR fill path, not through the execution unit result buffer.
+- **Snapshot helpers**: `busy()`, `current_cycles_remaining()`, `pending_entry()`, `current_fifo_entries()`.
 
 ### `include/gpu_sim/timing/writeback_arbiter.h` -- `src/timing/writeback_arbiter.cpp`
 

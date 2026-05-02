@@ -735,7 +735,7 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
     ldst.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     ldst.evaluate();
     ldst.commit();
-    REQUIRE_FALSE(ldst.next_fifo_empty());
+    REQUIRE_FALSE(ldst.current_fifo_empty());
     REQUIRE_FALSE(ldst.current_busy());
 
     ldst.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
@@ -743,10 +743,10 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
     ldst.commit();
     REQUIRE(ldst.current_busy());
 
-    ldst.fifo_pop();
+    ldst.pop_front();
     ldst.evaluate();
     ldst.commit();
-    REQUIRE_FALSE(ldst.next_fifo_empty());
+    REQUIRE_FALSE(ldst.current_fifo_empty());
     REQUIRE_FALSE(ldst.current_busy());
 }
 

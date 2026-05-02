@@ -191,18 +191,18 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
     for (uint32_t i = 0; i < WARP_SIZE; ++i) addrs[i] = 256 + i * 4;
     auto input = make_load_dispatch(0, 5, addrs);
     ldst.accept(input, 1);
-    for (int i = 0; i < 16 && ldst.next_fifo_empty(); ++i) {
+    for (int i = 0; i < 16 && ldst.current_fifo_empty(); ++i) {
         ldst.evaluate();
         ldst.commit();
     }
-    REQUIRE_FALSE(ldst.next_fifo_empty());
+    REQUIRE_FALSE(ldst.current_fifo_empty());
 
     coal.evaluate();
     coal.commit();
 
     REQUIRE(stats.gather_buffer_stall_cycles == 1);
     // FIFO entry must remain (not popped) because the buffer was busy.
-    REQUIRE_FALSE(ldst.next_fifo_empty());
+    REQUIRE_FALSE(ldst.current_fifo_empty());
     REQUIRE(stats.coalesced_requests == 0);
     REQUIRE(stats.serialized_requests == 0);
 }

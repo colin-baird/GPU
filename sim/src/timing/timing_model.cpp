@@ -281,7 +281,7 @@ bool TimingModel::pipeline_drained() const {
            !mul_->current_busy() && !mul_->next_has_result() &&
            !div_->current_busy() && !div_->next_has_result() &&
            !tlookup_->current_busy() && !tlookup_->next_has_result() &&
-           !ldst_->current_busy() && ldst_->next_fifo_empty() &&
+           !ldst_->current_busy() && ldst_->current_fifo_empty() &&
            coalescing_->is_idle() &&
            cache_->is_idle() &&
            mem_if_->is_idle() &&
@@ -294,7 +294,7 @@ bool TimingModel::execution_units_drained() const {
            !mul_->current_busy() && !mul_->next_has_result() &&
            !div_->current_busy() && !div_->next_has_result() &&
            !tlookup_->current_busy() && !tlookup_->next_has_result() &&
-           !ldst_->current_busy() && ldst_->next_fifo_empty() &&
+           !ldst_->current_busy() && ldst_->current_fifo_empty() &&
            !wb_arbiter_->current_busy();
 }
 
@@ -580,7 +580,7 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     snapshot.div_busy = div_->busy();
     snapshot.tlookup_busy = tlookup_->busy();
     snapshot.ldst_busy = ldst_->busy();
-    snapshot.ldst_fifo_depth = static_cast<uint32_t>(ldst_->next_fifo_entries().size());
+    snapshot.ldst_fifo_depth = ldst_->current_fifo_size();
     snapshot.active_mshrs = cache_->active_mshr_count();
     snapshot.secondary_mshrs = cache_->secondary_mshr_count();
     snapshot.pinned_lines = cache_->pinned_line_count();
@@ -686,7 +686,7 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
                  pending->is_load || pending->is_store ? pending->trace.mem_addresses[0] : 0);
     }
 
-    for (const auto& entry : ldst_->next_fifo_entries()) {
+    for (const auto& entry : ldst_->current_fifo_entries()) {
         set_warp(entry.warp_id, WarpTraceState::LDST_FIFO, WarpRestReason::NONE,
                  entry.trace.pc, entry.trace.decoded.raw, ExecUnit::LDST, entry.dest_reg,
                  entry.is_load || entry.is_store,

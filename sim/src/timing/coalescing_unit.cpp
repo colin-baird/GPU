@@ -20,8 +20,8 @@ void CoalescingUnit::evaluate() {
     if (cache_.next_stalled()) return;
 
     if (!processing_) {
-        if (ldst_.next_fifo_empty()) return;
-        const auto& fifo_front = ldst_.next_fifo_front();
+        if (ldst_.current_fifo_empty()) return;
+        const auto& fifo_front = ldst_.current_fifo_front();
 
         // For loads, the target warp's gather buffer must be free. If busy,
         // stall without popping — another load for this warp is outstanding.
@@ -31,7 +31,11 @@ void CoalescingUnit::evaluate() {
         }
 
         current_entry_ = fifo_front;
-        ldst_.fifo_pop();
+        // Phase M1: REGISTERED FIFO. Stage the pop intent; commit() will
+        // apply it via ldst_.pop_front(). Producer's commit only writes the
+        // back of the deque, so the front observed here is the same one
+        // pop_front() will remove next phase.
+        next_pop_ = true;
         processing_ = true;
 
         // All-or-nothing coalescing check: do all 32 addresses fall in one cache line?
@@ -117,7 +121,16 @@ void CoalescingUnit::evaluate() {
     }
 }
 
-void CoalescingUnit::commit() {}
+void CoalescingUnit::commit() {
+    // Phase M1: apply the staged FIFO pop. The defensive empty check below
+    // should never fire — between the evaluate that set next_pop_ and this
+    // commit, the only mutation to addr_gen_fifo_ is LdStUnit::commit()
+    // pushing to the back; the front is stable.
+    if (next_pop_ && !ldst_.current_fifo_empty()) {
+        ldst_.pop_front();
+    }
+    next_pop_ = false;
+}
 
 void CoalescingUnit::reset() {
     processing_ = false;

@@ -43,7 +43,7 @@ DispatchInput make_load_dispatch(uint32_t warp_id, uint8_t dest_reg,
 
 // Bring the ldst unit to the state where its FIFO has a pending entry.
 void settle_ldst(LdStUnit& ldst) {
-    for (int i = 0; i < 16 && ldst.next_fifo_empty(); ++i) {
+    for (int i = 0; i < 16 && ldst.current_fifo_empty(); ++i) {
         ldst.evaluate();
         ldst.commit();
     }
@@ -71,7 +71,7 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     auto input = make_load_dispatch(0, 5, addrs);
     f.ldst.accept(input, 1);
     settle_ldst(f.ldst);
-    REQUIRE_FALSE(f.ldst.next_fifo_empty());
+    REQUIRE_FALSE(f.ldst.current_fifo_empty());
 
     // One coalescing step should pop the FIFO, claim the gather buffer, and
     // issue a single cache load request for the whole warp.
@@ -110,7 +110,7 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
     auto input = make_load_dispatch(0, 6, addrs);
     f.ldst.accept(input, 1);
     settle_ldst(f.ldst);
-    REQUIRE_FALSE(f.ldst.next_fifo_empty());
+    REQUIRE_FALSE(f.ldst.current_fifo_empty());
 
     // First step: pop FIFO, claim buffer, issue lane-0 request.
     f.coal.evaluate();
@@ -121,10 +121,12 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
 
     // Drive the remaining 31 serialized requests through. Each cycle the
     // coalescing unit issues one more lane; memory ticks in lockstep.
+    // M1: coal.commit() applies the deferred FIFO pop staged at evaluate.
     for (uint32_t step = 0; step < 64 && !f.coal.is_idle(); ++step) {
         f.coal.evaluate();
         f.cache.handle_responses();
         f.mem_if.evaluate();
+        f.coal.commit();
         f.gather_file.commit();
     }
 
@@ -201,11 +203,12 @@ TEST_CASE("Coalescing: store serialization walks 32 lanes without gather buffer 
     // starts idle.
     for (uint32_t step = 0;
          step < 256 &&
-         (!f.coal.is_idle() || !f.ldst.next_fifo_empty() || !f.cache.is_idle());
+         (!f.coal.is_idle() || !f.ldst.current_fifo_empty() || !f.cache.is_idle());
          ++step) {
         f.coal.evaluate();
         f.cache.evaluate();
         f.mem_if.evaluate();
+        f.coal.commit();
         f.gather_file.commit();
     }
 

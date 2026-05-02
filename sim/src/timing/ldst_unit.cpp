@@ -30,10 +30,14 @@ void LdStUnit::evaluate() {
             next_cycles_remaining_--;
         }
         if (next_cycles_remaining_ == 0) {
-            // Try to push to FIFO. The FIFO write is observable to the
-            // coalescing unit's same-tick evaluate (COMBINATIONAL edge).
-            if (next_addr_gen_fifo_.size() < fifo_depth_) {
-                next_addr_gen_fifo_.push_back(next_pending_entry_);
+            // Phase M1: REGISTERED FIFO. The push is staged in next_push_
+            // and applied at commit(). Eligibility check uses the stable
+            // current-cycle FIFO size; this mirrors fetch_stage.cpp's
+            // will_be_full check that does not account for the consumer's
+            // same-cycle pop. A one-cycle bubble when the FIFO is full and
+            // coalescing pops same-tick is the documented parity.
+            if (addr_gen_fifo_.size() < fifo_depth_) {
+                next_push_ = next_pending_entry_;
                 next_pending_entry_.valid = false;
                 next_busy_ = false;
             }
@@ -46,8 +50,14 @@ void LdStUnit::commit() {
     current_busy_ = next_busy_;
     current_cycles_remaining_ = next_cycles_remaining_;
     current_pending_entry_ = next_pending_entry_;
-    // next_addr_gen_fifo_ is the live FIFO read combinationally by
-    // CoalescingUnit; nothing to copy.
+    // Phase M1: apply the staged push. Coalescing's commit (which runs
+    // after this in TimingModel::tick()) calls pop_front() — push touches
+    // the back, pop touches the front, so order between the two commits
+    // is irrelevant for correctness.
+    if (next_push_) {
+        addr_gen_fifo_.push_back(*next_push_);
+        next_push_.reset();
+    }
 }
 
 void LdStUnit::reset() {
@@ -57,7 +67,8 @@ void LdStUnit::reset() {
     next_cycles_remaining_ = 0;
     current_pending_entry_.valid = false;
     next_pending_entry_.valid = false;
-    next_addr_gen_fifo_.clear();
+    addr_gen_fifo_.clear();
+    next_push_.reset();
 }
 
 bool LdStUnit::next_has_result() const {

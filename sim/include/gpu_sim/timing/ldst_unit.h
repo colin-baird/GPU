@@ -4,6 +4,7 @@
 #include "gpu_sim/timing/operand_collector.h"
 #include "gpu_sim/stats.h"
 #include <deque>
+#include <optional>
 
 namespace gpu_sim {
 
@@ -31,13 +32,18 @@ public:
 
     void accept(const DispatchInput& input, uint64_t cycle);
 
-    // Coalescing/cache interface pulls entries from the FIFO same-tick after
-    // LdStUnit::evaluate -- COMBINATIONAL edge. These accessors expose the
-    // live (next_*) FIFO so a freshly-pushed entry is visible to coalescing
-    // in the same tick (preserving zero cycle delta with pre-Phase-1 code).
-    bool next_fifo_empty() const { return next_addr_gen_fifo_.empty(); }
-    const AddrGenFIFOEntry& next_fifo_front() const { return next_addr_gen_fifo_.front(); }
-    void fifo_pop() { next_addr_gen_fifo_.pop_front(); }
+    // Phase M1 discipline: the address-gen FIFO is REGISTERED. evaluate()
+    // does not push directly; it stages an entry in next_push_ and commit()
+    // applies it. coalescing reads current_fifo_* (the stable single-field
+    // state) during its evaluate and stages a pop in its own next-side flag,
+    // applied at coalescing.commit() via pop_front(). End-of-cycle state is
+    // identical to the pre-M1 mid-evaluate model. This matches the structural
+    // pattern in fetch_stage.cpp where fetch's `will_be_full` check does not
+    // account for scheduler's same-cycle pop of `instr_buffer`; an FIFO-full
+    // bubble of one cycle is parity with that pattern.
+    bool current_fifo_empty() const { return addr_gen_fifo_.empty(); }
+    const AddrGenFIFOEntry& current_fifo_front() const { return addr_gen_fifo_.front(); }
+    void pop_front() { addr_gen_fifo_.pop_front(); }
     bool busy() const { return current_busy_; }
     uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
     std::optional<uint32_t> active_warp() const {
@@ -47,9 +53,12 @@ public:
     const AddrGenFIFOEntry* pending_entry() const {
         return current_pending_entry_.valid ? &current_pending_entry_ : nullptr;
     }
-    // Live FIFO view for coalescing-related trace dumps. Reads next_* so the
-    // entry just pushed by this tick's evaluate is visible alongside the rest.
-    const std::deque<AddrGenFIFOEntry>& next_fifo_entries() const { return next_addr_gen_fifo_; }
+    // FIFO view for trace dumps. Reads the stable REGISTERED deque (same
+    // state observed by coalescing during evaluate this cycle).
+    const std::deque<AddrGenFIFOEntry>& current_fifo_entries() const { return addr_gen_fifo_; }
+    // Size accessor for upstream issue-gate bookkeeping (consumed by the
+    // pipeline plan's Phase 10B.0 LDST FIFO accounting).
+    uint32_t current_fifo_size() const { return static_cast<uint32_t>(addr_gen_fifo_.size()); }
 
 private:
     uint32_t num_ldst_units_;
@@ -63,11 +72,12 @@ private:
     uint32_t next_cycles_remaining_ = 0;
     AddrGenFIFOEntry current_pending_entry_;
     AddrGenFIFOEntry next_pending_entry_;
-    // The address-generation FIFO is read by CoalescingUnit later in the same
-    // tick (COMBINATIONAL edge), so accessors expose the live next_* deque and
-    // there is no current_* mirror — commit() simply leaves next_addr_gen_fifo_
-    // unchanged for the following tick.
-    std::deque<AddrGenFIFOEntry> next_addr_gen_fifo_;
+    // Phase M1: REGISTERED address-gen FIFO. Mutated only at commit phase
+    // — producer (this unit) writes next_push_ at evaluate; consumer
+    // (coalescing) drives pop_front() from its own commit. Reads during
+    // evaluate see the start-of-cycle state.
+    std::deque<AddrGenFIFOEntry> addr_gen_fifo_;
+    std::optional<AddrGenFIFOEntry> next_push_;
 };
 
 } // namespace gpu_sim

@@ -42,6 +42,13 @@ private:
     AddrGenFIFOEntry current_entry_;
     bool is_coalesced_ = false;
     uint32_t serial_index_ = 0;  // For serialized requests
+
+    // Phase M1: pop intent staged here at evaluate; applied at commit by
+    // calling ldst_.pop_front(). Producer (LdStUnit) only writes the back
+    // of the deque at its own commit, so the front this consumer reads at
+    // commit is identical to the front it observed at evaluate — the
+    // `current_fifo_empty()` defensive check below should never fire.
+    bool next_pop_ = false;
 };
 
 } // namespace gpu_sim
