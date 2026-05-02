@@ -77,12 +77,15 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     // issue a single cache load request for the whole warp.
     f.coal.evaluate();
     f.coal.commit();
+    // Phase M2: gather_file.claim is REGISTERED — apply via commit + evaluate
+    // before checking current_busy.
+    f.gather_file.commit();
+    f.gather_file.evaluate();
     REQUIRE(f.stats.coalesced_requests == 1);
     REQUIRE(f.stats.serialized_requests == 0);
     REQUIRE(f.stats.load_misses == 1);
     REQUIRE(f.cache.active_mshr_count() == 1);
     REQUIRE(f.gather_file.current_busy(0));
-    f.gather_file.commit();
 
     // Wait for the fill to complete and land in the gather buffer.
     for (uint32_t i = 0; i < MEM_LATENCY; ++i) {
@@ -114,10 +117,13 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
 
     // First step: pop FIFO, claim buffer, issue lane-0 request.
     f.coal.evaluate();
+    f.coal.commit();
+    // Phase M2: apply REGISTERED claim.
+    f.gather_file.commit();
+    f.gather_file.evaluate();
     REQUIRE(f.stats.serialized_requests == 1);
     REQUIRE(f.stats.coalesced_requests == 0);
     REQUIRE(f.gather_file.current_busy(0));
-    f.gather_file.commit();
 
     // Drive the remaining 31 serialized requests through. Each cycle the
     // coalescing unit issues one more lane; memory ticks in lockstep.

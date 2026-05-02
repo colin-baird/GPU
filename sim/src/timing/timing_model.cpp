@@ -347,6 +347,11 @@ bool TimingModel::tick() {
     }
 
     if (panic_->is_active()) {
+        // Phase M2: apply any deferred claim before cache evaluates so that
+        // FILL/secondary writes deposited this cycle observe the freshly-
+        // applied claim metadata. In the panic path this is a no-op when
+        // the prior cycle's coalescing flushed.
+        gather_file_->evaluate();
         cache_->evaluate();
         // Phase 6: PanicController queries the wired drained_query_
         // callable inside evaluate() rather than via a pre-evaluate
@@ -407,6 +412,12 @@ bool TimingModel::tick() {
         pending_panic_flush_ = true;
         panic_triggered_this_tick = true;
     }
+
+    // Phase M2: apply deferred claim from prior cycle before cache evaluates.
+    // gather_file.evaluate() consumes current_claim_request_ (latched at
+    // last cycle's commit), setting buf.busy and metadata so that any
+    // same-cycle FILL/secondary write into this buffer sees correct state.
+    gather_file_->evaluate();
 
     cache_->evaluate();
 

@@ -42,9 +42,13 @@ struct MergeFixture {
         gather_file.commit();
     }
 
+    // Phase M2: claim is REGISTERED. Drive commit + evaluate so the
+    // claim is visible to subsequent operations in the same test step.
     void claim(uint32_t warp_id, uint8_t dest_reg = 1) {
         gather_file.claim(warp_id, dest_reg, /*pc=*/0, /*issue_cycle=*/0,
                           /*raw_instruction=*/0);
+        gather_file.commit();
+        gather_file.evaluate();
     }
 };
 
@@ -723,6 +727,12 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
     // rejected this cycle.
     auto drains_before = f.stats.secondary_drain_cycles;
     auto hits_before = f.stats.load_hits;
+    // Phase M2: pre-claim warp 0's buffer for the upcoming HIT before
+    // cache.evaluate runs. The helper's commit + evaluate would otherwise
+    // clear the cache's port-claim flag mid-cycle, masking the arbitration
+    // we want to observe. Pre-claiming sets buf[0].busy ahead of the
+    // secondary drain so the HIT's process_load is what tests the port.
+    f.claim(/*warp=*/0, /*dest_reg=*/7);
     f.cache.evaluate();
     // The drain took the port this cycle.
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
@@ -734,7 +744,6 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
     // a hit. But the cache gather-extract port is already used by the
     // secondary drain, so process_load must return false and NOT bump
     // load_hits.
-    f.claim(/*warp=*/0, /*dest_reg=*/7);
     auto r_hit2 = make_results(9000);
     bool hit_accepted = f.cache.process_load(LINE_SIZE, /*warp=*/0, FULL_MASK,
                                              r_hit2, /*issue_cycle=*/99, 0, 0);

@@ -12,16 +12,20 @@ bool LoadGatherBufferFile::current_busy(uint32_t warp_id) const {
 
 void LoadGatherBufferFile::claim(uint32_t warp_id, uint8_t dest_reg, uint32_t pc,
                                  uint64_t issue_cycle, uint32_t raw_instruction) {
-    auto& buf = buffers_[warp_id];
-    assert(!buf.busy && "claim() on a busy gather buffer");
-    buf.busy = true;
-    buf.dest_reg = dest_reg;
-    buf.values = {};
-    buf.slot_valid.fill(false);
-    buf.filled_count = 0;
-    buf.pc = pc;
-    buf.issue_cycle = issue_cycle;
-    buf.raw_instruction = raw_instruction;
+    // Phase M2: REGISTERED claim. Writes only into next_claim_request_;
+    // gather_file_.evaluate() at the next tick reads current_claim_request_
+    // (after commit flips next -> current) and applies the metadata + busy
+    // mutation. Coalescing's per-warp gate (current_busy(warp)) rejects
+    // double claims because a stale buf.busy=false read at cycle N+1 cannot
+    // race with an unapplied claim — gather_file.evaluate runs before
+    // coalescing.evaluate in the tick sweep.
+    assert(!next_claim_request_.valid && "claim() with a pending claim slot");
+    next_claim_request_.valid = true;
+    next_claim_request_.warp_id = warp_id;
+    next_claim_request_.dest_reg = dest_reg;
+    next_claim_request_.pc = pc;
+    next_claim_request_.issue_cycle = issue_cycle;
+    next_claim_request_.raw_instruction = raw_instruction;
     // Phase 7: claim() does NOT touch the shared port-claim flag —
     // arbitration is owned at the LoadGatherBufferFile level (single
     // physical extraction port per spec §5.3). A fresh claim does not
@@ -68,12 +72,32 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
 }
 
 void LoadGatherBufferFile::evaluate() {
-    // Work is driven by cache calls into try_write(); nothing to do here.
+    // Phase M2: apply a deferred claim if one is pending. The claim mutation
+    // sets only metadata + busy; consume_result() handles cleanup of
+    // slot_valid/filled_count between consecutive uses, so values[] from a
+    // prior use are correctly masked by slot_valid=false until try_write
+    // overwrites them. Same-cycle write ordering: this evaluate runs before
+    // cache.evaluate() in tick(), so any FILL/secondary write deposited
+    // this cycle observes the freshly-applied claim metadata.
+    if (current_claim_request_.valid) {
+        auto& buf = buffers_[current_claim_request_.warp_id];
+        assert(!buf.busy && "deferred claim landing on a busy gather buffer");
+        buf.busy = true;
+        buf.dest_reg = current_claim_request_.dest_reg;
+        buf.pc = current_claim_request_.pc;
+        buf.issue_cycle = current_claim_request_.issue_cycle;
+        buf.raw_instruction = current_claim_request_.raw_instruction;
+        current_claim_request_.valid = false;
+    }
 }
 
 void LoadGatherBufferFile::commit() {
     // Clear the port-claim flag so the next tick starts with the port free.
     next_port_claimed_ = false;
+    // Phase M2: flip the REGISTERED claim-request slot. evaluate() at the
+    // top of the next tick consumes current_claim_request_.
+    current_claim_request_ = next_claim_request_;
+    next_claim_request_ = GatherClaimRequest{};
 }
 
 void LoadGatherBufferFile::reset() {
@@ -82,6 +106,8 @@ void LoadGatherBufferFile::reset() {
     }
     rr_pointer_ = 0;
     next_port_claimed_ = false;
+    current_claim_request_ = GatherClaimRequest{};
+    next_claim_request_ = GatherClaimRequest{};
 }
 
 void LoadGatherBufferFile::flush() {

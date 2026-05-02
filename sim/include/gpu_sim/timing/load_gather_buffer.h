@@ -23,6 +23,18 @@ struct LoadGatherBuffer {
     uint32_t raw_instruction = 0;
 };
 
+// Phase M2: REGISTERED claim-request slot. Coalescing's claim() writes
+// next_claim_request_; gather_file_.evaluate() consumes current_claim_request_
+// at the top of the next tick and applies the metadata + busy mutation.
+struct GatherClaimRequest {
+    bool valid = false;
+    uint32_t warp_id = 0;
+    uint8_t dest_reg = 0;
+    uint32_t pc = 0;
+    uint64_t issue_cycle = 0;
+    uint32_t raw_instruction = 0;
+};
+
 // One gather buffer per resident warp, registered with the writeback arbiter
 // as an ExecutionUnit source so its full-32-lane writebacks arbitrate alongside
 // ALU/MUL/DIV/TLOOKUP results.
@@ -34,6 +46,12 @@ public:
 
     bool current_busy(uint32_t warp_id) const;
 
+    // Phase M2: stages a REGISTERED claim into next_claim_request_. The
+    // buffer's busy flag and metadata are applied at the next tick by
+    // evaluate() reading current_claim_request_. Coalescing's per-warp
+    // claim/use protocol guarantees at most one claim per cycle (it
+    // processes one FIFO entry at a time), so a single-slot request is
+    // sufficient.
     void claim(uint32_t warp_id, uint8_t dest_reg, uint32_t pc,
                uint64_t issue_cycle, uint32_t raw_instruction);
 
@@ -45,6 +63,10 @@ public:
                    GatherWriteSource source);
 
     // ExecutionUnit interface
+    // Phase M2: evaluate() now applies a deferred claim from
+    // current_claim_request_ if valid. Tick scheduling places this evaluate
+    // before cache.evaluate() so that any same-cycle FILL or HIT write
+    // observes the freshly-applied claim metadata (busy, dest_reg, etc.).
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -77,6 +99,11 @@ private:
     // bail. commit() clears the flag at end-of-cycle so the next tick starts
     // unclaimed.
     bool next_port_claimed_ = false;
+
+    // Phase M2: REGISTERED claim-request slot. claim() writes next_; commit()
+    // flips into current_; evaluate() consumes current_ at top of next tick.
+    GatherClaimRequest current_claim_request_;
+    GatherClaimRequest next_claim_request_;
 };
 
 } // namespace gpu_sim

@@ -429,6 +429,9 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     constexpr uint32_t kHitAddr = kHitLine * 128;
     std::array<uint32_t, WARP_SIZE> dummy_results{};
     gather_file.claim(/*warp_id=*/0, /*dest_reg=*/1, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim before cache request.
+    gather_file.commit();
+    gather_file.evaluate();
     REQUIRE(cache.process_load(kHitAddr, 0, 0xFFFFFFFFu, dummy_results,
                                /*issue_cycle=*/1, 0, 0));
     cache.commit();

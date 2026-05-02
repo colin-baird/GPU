@@ -56,6 +56,9 @@ TEST_CASE("LoadGatherBuffer: coalesced write fills all 32 slots in one cycle",
     LoadGatherBufferFile file(NUM_WARPS, stats);
 
     file.claim(0, /*dest_reg=*/7, /*pc=*/0, /*issue_cycle=*/0, /*raw=*/0);
+    // Phase M2: claim is REGISTERED. Drive commit + evaluate to apply.
+    file.commit();
+    file.evaluate();
     REQUIRE(file.current_busy(0));
     REQUIRE(file.buffer(0).filled_count == 0);
 
@@ -79,6 +82,9 @@ TEST_CASE("LoadGatherBuffer: partial write populates only selected slots",
     Stats stats;
     LoadGatherBufferFile file(NUM_WARPS, stats);
     file.claim(0, 1, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim before exercising try_write.
+    file.commit();
+    file.evaluate();
 
     // Mask with 8 set bits (lanes 0, 4, 7, 12, 17, 20, 25, 31).
     const uint32_t mask = (1u << 0) | (1u << 4) | (1u << 7) | (1u << 12) |
@@ -117,6 +123,9 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // warp so we don't perturb warp 0's gather buffer.
     auto results = make_values(0);
     gather_file.claim(/*warp_id=*/1, 3, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim before driving the cache request.
+    gather_file.commit();
+    gather_file.evaluate();
     REQUIRE(cache.process_load(0, 1, FULL_MASK, results, 1, 0, 0));
     for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
     cache.handle_responses();
@@ -127,6 +136,9 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // Now issue a serialized load on warp 0: lane 0 hits line 0, lanes 1..31
     // miss into distinct lines.
     gather_file.claim(/*warp_id=*/0, /*dest_reg=*/9, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim.
+    gather_file.commit();
+    gather_file.evaluate();
     auto values = make_values(500);
 
     // Lane 0 — hit.
@@ -185,6 +197,9 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
 
     // Mark warp 0's gather buffer busy without issuing a load.
     gather_file.claim(0, 1, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim.
+    gather_file.commit();
+    gather_file.evaluate();
     REQUIRE(gather_file.current_busy(0));
 
     std::array<uint32_t, WARP_SIZE> addrs;
@@ -213,6 +228,9 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
     LoadGatherBufferFile file(NUM_WARPS, stats);
 
     file.claim(2, 11, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim.
+    file.commit();
+    file.evaluate();
     auto values = make_values(1);
     REQUIRE(file.try_write(2, FULL_MASK, values,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
@@ -231,6 +249,9 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
 
     // Re-claim must succeed (no assert, buffer clean).
     file.claim(2, 13, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim.
+    file.commit();
+    file.evaluate();
     REQUIRE(file.current_busy(2));
 }
 
@@ -244,8 +265,15 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
     // cycle). Two buffers completing therefore requires two cycles of
     // try_write with a commit between them. rr_pointer_ starts at 0, so
     // consume_result() should return warp 1 first, then warp 3.
+    // Phase M2: each REGISTERED claim takes a commit + evaluate to apply.
+    // The single-slot claim_request can hold only one pending claim at a
+    // time, so we drive the cycle boundary between consecutive claims.
     file.claim(1, 5, 0, 0, 0);
+    file.commit();
+    file.evaluate();
     file.claim(3, 7, 0, 0, 0);
+    file.commit();
+    file.evaluate();
     auto v1 = make_values(100);
     auto v3 = make_values(200);
     REQUIRE(file.try_write(1, FULL_MASK, v1,
@@ -270,8 +298,13 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
     // Next completed buffer after warp 3 should wrap back and prefer the
     // lowest index first: complete warp 0 and warp 2 simultaneously. After
     // the previous emission rr_pointer_ is (3 + 1) % 4 = 0, so warp 0 wins.
+    // Phase M2: drive cycle boundary between consecutive claims.
     file.claim(0, 9, 0, 0, 0);
+    file.commit();
+    file.evaluate();
     file.claim(2, 11, 0, 0, 0);
+    file.commit();
+    file.evaluate();
     auto v0 = make_values(300);
     auto v2 = make_values(400);
     REQUIRE(file.try_write(0, FULL_MASK, v0,
@@ -296,6 +329,9 @@ TEST_CASE("LoadGatherBuffer: FILL wins port over same-cycle HIT", "[gather_buffe
     Stats stats;
     LoadGatherBufferFile file(NUM_WARPS, stats);
     file.claim(0, 3, 0, 0, 0);
+    // Phase M2: apply REGISTERED claim.
+    file.commit();
+    file.evaluate();
 
     // FILL runs first (cache.cpp schedules handle_responses before hit-path
     // writes), so the port is consumed by the FILL. A same-cycle HIT must

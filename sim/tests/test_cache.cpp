@@ -40,9 +40,15 @@ struct CacheFixture {
 
     // Claim the gather buffer for a load on behalf of `warp_id`. The
     // coalescing unit normally does this before the first cache access.
+    // Phase M2: the claim is REGISTERED. To keep test ergonomics close to
+    // pre-M2 (claim takes effect by the time this helper returns), drive
+    // the commit + evaluate phases that move the staged request from
+    // next_ → current_ and apply the buffer mutation in-place.
     void claim(uint32_t warp_id, uint8_t dest_reg = 1) {
         gather_file.claim(warp_id, dest_reg, /*pc=*/0, /*issue_cycle=*/0,
                           /*raw_instruction=*/0);
+        gather_file.commit();
+        gather_file.evaluate();
     }
 };
 

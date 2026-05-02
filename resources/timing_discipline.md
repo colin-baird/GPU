@@ -545,6 +545,25 @@ The full refactor plan lives in
   Workload benchmark cycle counts byte-identical to the pre-refactor
   baseline at every phase boundary. See
   `/project-plans/naming-and-access-discipline.md`.
+- **Phase M2** (landed): Coalescing.claim → LoadGatherBufferFile converted
+  to REGISTERED. The synchronous `claim()` mutation that set buf.busy and
+  metadata mid-evaluate is replaced with a single-slot `next_claim_request_`
+  staged at claim() time. `commit()` flips `next_claim_request_` →
+  `current_claim_request_`. `gather_file.evaluate()` (now scheduled at the
+  top of every tick, before `cache.evaluate`) consumes
+  `current_claim_request_` and applies the buffer mutation. Same-cycle
+  ordering: gather_file.evaluate runs before cache.evaluate so any FILL or
+  secondary write deposited via `try_write` observes the freshly-applied
+  claim metadata. The slot is single (production has at most one claim per
+  cycle: coalescing processes one FIFO entry at a time and only loads
+  claim). Tests that drive multiple claims per cycle (round-robin, etc.)
+  insert a commit + evaluate between consecutive claims to model the cycle
+  boundary; the cache fixture helpers compress claim+commit+evaluate into
+  one helper call. Cycle deltas vs `4034f8a` (post-M1) baseline:
+  matmul +3370 (+2.3%), gemv -87 (-1.5%), fused_linear_activation -6
+  (-0.2%), softmax_row -6 (-0.3%), embedding_gather 0 (+0.0%),
+  layernorm_lite -110 (-1.3%). Inventory rows: 9. See
+  `/project-plans/phase-10-memory-discipline.md`.
 - **Phase M1** (landed): LdSt addr-gen FIFO → coalescing converted to
   REGISTERED. The single-deque `addr_gen_fifo_` is now mutated only at
   commit phase: producer (`LdStUnit::evaluate`) stages a push in
