@@ -74,6 +74,10 @@ TEST_CASE("Cache: coalesced load hit populates all 32 gather slots", "[cache]") 
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase M4: has_result is REGISTERED; the just-completed FILL staged
+    // next_has_result_, but a commit is required to latch it into
+    // current_has_result_ where the arbiter (and tests) observe it.
+    f.gather_file.commit();
     // Fill should have populated all 32 slots via the gather buffer.
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb = f.gather_file.consume_result();
@@ -89,6 +93,8 @@ TEST_CASE("Cache: coalesced load hit populates all 32 gather slots", "[cache]") 
     auto results2 = make_results(5000);
     REQUIRE(f.cache.process_load(256, 0, FULL_MASK, results2, 2, 0, 0));
     REQUIRE(f.stats.load_hits == 1);
+    // Phase M4: latch the staged has_result via commit before observing.
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // all 32 slots filled in one cycle
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
     WritebackEntry wb2 = f.gather_file.consume_result();
@@ -111,6 +117,8 @@ TEST_CASE("Cache: load miss allocates single MSHR and fill lands in gather buffe
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase M4: latch staged has_result via commit before observing.
+    f.gather_file.commit();
 
     // Fill releases the MSHR and deposits the full line into the gather buffer.
     REQUIRE(f.cache.active_mshr_count() == 0);
@@ -201,9 +209,11 @@ TEST_CASE("Cache: MSHR stall clears once a fill completes", "[cache]") {
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    f.gather_file.commit();  // Phase M4: latch staged has_result
     // Drain the writeback so the buffer is free.
     while (f.gather_file.next_has_result()) {
         (void)f.gather_file.consume_result();
+        f.gather_file.commit();  // re-latch after each consume
     }
     f.end_cycle();
 

@@ -545,6 +545,24 @@ The full refactor plan lives in
   Workload benchmark cycle counts byte-identical to the pre-refactor
   baseline at every phase boundary. See
   `/project-plans/naming-and-access-discipline.md`.
+- **Phase M4** (landed): Gather → WritebackArbiter result-ready converted to
+  REGISTERED. Added `current_has_result_` and `next_has_result_` flags on
+  `LoadGatherBufferFile`. `try_write` sets `next_has_result_ = true` when a
+  write completes a buffer (busy && filled_count == WARP_SIZE); `commit()`
+  recomputes both flags from the current buffer state (handles consume's
+  release path automatically). The base `next_has_result()` virtual now
+  returns `current_has_result_` (REGISTERED contract); a canonical
+  `current_has_result()` accessor exposes the same value with the correct
+  name. Tests that exercise the gather buffer directly insert `commit()`
+  calls between try_write and the has_result check, and between
+  consume_result and the next has_result check, to model the cycle boundary.
+  Cycle deltas vs `3edab1f` (post-M3) baseline: matmul +3315 (+2.3%),
+  gemv +110 (+1.8%), fused_linear_activation -27 (-1.0%), softmax_row +58
+  (+2.5%), embedding_gather -132 (-0.3%), layernorm_lite -1110 (-10.9%).
+  Note: layernorm improves substantially because the registered has_result
+  flag absorbs same-cycle FILL+consume churn that previously fired writebacks
+  every cycle. Inventory rows: 18 (now compliant). See
+  `/project-plans/phase-10-memory-discipline.md`.
 - **Phase M3** (landed): Coalescing → Cache process_load/store converted to
   REGISTERED forward command path + COMBINATIONAL backward stall. Coalescing
   writes `next_load_cmd_` / `next_store_cmd_` via `set_next_load_cmd` /

@@ -68,6 +68,13 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
     }
     buf.filled_count += newly_valid;
     next_port_claimed_ = true;
+    // Phase M4: stage the REGISTERED has-result flag. If this write
+    // completed a buffer (busy && filled_count == WARP_SIZE), the buffer
+    // is ready for writeback; the arbiter will see it via
+    // current_has_result() at the next cycle (commit flips next_ → current_).
+    if (buf.busy && buf.filled_count == WARP_SIZE) {
+        next_has_result_ = true;
+    }
     return true;
 }
 
@@ -98,6 +105,21 @@ void LoadGatherBufferFile::commit() {
     // top of the next tick consumes current_claim_request_.
     current_claim_request_ = next_claim_request_;
     next_claim_request_ = GatherClaimRequest{};
+    // Phase M4: flip the REGISTERED has-result flag. Recompute next_ from
+    // the current buffer state — try_write may have just produced a fresh
+    // full-buffer this cycle (next_has_result_ already true), or
+    // consume_result may have just released a buffer (next_has_result_
+    // could still be true if another buffer is full). Scanning is O(num_warps),
+    // bounded.
+    bool any_full = false;
+    for (const auto& buf : buffers_) {
+        if (buf.busy && buf.filled_count == WARP_SIZE) {
+            any_full = true;
+            break;
+        }
+    }
+    current_has_result_ = any_full;
+    next_has_result_ = any_full;
 }
 
 void LoadGatherBufferFile::reset() {
@@ -108,6 +130,8 @@ void LoadGatherBufferFile::reset() {
     next_port_claimed_ = false;
     current_claim_request_ = GatherClaimRequest{};
     next_claim_request_ = GatherClaimRequest{};
+    current_has_result_ = false;
+    next_has_result_ = false;
 }
 
 void LoadGatherBufferFile::flush() {
@@ -115,12 +139,10 @@ void LoadGatherBufferFile::flush() {
 }
 
 bool LoadGatherBufferFile::next_has_result() const {
-    for (const auto& buf : buffers_) {
-        if (buf.busy && buf.filled_count == WARP_SIZE) {
-            return true;
-        }
-    }
-    return false;
+    // Phase M4: REGISTERED — return committed flag. The base interface name
+    // is preserved for compatibility with other ExecutionUnit overrides;
+    // see current_has_result() for the canonical name.
+    return current_has_result_;
 }
 
 WritebackEntry LoadGatherBufferFile::consume_result() {

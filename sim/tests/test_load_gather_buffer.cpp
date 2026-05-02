@@ -67,6 +67,8 @@ TEST_CASE("LoadGatherBuffer: coalesced write fills all 32 slots in one cycle",
                            LoadGatherBufferFile::GatherWriteSource::FILL));
 
     REQUIRE(file.buffer(0).filled_count == WARP_SIZE);
+    // Phase M4: latch staged has_result via commit before observing.
+    file.commit();
     REQUIRE(file.next_has_result());
 
     WritebackEntry wb = file.consume_result();
@@ -234,6 +236,8 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
     auto values = make_values(1);
     REQUIRE(file.try_write(2, FULL_MASK, values,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
+    // Phase M4: latch staged has_result via commit before observing.
+    file.commit();
     REQUIRE(file.next_has_result());
 
     WritebackEntry wb = file.consume_result();
@@ -287,11 +291,14 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
     WritebackEntry first = file.consume_result();
     REQUIRE(first.warp_id == 1);
     REQUIRE(first.dest_reg == 5);
+    // Phase M4: recompute REGISTERED has_result via commit between consumes.
+    file.commit();
 
     REQUIRE(file.next_has_result());
     WritebackEntry second = file.consume_result();
     REQUIRE(second.warp_id == 3);
     REQUIRE(second.dest_reg == 7);
+    file.commit();
 
     REQUIRE_FALSE(file.next_has_result());
 

@@ -74,7 +74,17 @@ public:
     // Panic flush hook. Called at the commit-phase boundary when the panic
     // signal becomes active. Delegates to reset().
     void flush();
+    // Phase M4: REGISTERED has-result. The base interface keeps the
+    // `next_has_result()` name for compatibility with other ExecutionUnit
+    // overrides that are still mid-evaluate live reads (ALU/MUL/DIV/TLOOKUP).
+    // For the gather buffer, the implementation returns
+    // `current_has_result_` (latched at commit when filled_count reaches
+    // WARP_SIZE for any buffer); the writeback arbiter and timing-model
+    // drain checks therefore see committed state for this source.
     bool next_has_result() const override;
+    // Canonical accessor name for the REGISTERED contract. Returns the same
+    // value as next_has_result(); preferred at new call sites.
+    bool current_has_result() const { return current_has_result_; }
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
     // LoadGatherBufferFile is a writeback source (consumed by the writeback
@@ -104,6 +114,15 @@ private:
     // flips into current_; evaluate() consumes current_ at top of next tick.
     GatherClaimRequest current_claim_request_;
     GatherClaimRequest next_claim_request_;
+
+    // Phase M4: REGISTERED has-result flag. try_write recomputes the staged
+    // value (true iff any buffer has busy && filled_count==WARP_SIZE);
+    // commit() flips next_has_result_ → current_has_result_; the writeback
+    // arbiter reads current_has_result_ via next_has_result() (base interface
+    // name preserved). consume_result() releases the buffer directly; the
+    // next try_write or commit recomputes the flag.
+    bool current_has_result_ = false;
+    bool next_has_result_ = false;
 };
 
 } // namespace gpu_sim

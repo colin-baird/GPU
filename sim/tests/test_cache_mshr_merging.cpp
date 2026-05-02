@@ -98,6 +98,7 @@ TEST_CASE("MSHR merging: load secondary behind store-miss primary serializes (RA
     // does not consume the gather extraction port), then
     // drain_secondary_chain_head drains the load secondary in the same cycle.
     // Both complete atomically from the observer's view.
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     REQUIRE(f.stats.secondary_drain_cycles == 1);
     // After both retired, MSHR count is 0 and pin is cleared.
@@ -150,6 +151,7 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     REQUIRE(f.cache.write_buffer_size() == wb_before + 1);
     // Load secondary drained in the same cycle (store fill did not claim the
     // extraction port), so B is written into warp 0's gather buffer.
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     REQUIRE(f.stats.secondary_drain_cycles == 1);
     // Chain still has store C waiting, so pin remains.
@@ -196,6 +198,7 @@ TEST_CASE("MSHR merging: cross-warp same-line loads share one external read",
     // Cycle: primary load fill -> warp 0 gets values; FILL marks extraction
     // port used, so the warp-1 secondary defers.
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // warp 0 ready
     REQUIRE(f.cache.active_mshr_count() == 1);
     // Consume warp 0 writeback.
@@ -207,6 +210,7 @@ TEST_CASE("MSHR merging: cross-warp same-line loads share one external read",
 
     // Next cycle: secondary drains into warp 1.
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb1 = f.gather_file.consume_result();
     REQUIRE(wb1.warp_id == 1);
@@ -259,6 +263,7 @@ TEST_CASE("MSHR merging: different-tag miss into pinned set stalls LINE_PINNED",
     // Drain the secondary -> pin clears.
     f.cache.evaluate();
     // Warp 1 gets its values.
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     (void)f.gather_file.consume_result();
     f.end_cycle();
@@ -305,6 +310,7 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     // defers (FILL took extraction port). P2 fill response is queued but not
     // yet dequeued (handle_responses processes only one per cycle).
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // warp 0 got its data
     (void)f.gather_file.consume_result();
     f.end_cycle();
@@ -319,6 +325,7 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     f.cache.commit();
     REQUIRE(f.stats.line_pin_stall_cycles == pin_stall_before + 1);
     REQUIRE(f.cache.current_pending_fill().valid); // P2 still deferred
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // warp 1 drained
     WritebackEntry wb1 = f.gather_file.consume_result();
     REQUIRE(wb1.warp_id == 1);
@@ -331,6 +338,7 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     f.cache.commit();
     REQUIRE_FALSE(f.cache.current_pending_fill().valid);
     REQUIRE(f.cache.active_mshr_count() == 0);
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // warp 2 gets its data
     WritebackEntry wb2 = f.gather_file.consume_result();
     REQUIRE(wb2.warp_id == 2);
@@ -434,6 +442,7 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     auto drains_before = f.stats.secondary_drain_cycles;
     f.cache.evaluate();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before); // no drain
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // warp 0 filled
     WritebackEntry wb0 = f.gather_file.consume_result();
     REQUIRE(wb0.warp_id == 0);
@@ -444,6 +453,7 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     // Warp-1 secondary is still waiting; must defer another cycle.
     f.cache.evaluate();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before); // still 0
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result()); // warp 2 got line 1
     WritebackEntry wb2 = f.gather_file.consume_result();
     REQUIRE(wb2.warp_id == 2);
@@ -452,6 +462,7 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     // Cycle C: no more FILLs pending -> secondary finally drains.
     f.cache.evaluate();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb1 = f.gather_file.consume_result();
     REQUIRE(wb1.warp_id == 1);
@@ -496,8 +507,10 @@ TEST_CASE("MSHR merging: exhaustion via 4 same-line misses stalls a new line",
     f.cache.evaluate();
     REQUIRE(f.cache.active_mshr_count() <= 3);
     // Drain all pending results until gather file empty.
+    f.gather_file.commit();
     while (f.gather_file.next_has_result()) {
         (void)f.gather_file.consume_result();
+        f.gather_file.commit();  // Phase M4: re-latch after consume
     }
     f.end_cycle();
 
@@ -572,6 +585,7 @@ TEST_CASE("MSHR merging: primary and secondary loads produce distinct writebacks
 
     // Cycle 1: primary fill -> warp 0 writeback ready with dest_reg 11.
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wbA = f.gather_file.consume_result();
     REQUIRE(wbA.valid);
@@ -584,6 +598,7 @@ TEST_CASE("MSHR merging: primary and secondary loads produce distinct writebacks
 
     // Cycle 2: secondary drains -> warp 1 writeback ready with dest_reg 22.
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wbB = f.gather_file.consume_result();
     REQUIRE(wbB.valid);
@@ -623,6 +638,7 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     REQUIRE(f.stats.mshr_merged_loads == 1);
     REQUIRE(f.stats.external_memory_reads == 1); // no second external fetch
     REQUIRE(f.cache.active_mshr_count() == 2);
+    f.gather_file.commit();
     REQUIRE_FALSE(f.gather_file.next_has_result());
 
     // Cycles 1 .. MEM_LATENCY-1: fill still in flight. Secondary must not
@@ -633,7 +649,8 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
         f.mem_if.evaluate();
         f.cache.evaluate();
         REQUIRE_FALSE(f.cache.current_last_fill_event().valid);
-        REQUIRE_FALSE(f.gather_file.next_has_result());
+        f.gather_file.commit();
+    REQUIRE_FALSE(f.gather_file.next_has_result());
         REQUIRE(f.cache.active_mshr_count() == 2);
         REQUIRE(f.stats.secondary_drain_cycles == 0);
         f.end_cycle();
@@ -652,6 +669,7 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     REQUIRE(f.stats.secondary_drain_cycles == 1);
     REQUIRE(f.cache.active_mshr_count() == 0);
 
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb = f.gather_file.consume_result();
     REQUIRE(wb.warp_id == 0);
@@ -660,6 +678,7 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     REQUIRE(wb.values[31] == 5000 + 31);
     f.end_cycle();
 
+    f.gather_file.commit();
     REQUIRE_FALSE(f.gather_file.next_has_result());
     REQUIRE(f.stats.external_memory_reads == 1);
 }
@@ -693,6 +712,7 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
     REQUIRE(f.cache.process_load(LINE_SIZE, /*warp=*/0, FULL_MASK, r_hit, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     (void)f.gather_file.consume_result();
     f.end_cycle();
@@ -711,6 +731,7 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
     // buffer (FILL consumes the port), warp-2 secondary defers. Consume warp 1.
     f.tick_mem(MEM_LATENCY);
     f.cache.evaluate();
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb1 = f.gather_file.consume_result();
     REQUIRE(wb1.warp_id == 1);
@@ -736,27 +757,28 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
     f.cache.evaluate();
     // The drain took the port this cycle.
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
-    // Warp 2 is about to get its writeback. Do NOT consume yet.
-    REQUIRE(f.gather_file.next_has_result());
 
     // Now issue the HIT on a DIFFERENT warp (warp 0, whose buffer is free).
     // The hit targets line L1 which IS resident, so tag matches -> normally
     // a hit. But the cache gather-extract port is already used by the
     // secondary drain, so process_load must return false and NOT bump
-    // load_hits.
+    // load_hits. Phase M4: avoid gather_file.commit() before the HIT —
+    // commit() clears next_port_claimed_ mid-cycle and would mask the
+    // arbitration we want to observe. Defer the has_result check until
+    // after the HIT.
     auto r_hit2 = make_results(9000);
     bool hit_accepted = f.cache.process_load(LINE_SIZE, /*warp=*/0, FULL_MASK,
                                              r_hit2, /*issue_cycle=*/99, 0, 0);
     REQUIRE_FALSE(hit_accepted);
     REQUIRE(f.stats.load_hits == hits_before);
-    // The loser's side effects must be absent: no writeback should be
-    // produced into warp 0's buffer this cycle. next_has_result() may still be
-    // true from warp 2's drained secondary, but warp 0 must not be ready.
-    // Consume warp 2's drained result first; then assert warp 0 is NOT ready.
+    // After end_cycle, gather_file.commit latches has_result and the
+    // drained warp-2 writeback is observable.
+    f.end_cycle();
+    REQUIRE(f.gather_file.next_has_result()); // warp 2 was drained
     WritebackEntry wb2 = f.gather_file.consume_result();
     REQUIRE(wb2.warp_id == 2);
+    f.gather_file.commit();
     REQUIRE_FALSE(f.gather_file.next_has_result());
-    f.end_cycle();
 
     // Step 5: Next cycle, the HIT retries. Port reset, no drain pending, no
     // fill pending -> hit succeeds.
@@ -765,6 +787,7 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
                                               r_hit2, /*issue_cycle=*/100, 0, 0);
     REQUIRE(hit_accepted2);
     REQUIRE(f.stats.load_hits == hits_before + 1);
+    f.gather_file.commit();
     REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb0 = f.gather_file.consume_result();
     REQUIRE(wb0.warp_id == 0);
