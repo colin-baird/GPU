@@ -24,8 +24,14 @@ struct CacheFixture {
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
 
-    // Advance the external memory interface by N cycles.
+    // Advance the external memory interface by N cycles. Phase M5: the
+    // request staged via set_next_*_request needs commit() to flip
+    // next_ → current_ before the first evaluate() drains it into
+    // in_flight_. Insert that commit at the head so callers can keep
+    // the pre-Phase-M5 process_load/process_store + tick_mem(MEM_LATENCY)
+    // pattern.
     void tick_mem(uint32_t cycles) {
+        mem_if.commit();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
         }

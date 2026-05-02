@@ -27,7 +27,7 @@ Shared files with the issue-execute plan (each plan touches different lines; no 
 
 ## Phase plan
 
-The memory refactor is sequenced so each phase builds successfully and runs the full regression suite. Phase M5 is documentation-only (zero cycle delta). Every other phase has a deliberate per-benchmark cycle delta captured by `python3 tools/bench_compare.py --baseline <phase-start-ref>`.
+The memory refactor is sequenced so each phase builds successfully and runs the full regression suite. Every phase has a per-benchmark cycle delta captured by `python3 tools/bench_compare.py --baseline <phase-start-ref>`.
 
 ### Phase M1 — LdSt addr_gen FIFO → Coalescing becomes REGISTERED
 
@@ -159,16 +159,16 @@ Disposition column: **Convert** = becomes REGISTERED in this plan; **Reframe** =
 | M9 | `L1Cache::next_last_miss_event_` → `record_cycle_trace` | Trace event | REGISTERED | **Compliant** | Phase 9 |
 | M10 | `L1Cache::next_last_fill/drain_event_` → `record_cycle_trace` | Trace event | REGISTERED | **Compliant** | Phase 9 |
 | M11 | `L1Cache::current_pending_fill_` carrier | Multi-cycle deferred fill | REGISTERED | **Compliant** | Phase 9 |
-| M12 | `L1Cache::submit_read(...)` → `mem_if.in_flight_` | Read request | REGISTERED queue mutation, ordering-dependent | **Carve-out** (Phase M5) | DRAMSim3 bounded write-region FIFO; cache↔mem_if same-tick ordering is the contract |
-| M13 | `mem_if.next_has_response()` / `get_response()` → `L1Cache::handle_responses` | Memory response | COMBINATIONAL forward | **Carve-out** (Phase M5) | Same trusted-subsystem boundary as M12; tick-order documented at call site |
-| M14 | `L1Cache::submit_write(...)` → `mem_if.in_flight_` | Write request | REGISTERED queue mutation | **Carve-out** (Phase M5) | Bool return is real back-pressure; cache respects it |
+| M12 | `L1Cache::set_next_read_request(...)` → `mem_if.current_read_request_` (cycle N+1 admit to `in_flight_`) | Read request | REGISTERED forward via REGISTERED slot | **Convert** (Phase M5) | Cache miss path stages via setter; mem_if commit flips next→current; mem_if.evaluate drains to in_flight |
+| M13 | `mem_if.current_has_response()` / `get_response()` → `L1Cache::handle_responses` | Memory response | REGISTERED (read combinationally one cycle late) | **Compliant** (Phase M5) | Renamed from `next_has_response`; cache.handle_responses runs at top of cache.evaluate (before mem_if.evaluate produces this cycle's responses), so the read sees committed end-of-previous-cycle state |
+| M14 | `L1Cache::set_next_write_request(...)` → `mem_if.current_write_request_`; `next_request_stall()` gates the stage | Write request + back-pressure | REGISTERED forward + COMBINATIONAL backward stall | **Convert** (Phase M5) | drain_write_buffer pops only when `!next_request_stall()`; replaces the old bool-return retry loop |
 | M15 | `L1Cache` internal `tags_`/`mshrs_`/`write_buffer_` | Cache hardware state | Direct mutation | **Compliant by design** | No cross-stage observers; tests assert synchronously; row 10 carve-out |
 | M16 | `LoadGatherBufferFile::next_port_claimed_` | Intra-cycle write-port arbitration | COMBINATIONAL | **Compliant** | Phase 7; internal to gather; first-writer-wins, cleared at commit |
-| M17 | `mem_if.submit_read/write` returns bool | Back-pressure return | REGISTERED back-pressure | **Compliant** | drain_write_buffer respects rejection |
+| M17 | `mem_if.next_request_stall()` (replaces the prior `submit_read/write` bool-return) | Back-pressure | COMBINATIONAL backward stall | **Compliant** (Phase M5) | drain_write_buffer reads `next_request_stall()` before staging; the synchronous submit_read/write APIs (now test-direct only) retain their bool returns for backend-isolation tests |
 | M18 | `LoadGatherBufferFile::next_has_result()` → `WritebackArbiter::evaluate` | Result-ready predicate | COMBINATIONAL forward | **Convert** (Phase M4) | Add `current_has_result_` flag latched at commit when `filled_count == WARP_SIZE` |
 | M19 | `LoadGatherBufferFile::consume_result()` → `WritebackArbiter` | WritebackEntry payload | REGISTERED | **Compliant** | Same protocol as other units |
 
-Net: 5 forward-data violations get converted (M1, M2, M3, M18, plus the reframing of M6/M7/M8 around M18); 3 cache↔mem_if edges (M12-M14) become formally documented carve-outs; 9 edges are already compliant or are pre-existing carve-outs.
+Net: 6 forward-data violations get converted (M1, M2, M3, M12, M14, M18, plus the reframing of M6/M7/M8 around M18); the cache↔mem_if read-response read (M13) is a name fix only; 9 edges are already compliant or are pre-existing carve-outs.
 
 ## Critical files
 
@@ -206,8 +206,7 @@ Per phase:
 
 1. `cmake --build build -j8` succeeds.
 2. `cd build && ctest --output-on-failure` passes (memory tests in particular: `test_cache`, `test_load_gather_buffer`, `test_cache_mshr_merging`, `test_dramsim3_memory`, `test_coalescing`).
-3. For Phase M5 (documentation-only): `python3 tools/bench_compare.py --baseline <pre-M5-ref>` reports zero delta on every workload benchmark.
-4. For phases that intentionally regress cycle counts (M1, M2, M3, M4): capture per-benchmark delta from `bench_compare.py`, record in commit message and in the `timing_discipline.md` Phase 10 summary.
+3. For phases that intentionally shift cycle counts (M1, M2, M3, M4, M5): capture per-benchmark delta from `bench_compare.py`, record in commit message and in the `timing_discipline.md` Phase 10 summary.
 5. Build with `-DGPU_SIM_USE_DRAMSIM3=ON` and rerun `test_dramsim3_memory.cpp` after Phases M3 and M5 — the cache↔mem_if boundary is most sensitive to changes here.
 6. `python3 tools/render_signal_diagram.py --validate` passes after Phase M4 (AST and markdown extractors agree on every memory edge).
 

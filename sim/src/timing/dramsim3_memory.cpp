@@ -59,10 +59,11 @@ bool DRAMSim3Memory::submit_read(uint32_t line_addr, uint32_t mshr_id) {
     }
     // Architectural invariant: at most num_mshrs reads can be in flight at
     // once, and the request FIFO reserves num_mshrs * chunks_per_line slots
-    // for reads (= request_fifo_depth_ - write_region_capacity_). The cache
-    // ignores the bool return on submit_read (cache.cpp:112,190), so an
-    // overflow here would silently drop a read and leave the MSHR allocated
-    // forever. The assert converts that into an immediate failure.
+    // for reads (= request_fifo_depth_ - write_region_capacity_). Cache
+    // miss paths reach this via set_next_read_request → evaluate(), which
+    // discards the bool, so an overflow would silently drop a read and
+    // leave the MSHR allocated forever. The assert converts that into an
+    // immediate failure.
     assert(request_fifo_.size() + chunks_per_line_ <= request_fifo_depth_ &&
            "DRAMSim3Memory request FIFO would overflow on submit_read; "
            "writes must be confined to the write region (submit_write enforces "

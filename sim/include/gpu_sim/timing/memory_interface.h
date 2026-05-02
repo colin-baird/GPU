@@ -49,10 +49,10 @@ public:
     // in tick order; cache reads the value mem_if produced last cycle).
     virtual bool next_request_stall() const = 0;
 
-    // Direct synchronous API. Used by tests and by the cache in cases
-    // where the bool return is meaningful (FILL or DRAMSim3 write
-    // rejection). Production cache miss/wb paths now go through
-    // set_next_*_request.
+    // Direct synchronous API. Test-direct path: tests that exercise mem_if
+    // in isolation (test_dramsim3_memory, test_timing_components) push
+    // requests straight into in_flight_ via these calls. Production cache
+    // uses set_next_*_request on miss / write-buffer drain paths.
     virtual bool submit_read(uint32_t line_addr, uint32_t mshr_id) = 0;
     virtual bool submit_write(uint32_t line_addr) = 0;
 

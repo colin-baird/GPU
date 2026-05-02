@@ -129,6 +129,8 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     gather_file.commit();
     gather_file.evaluate();
     REQUIRE(cache.process_load(0, 1, FULL_MASK, results, 1, 0, 0));
+    // Phase M5: drain the staged read request into in_flight_ before ticking.
+    mem_if.commit();
     for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
     cache.handle_responses();
     (void)gather_file.consume_result();
@@ -149,11 +151,17 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     REQUIRE_FALSE(gather_file.next_has_result());
     gather_file.commit();
 
-    // Lanes 1..31 — each a miss on a distinct line.
+    // Lanes 1..31 — each a miss on a distinct line. Phase M5: each
+    // miss stages a request in mem_if's next_read_request_; commit +
+    // evaluate between issues drains the previous request into
+    // in_flight_ before the next set_next_read_request would overwrite
+    // the staging slot.
     for (uint32_t lane = 1; lane < WARP_SIZE; ++lane) {
         uint32_t addr = static_cast<uint32_t>(lane) * LINE_SIZE * 100;
         uint32_t mask = 1u << lane;
         REQUIRE(cache.process_load(addr, 0, mask, values, 1, 0, 0));
+        mem_if.commit();
+        mem_if.evaluate();
         gather_file.commit();
     }
 

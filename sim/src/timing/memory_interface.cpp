@@ -6,9 +6,9 @@ FixedLatencyMemory::FixedLatencyMemory(uint32_t latency, Stats& stats)
     : latency_(latency), stats_(stats) {}
 
 bool FixedLatencyMemory::submit_read(uint32_t line_addr, uint32_t mshr_id) {
-    // Direct synchronous path — used by tests. Push into in_flight_ at
-    // submission time. Production cache uses set_next_read_request +
-    // commit + evaluate to model the REGISTERED 1-cycle admission.
+    // Test-direct path: pushes into in_flight_ at submission time.
+    // Production cache uses set_next_read_request + commit + evaluate
+    // to model the REGISTERED 1-cycle admission.
     MemoryRequest req;
     req.line_addr = line_addr;
     req.mshr_id = mshr_id;

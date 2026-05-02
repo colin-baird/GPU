@@ -289,7 +289,7 @@ it.
 | 12 | `OperandCollector::resolve_branch` writes `next_redirect_request_{valid, warp_id, target_pc}` on misprediction | `FetchStage::commit` and `DecodeStage::commit` read `opcoll.current_redirect_request()` and apply the flush there | flush request and redirect target PC | **REGISTERED** redirect-request via `RedirectRequest` produced by opcoll, consumed by fetch/decode at their own `commit()`. Mispredict-recovery now takes one additional cycle (Option A) | forward-data | tick-order: producer writes `next_` during evaluate; opcoll.commit flips to `current_` at end of cycle N; fetch.commit and decode.commit read `current_` at cycle N+1 (their commits run before opcoll.commit within the same cycle, so they observe last cycle's latched signal) | compliant (Phase 5) | 5 |
 | 13 | `DecodeStage::current_ebreak_request()` (REGISTERED `next_`/`current_` pair, latched by `decode.commit()`); panic-flush cascade `scheduler/opcoll/gather_file/wb_arbiter->flush()` invoked at commit-phase boundary when `pending_panic_flush_` is armed | `TimingModel::tick()` (observes `current_ebreak_request()` at top of cycle to call `panic_->trigger`); scheduler/opcoll/gather buffer/writeback arbiter (consume `flush()` at commit-phase) | EBREAK request and machine flush | **REGISTERED** ebreak side-channel; per-stage `flush()` at commit-phase replaces the prior mid-evaluate `reset()` cascade. Trigger takes one additional cycle vs. the pre-Phase-6 mid-tick path (Option A) | forward-data (decode→TimingModel; PanicController→cascade targets) | tick order: decode.commit latches ebreak request at end of cycle N; tick top of cycle N+1 reads current_ebreak_request_ and calls panic_->trigger / arms pending_panic_flush_; commit-phase of cycle N+1 invokes flush() on each panic-flush target | compliant (Phase 6) | 6 |
 | 14 | `PanicController::set_drained_query` wires a callable that the controller invokes inside `evaluate()`; the callable composes `execution_units_drained()` from `OperandCollector::current_busy`, each unit's `current_busy` + `next_has_result`/`next_fifo_empty`, and `WritebackArbiter::current_busy` — all const accessors over committed state | `PanicController::evaluate()` (case 2 drain step) | drained bit | **REGISTERED** for committed-state reads (the callable invokes only committed-state accessors) | back-pressure (controller polls accessors on each unit) | wired callable; the prior `set_units_drained()` pre-evaluate setter (which latched live state from another stage) is removed | controller queries drained_query_ inside its own evaluate(); the callable reads only committed-state accessors | compliant (Phase 6) | 6 |
-| 15 | `L1Cache` calls `mem_if_.submit_read()` / `submit_write()` (mid-evaluate REGISTERED writes into mem_if's `in_flight_`); `L1Cache::handle_responses` reads `mem_if_.next_has_response()` and dequeues via `get_response()` mid-evaluate | `ExternalMemoryInterface` (FixedLatencyMemory and DRAMSim3Memory implementations) and `L1Cache` (consumes `next_has_response`) | external-memory request/response queue mutations + COMBINATIONAL response accessor | mixed: REGISTERED queue mutations + COMBINATIONAL `next_has_response()` poll | back-pressure (mem_if→cache response poll) + forward-data (cache→mem_if requests) | trusted-subsystem carve-out, mirroring row 10. Tick order is `cache.evaluate -> ... -> mem_if.evaluate`, so a request submitted in cycle N is processed by `mem_if.evaluate` at the end of the same cycle (one cycle of memory latency consumed at submit time). Likewise responses produced by `mem_if.evaluate` in cycle N are dequeued by `cache.handle_responses` at the top of cycle N+1, since `mem_if.evaluate` runs after `cache.evaluate`. The DRAMSim3 backend has tighter constraints (write-region FIFO bounds; see `dramsim3_memory.cpp:67`) that make REGISTERED queue mutation invasive without a clear payoff. | compliant by design (carve-out, Phase 9 documented) | 9 |
+| 15 | `L1Cache` stages requests via `mem_if_.set_next_read_request()` / `set_next_write_request()` (REGISTERED forward); the write-buffer drain checks `mem_if_.next_request_stall()` before staging (COMBINATIONAL backward, computed from registered queue depth — DRAMSim3's write-region FIFO state for that backend, always-false for FixedLatencyMemory). `mem_if.commit()` flips `next_*_request_` → `current_*_request_`; `mem_if.evaluate()` drains `current_` into `in_flight_`. `L1Cache::handle_responses` reads `mem_if_.current_has_response()` (`next_has_response()` retained as alias) at top of `cache.evaluate`. The synchronous `submit_read` / `submit_write` API is retained as the test-direct path used by `test_dramsim3_memory` and `test_timing_components`. | `ExternalMemoryInterface` (FixedLatencyMemory and DRAMSim3Memory implementations) and `L1Cache` (consumes `current_has_response`) | REGISTERED forward request slots + COMBINATIONAL backward stall + REGISTERED response queue (read combinationally one cycle late) | REGISTERED forward + COMBINATIONAL backward stall (mirrors the M3 cache↔coalescing handshake shape) | back-pressure (mem_if→cache write-region stall) + forward-data (cache→mem_if requests, mem_if→cache responses) | tick order is `cache.evaluate -> ... -> mem_if.evaluate`. A request staged in cycle N (cache.evaluate) is committed at end of cycle N (mem_if.commit) and admitted to in_flight_ at the top of cycle N+1's mem_if.evaluate (1 cycle of REGISTERED admission). Responses produced by mem_if.evaluate in cycle N are dequeued by cache.handle_responses at the top of cycle N+1 (cache reads via current_has_response — committed-state read since mem_if.commit ran end of N; the `next_has_response()` alias predates the rename and reads the same slot). DRAMSim3's write-region FIFO bound is now exposed as `next_request_stall()` rather than a per-call bool return, matching the discipline's asserted-blocking polarity. | compliant (Phase M5); cache↔mem_if boundary now classified per-direction with REGISTERED forward + COMBINATIONAL backward stall, mirroring the M3 cache↔coalescing handshake | M5 |
 
 If a future change adds a new cross-stage edge, append a row here with
 its classification (cycle axis + direction axis) and the phase that lands it.
@@ -582,22 +582,43 @@ The full refactor plan lives in
   due to M4's REGISTERED has_result absorbing same-cycle FILL/consume
   churn). Workload benchmark `max_cycles` budgets unchanged. See
   `/project-plans/phase-10-memory-discipline.md`.
-- **Phase M5** (landed, infrastructure-only): Cache ↔ mem_if REGISTERED
-  forward request slots + COMBINATIONAL backward stall added to
-  `ExternalMemoryInterface`. Both `FixedLatencyMemory` and `DRAMSim3Memory`
-  now expose `set_next_read_request` / `set_next_write_request` /
-  `next_request_stall`. `current_has_response()` is the canonical name for
-  the response poll; `next_has_response()` remains as a compatibility
-  alias. The cache's miss/wb-drain paths still use the synchronous
-  `submit_read` / `submit_write` API — adoption of the REGISTERED path
-  is deferred so that test surgery (which would be substantial: ~12+ test
-  call sites would need cycle-boundary fixups) is rolled into the broader
-  pipeline plan rather than this memory-only commit. The new accessors
-  satisfy the discipline doc's classification for the boundary; the
-  conversion itself can be applied later by switching cache.cpp's two
-  submit calls and updating tests in lockstep. Zero cycle delta vs
-  `6c6d624` (post-M4) baseline. Inventory rows: 12, 13, 14, 15. See
-  `/project-plans/phase-10-memory-discipline.md`.
+- **Phase M5** (landed): Cache ↔ mem_if REGISTERED forward request slots +
+  COMBINATIONAL backward stall fully wired through cache. Both
+  `FixedLatencyMemory` and `DRAMSim3Memory` expose
+  `set_next_read_request` / `set_next_write_request` / `next_request_stall`;
+  `current_has_response()` is the canonical response poll
+  (`next_has_response()` remains as a compatibility alias). Cache miss
+  and write-buffer drain paths now stage requests via
+  `set_next_*_request`: `process_load`/`process_store` issue the read
+  for primary misses (the secondary path merges into the chain and
+  doesn't touch mem_if); `drain_write_buffer` checks
+  `next_request_stall()` and stages the write only when the stall is
+  clear. The synchronous `submit_read` / `submit_write` calls remain on
+  the interface as the test-direct path (used by `test_dramsim3_memory`
+  and `test_timing_components` to push requests directly into
+  `in_flight_` for backend-isolation assertions); the doc comments are
+  tightened accordingly. Test surgery: `tick_mem` helpers in
+  `test_cache.cpp` and `test_cache_mshr_merging.cpp` now call
+  `mem_if.commit()` first so the staged request flips into
+  `current_*_request_` before the first evaluate drains it. Tests that
+  issue multiple distinct primaries in one logical step
+  (`test_load_gather_buffer.cpp` 31-line miss loop;
+  `test_cache_mshr_merging.cpp` "store-fill defers" P1+P2,
+  "FILL wins gather-extract port" P1+P3 across distinct lines) now
+  insert `mem_if.commit() + mem_if.evaluate()` between issues to drain
+  each request into `in_flight_` before the next overwrites the staging
+  slot. The `test_dramsim3_memory.cpp` write-region saturation test's
+  `pump_one_cycle` lambda gained `mem.commit()` so cache's
+  `set_next_write_request` reaches `current_write_request_` next cycle.
+  Cycle deltas vs `39e8e40` (post-Phase-M5-infrastructure) baseline:
+  matmul +439 (+0.3%), gemv +130 (+2.1%), fused_linear_activation +24
+  (+0.9%), softmax_row +14 (+0.6%), embedding_gather -2506 (-5.0%),
+  layernorm_lite +236 (+2.6%). The +1-cycle staging shift accounts for
+  the small uniform deltas; embedding_gather's improvement comes from
+  the new `next_request_stall()`-gated drain replacing the prior
+  retry-on-bool-false loop, which spun cycles re-trying writes against
+  a saturated DRAMSim3 write region. Inventory rows: 12, 13, 14, 15.
+  See `/project-plans/phase-10-memory-discipline.md`.
 - **Phase M4** (landed): Gather → WritebackArbiter result-ready converted to
   REGISTERED. Added `current_has_result_` and `next_has_result_` flags on
   `LoadGatherBufferFile`. `try_write` sets `next_has_result_ = true` when a

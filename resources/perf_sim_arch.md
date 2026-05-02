@@ -371,7 +371,7 @@ This timing model intentionally tracks cache residency, misses, backpressure, an
 - **`process_store(line_addr, warp_id, issue_cycle, pc, raw_instruction)`**: Direct synchronous API for tests. Hit -> updates cache, pushes to write buffer. Miss -> allocates MSHR (write-allocate) with trace metadata. Returns false if MSHR or write buffer full. Phase M3: production coalescing uses `set_next_store_cmd` instead.
 - **Phase M3 — REGISTERED forward command path**: `set_next_load_cmd(addr, warp_id, lane_mask, results, issue_cycle, pc, raw_instruction)` and `set_next_store_cmd(line_addr, warp_id, issue_cycle, pc, raw_instruction)` stage a cmd in `next_load_cmd_` / `next_store_cmd_`. `commit()` flips next → current; `evaluate()` consumes current after handle_responses (FILL) and drain_secondary_chain_head (secondary). On processing failure (port lost, MSHR full, pin/wb conflict), the cmd stays valid and retries next cycle. `next_cmd_stall()` is the COMBINATIONAL backward stall: returns true while a cmd is in flight, when MSHRs are exhausted, or when the write buffer is full. Coalescing reads `next_cmd_stall()` same-cycle (cache.evaluate runs first) and bails before staging if true. `next_cmd_stall_reason()` returns the structural reason (MSHR_FULL / WRITE_BUFFER_FULL / LINE_PINNED) for trace classification surfacing WAIT_L1_MSHR / WAIT_L1_WRITE_BUFFER from the LDST FIFO head when coalescing is preempted.
 - **`handle_responses()`**: Processes at most one readable cache-line fill per cycle. For load fills, deposits the lane values into the owning warp's gather buffer via `gather_file_.try_write(... FILL)` (FILL runs first in `cache.evaluate()`, claiming the shared gather-extract port for the cycle). For store fills, pushes the line into the write buffer. Responses are buffered internally if a store fill is blocked by the write buffer.
-- **`drain_write_buffer()`**: Submits the front of the write buffer to external memory, popping only on success. The bool return from `mem_if_.submit_write` is the architectural backpressure path from the memory backend: `DRAMSim3Memory` returns `false` when its bounded write region is full, in which case the entry stays at the buffer's head and is retried next cycle. Silently popping on failure would lose the write (the timing-only model has no recovery).
+- **`drain_write_buffer()`**: Pops the front of the write buffer and stages it via `mem_if_.set_next_write_request(...)`, gated on `!mem_if_.next_request_stall()`. The COMBINATIONAL backward stall is the architectural backpressure path: `DRAMSim3Memory` raises `next_request_stall()` when its write-region FIFO is at capacity, and the entry stays at the buffer's head until the stall clears (`FixedLatencyMemory::next_request_stall()` is hardwired false — unbounded queue). Silently popping while stalled would lose the write (the timing-only model has no recovery).
 - **`evaluate()`**: Resets the COMBINATIONAL stall scratch (`stalled_` / `stall_reason_`) to `NONE`, seeds the REGISTERED scratch (clears `next_last_*_event_` slots; carries `current_pending_fill_` forward into `next_pending_fill_`), then runs `handle_responses()` (FILL) followed by `drain_secondary_chain_head()` (secondary). Phase 7: the prior `gather_extract_port_used_` cache-side scratch flag is removed; FILL > secondary > HIT priority is encoded by tick ordering — `cache_->evaluate()` runs at the top of the non-panic tick (FILL then secondary), and `coalescing_->evaluate()` runs later in the tick (HIT via `process_load`). The shared port itself is arbitrated by `LoadGatherBufferFile::try_write` reading its REGISTERED `next_port_claimed_` flag.
 - **`commit()`**: Phase 9 boundary discipline. Flips the REGISTERED next/current pairs (`pending_fill_`, the four `last_*_event_` slots) so post-commit observers — `TimingModel::record_cycle_trace`, tests asserting cycle-end state — read consistent committed values via the `current_*` accessors. The COMBINATIONAL stall slots (`stalled_`, `stall_reason_`) and internal hardware state (`tags_`, `mshrs_`, `write_buffer_`) are not flipped here; they're either same-cycle scratch or direct-mutated synchronously. See inventory rows 9, 10 in `resources/timing_discipline.md`.
 - **Same-line MSHR merging**: Each `MSHREntry` carries `next_in_chain` and `is_secondary`. On a miss, the cache scans MSHRs for a same-line entry; if found, the new MSHR is linked as a secondary and does not submit an external read. A primary fill installs the line, sets the tag's `pinned` bit when a chain follows, and subsequent cycles drain the chain head one per cycle via `drain_secondary_chain_head()` (loads extract into the owning warp's gather buffer; stores push to the write buffer). The pin clears when the last secondary retires. Pin conflicts (different-tag miss into a pinned set) stall with `LINE_PINNED`.
@@ -418,22 +418,39 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
 - **Struct `MemoryRequest`**: `line_addr`, `mshr_id`, `is_write`, `cycles_remaining`.
 - **Struct `MemoryResponse`**: `line_addr`, `mshr_id`, `is_write`.
 - **Abstract `ExternalMemoryInterface`**: Pure-virtual surface
-  (`evaluate`, `commit`, `reset`, `submit_read`, `submit_write`,
-  `has_response`, `get_response`, `is_idle`, `in_flight_count`,
-  `response_count`). Concrete backends derive from this.
+  (`evaluate`, `commit`, `reset`, `set_next_read_request`,
+  `set_next_write_request`, `next_request_stall`, `submit_read`,
+  `submit_write`, `current_has_response`, `get_response`, `is_idle`,
+  `in_flight_count`, `response_count`). Concrete backends derive from
+  this. `set_next_*_request` are the production REGISTERED stagers used
+  by the cache; `submit_read` / `submit_write` are retained as the
+  test-direct path (push straight into `in_flight_` for backend-isolation
+  tests in `test_dramsim3_memory` and `test_timing_components`).
+  `next_has_response()` is preserved as an alias for
+  `current_has_response()` for compatibility.
 - **`FixedLatencyMemory(latency, stats_ref)`**: Default backend. Every
   request completes after exactly `latency` cycles. Used by all unit tests
   and by the simulator unless a different backend is selected.
-  - `submit_read(line_addr, mshr_id)`, `submit_write(line_addr)`: Enqueue
-    request with `latency` countdown.
-  - `evaluate()`: Decrements all in-flight countdowns. Moves completed
+  - `set_next_read_request(line_addr, mshr_id)`,
+    `set_next_write_request(line_addr)`: REGISTERED forward; stage in
+    `next_*_request_`, increment stats. `commit()` flips
+    `next_*_request_` → `current_*_request_`.
+  - `next_request_stall()`: COMBINATIONAL backward; always `false`
+    (the in_flight_ deque is unbounded for FixedLatencyMemory).
+  - `submit_read(line_addr, mshr_id)`, `submit_write(line_addr)`:
+    Test-direct path; pushes straight into `in_flight_` with
+    `latency` countdown. Production cache uses the REGISTERED stagers.
+  - `evaluate()`: Drains any valid `current_read_request_` /
+    `current_write_request_` into `in_flight_` with `cycles_remaining =
+    latency`, then decrements all in-flight countdowns. Moves completed
     requests to response queue. On read completion, accumulates
     `latency_` into `Stats::external_read_latency_total` /
     `external_read_latency_count` so the average can be compared against
     the DRAMSim3 backend's measured per-request latency.
-  - `has_response()`, `get_response()`: Response consumption interface.
-  - `is_idle()`: True only when no requests are in flight and no responses
-    are queued.
+  - `current_has_response()` / `next_has_response()` (alias),
+    `get_response()`: Response consumption interface.
+  - `is_idle()`: True only when no requests are in flight, no requests
+    are staged in current_/next_ slots, and no responses are queued.
   - Snapshot helpers: `in_flight_count()`, `response_count()`.
 
 ### `include/gpu_sim/timing/dramsim3_memory.h` -- `src/timing/dramsim3_memory.cpp`
@@ -451,7 +468,7 @@ DRAMSim3-backed external memory model. Selected when
 - **Asynchronous fabric/DRAM clocks**: a phase accumulator advances DRAMSim3
   by `dram_clock_mhz / fpga_clock_mhz` ticks per fabric `evaluate()`,
   handling non-integer clock ratios without long-run drift.
-- **Bounded request FIFO with reserved regions** (`dramsim3_request_fifo_depth`): logically split into a `num_mshrs * chunks_per_line` read region and a `write_buffer_depth * chunks_per_line` write region. `submit_read` only fails if the entire FIFO is full (architecturally impossible — at most `num_mshrs` reads can be in flight, and the read region holds exactly that many). `submit_write` returns `false` once the write region is full; the cache (`L1Cache::drain_write_buffer`) consumes this as backpressure and retries next cycle. `assert`s at both push sites convert any violation into an immediate failure.
+- **Bounded request FIFO with reserved regions** (`dramsim3_request_fifo_depth`): logically split into a `num_mshrs * chunks_per_line` read region and a `write_buffer_depth * chunks_per_line` write region. `submit_read` only fails if the entire FIFO is full (architecturally impossible — at most `num_mshrs` reads can be in flight, and the read region holds exactly that many). `submit_write` returns `false` once the write region is full; `next_request_stall()` exposes the same condition as a COMBINATIONAL backward stall, and `L1Cache::drain_write_buffer` reads it before staging a write via `set_next_write_request`. `assert`s at both push sites convert any violation into an immediate failure.
 - **Bounded response queue** (capacity = `num_mshrs + write_buffer_depth + chunks_per_line`): asserted at both push sites. The `worst-case cache traffic` Catch2 case in `test_dramsim3_memory.cpp` drives peak production and verifies the bound holds (snapshot via `max_observed_response_queue()`).
 - **Per-request latency tracking**: each `ReadAssembly` records its `submit_cycle` (sampled from a fabric-clock counter incremented in `evaluate()`); on the final chunk callback, the (`fabric_cycle_ - submit_cycle`) delta is accumulated into `Stats::external_read_latency_total` / `external_read_latency_count`. The averaged value is used to calibrate the `FixedLatencyMemory` default against representative DDR3 behavior.
 - **Chunked transfers**: `submit_read(line_addr, mshr_id)` allocates the
@@ -531,7 +548,7 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 | `test_integration.cpp` | 23 | Full timing model end-to-end: ADD chain, independent ADDIs, RAW chain, load-use stall, store-then-load, write-through completion drain, branch loop, JAL, multi-warp CSR, multi-warp ECALL, memory coalescing, LUI+ADDI, MUL, MUL-latency-vs-ALU, VDOT8, TLOOKUP, EBREAK, stats collection, x0 discard, max-cycles limit, trace snapshot classification, trace-file smoke coverage. |
 | `test_timing_components.cpp` | 26 | Fetch skips full-buffer warps, fetch-decode backpressure stall, fetch PC steering from the static predictor, static branch predictor decisions, operand collection latency, ALU/MUL/DIV/TLOOKUP timing (busy signal, cycles_remaining countdown, ready_out lifecycle, back-to-back dispatch, stats tracking, reset, writeback metadata, accessor lifecycle), LD/ST FIFO backpressure, memory-interface ordering, writeback arbitration, simultaneous queued memory writebacks. |
 | `test_config.cpp` | 8 | Default values for memory-backend knobs, default request FIFO depth equals (num_mshrs + write_buffer_depth) * chunks_per_line worst case, JSON parse round-trip for all DRAMSim3 fields, validation rejects unknown `memory_backend`, validation rejects non-positive clocks, validation rejects line size not a multiple of burst, validation rejects undersized DRAMSim3 request FIFO, CLI override parses string/double/uint fields. |
-| `test_dramsim3_memory.cpp` | 8 | DE-10 Nano `.ini` loads, single-read chunk reassembly emits exactly one `MemoryResponse` after at least 16 DRAM ticks, eight reads with distinct mshr_ids each return once, sequential reads drain in fewer cycles than thrashing-strided reads, fabric/DRAM phase accumulator hits ~2667 DRAM ticks per 1000 fabric cycles at 150/400 MHz, `is_idle()` and `reset()` clear all state and the backend remains usable afterward, worst-case cache traffic (peak read+write production with bool-respecting drain) drops no requests and keeps the response queue within capacity, write-region saturation propagates from DRAMSim3 through the cache: `submit_write` rejection causes `drain_write_buffer` to leave entries in place, `write_buffer_` fills, `process_store` stalls with `WRITE_BUFFER_FULL`, `write_buffer_stall_cycles` increments, and no writes are silently lost. |
+| `test_dramsim3_memory.cpp` | 8 | DE-10 Nano `.ini` loads, single-read chunk reassembly emits exactly one `MemoryResponse` after at least 16 DRAM ticks, eight reads with distinct mshr_ids each return once, sequential reads drain in fewer cycles than thrashing-strided reads, fabric/DRAM phase accumulator hits ~2667 DRAM ticks per 1000 fabric cycles at 150/400 MHz, `is_idle()` and `reset()` clear all state and the backend remains usable afterward, worst-case cache traffic (peak read+write production with bool-respecting drain) drops no requests and keeps the response queue within capacity, write-region saturation propagates from DRAMSim3 through the cache: `next_request_stall()` keeps `drain_write_buffer` from staging a new write, entries stay in `write_buffer_`, `write_buffer_` fills, `process_store` stalls with `WRITE_BUFFER_FULL`, `write_buffer_stall_cycles` increments, and no writes are silently lost. |
 
 **Totals**: 181 direct Catch2 cases.
 

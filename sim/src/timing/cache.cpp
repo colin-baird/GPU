@@ -107,13 +107,7 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
             static_cast<uint32_t>(mshr_idx);
         stats_.mshr_merged_loads++;
     } else {
-        // Phase M5: the new REGISTERED set_next_read_request path is
-        // available, but cache uses the synchronous submit_read here for
-        // back-compat with the existing test API surface that calls
-        // process_load directly. The mem_if provides both APIs; the
-        // REGISTERED path is land-only and ready for adoption when the
-        // pipeline plan rewires production cache → mem_if interactions.
-        mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
+        mem_if_.set_next_read_request(line_addr, static_cast<uint32_t>(mshr_idx));
     }
 
     return true;  // Request accepted (but result will come later)
@@ -191,8 +185,8 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
             static_cast<uint32_t>(mshr_idx);
         stats_.mshr_merged_stores++;
     } else {
-        // Phase M5: see process_load comment.
-        mem_if_.submit_read(line_addr, static_cast<uint32_t>(mshr_idx));
+        // Store miss is write-allocate: fetch the line first.
+        mem_if_.set_next_read_request(line_addr, static_cast<uint32_t>(mshr_idx));
     }
 
     return true;
@@ -382,22 +376,16 @@ void L1Cache::drain_secondary_chain_head() {
 }
 
 void L1Cache::drain_write_buffer() {
-    // Drain one entry per cycle if external memory can accept. The bool
-    // return must be respected: backends with a bounded request FIFO
-    // (DRAMSim3) reject the submit when the FIFO is full, and silently
-    // popping the entry would lose the write entirely (the timing model
-    // tracks tags only — functional data is unaffected, but cycle counts
-    // and external_memory_writes go astray and the line is never marked
-    // observed by the memory model).
-    if (!write_buffer_.empty()) {
-        // Phase M5: synchronous submit_write retains the bool return for
-        // DRAMSim3 backpressure (write-region full). The new REGISTERED
-        // set_next_write_request + next_request_stall API is available but
-        // its adoption is deferred until the pipeline plan rewires this
-        // path.
-        if (mem_if_.submit_write(write_buffer_.front())) {
-            write_buffer_.pop_front();
-        }
+    // Drain one entry per cycle if external memory can accept. Backends with
+    // a bounded request FIFO (DRAMSim3) raise next_request_stall() when the
+    // write region is full; the entry stays in write_buffer_ and is retried
+    // next cycle. The timing model tracks tags only — functional data is
+    // unaffected — but skipping the stall check would lose the write,
+    // mis-count external_memory_writes, and leave the line never observed by
+    // the memory model.
+    if (!write_buffer_.empty() && !mem_if_.next_request_stall()) {
+        mem_if_.set_next_write_request(write_buffer_.front());
+        write_buffer_.pop_front();
     }
 }
 

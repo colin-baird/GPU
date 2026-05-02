@@ -31,7 +31,12 @@ struct MergeFixture {
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
 
+    // Phase M5: commit() flips next_*_request_ → current_*_request_; the
+    // first evaluate() drains current_ into in_flight_. Without this, a
+    // request staged by process_load/process_store stays in next_ and
+    // never reaches in_flight_, so no fill ever returns.
     void tick_mem(uint32_t cycles) {
+        mem_if.commit();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
         }
@@ -290,6 +295,12 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     // P1: load miss on line L=0 (set 0).
     f.claim(0, 1);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r, 1, 0, 0));
+    // Phase M5: drain P1's staged read into in_flight_ before issuing
+    // a second primary on a different line. Without this commit +
+    // evaluate, P2's set_next_read_request would overwrite P1's
+    // staging slot and only P2 would reach memory.
+    f.mem_if.commit();
+    f.mem_if.evaluate();
     // S1: load secondary on same line L=0, different warp.
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r, 2, 0, 0));
@@ -303,7 +314,10 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     REQUIRE(f.stats.external_memory_reads == 2); // P1 and P2 only
     REQUIRE(f.cache.active_mshr_count() == 3);
 
-    // Deliver fills. P1 response arrives first (FIFO in mem_if).
+    // Deliver fills. P1 response arrives first (FIFO in mem_if). P1 was
+    // drained one cycle ahead of P2 (the inline commit+evaluate above);
+    // tick_mem(MEM_LATENCY) covers both: P1 completes at evaluate #9,
+    // P2 at evaluate #10. Both responses are queued in arrival order.
     f.tick_mem(MEM_LATENCY);
 
     // Cycle A: P1 fill retires, installs L on set 0, pins it. S1 secondary
@@ -424,6 +438,11 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     // Chain for line 0: primary load (warp 0) + secondary load (warp 1).
     f.claim(0, 1);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, rA, 1, 0, 0));
+    // Phase M5: drain P1 (line 0) into in_flight_ before issuing P3 on
+    // a different line below; otherwise P3's set_next_read_request would
+    // overwrite P1's staging slot.
+    f.mem_if.commit();
+    f.mem_if.evaluate();
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, rA, 2, 0, 0));
 
@@ -434,6 +453,8 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     REQUIRE(f.stats.external_memory_reads == 2);
     REQUIRE(f.cache.active_mshr_count() == 3);
 
+    // tick_mem(MEM_LATENCY) covers both fills: P1 already advanced one
+    // cycle, so P1 completes at evaluate #9 and P3 at evaluate #10.
     f.tick_mem(MEM_LATENCY);
 
     // Cycle A: P1 (line 0) fill retires into warp 0's gather. The FILL
@@ -640,6 +661,10 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     REQUIRE(f.cache.active_mshr_count() == 2);
     f.gather_file.commit();
     REQUIRE_FALSE(f.gather_file.next_has_result());
+    // Phase M5: flip the staged store-miss read into mem_if's
+    // current_read_request_ so the per-cycle evaluate loop below
+    // drains it into in_flight_ on the first iteration.
+    f.mem_if.commit();
 
     // Cycles 1 .. MEM_LATENCY-1: fill still in flight. Secondary must not
     // drain, no writeback must appear, tag must not become pinned, and no

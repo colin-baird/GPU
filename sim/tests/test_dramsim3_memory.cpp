@@ -419,6 +419,11 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
         mem.evaluate();                // tick DRAMSim3
         cache.drain_write_buffer();    // submits one entry if mem accepts
         cache.commit();
+        // Phase M5: flip mem_if's REGISTERED next_*_request_ slots into
+        // current_*_ so the next cycle's mem.evaluate() can drain them
+        // into in_flight_. Cache's process_load and drain_write_buffer
+        // both stage requests via set_next_*_request.
+        mem.commit();
         gather_file.commit();
     };
 
@@ -480,6 +485,9 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
         mem.evaluate();
         cache.drain_write_buffer();
         cache.commit();
+        // Phase M5: flip the staged write request into mem's
+        // current_write_request_ for next cycle's evaluate to drain.
+        mem.commit();
         gather_file.commit();
 
         if (rejected_this_cycle) {
