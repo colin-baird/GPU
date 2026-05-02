@@ -15,7 +15,7 @@ public:
     }
 
     // Read from current state (used by scheduler)
-    bool is_pending(WarpId warp, RegIndex reg) const {
+    bool current_pending(WarpId warp, RegIndex reg) const {
         if (reg == 0) return false;
         return current_[warp][reg];
     }

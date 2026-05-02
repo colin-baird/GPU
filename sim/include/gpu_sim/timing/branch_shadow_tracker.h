@@ -54,7 +54,7 @@ public:
     }
 
     // Reads of committed state.
-    bool is_in_flight(WarpId w) const { return current_[w]; }
+    bool current_in_flight(WarpId w) const { return current_[w]; }
 
     // Event-shaped writers. All three write only into next_; commit() flips
     // next_ -> current_ at the cycle boundary.

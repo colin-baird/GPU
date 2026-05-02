@@ -141,12 +141,11 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
                                           *branch_predictor_, stats);
     decode_ = std::make_unique<DecodeStage>(warps_.data(), *fetch_);
     // Phase 3: wire decode into fetch so fetch.evaluate() can query
-    // decode->ready_to_consume_fetch() and decode->pending_warp() directly,
+    // decode->current_busy() and decode->current_pending_warp() directly,
     // replacing the pre-evaluate set_decode_pending_warp setter and the
     // output_consumed_ round-trip.
     fetch_->set_decode(decode_.get());
     scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
-                                                 scoreboard_, branch_tracker_,
                                                  func_model, stats);
     opcoll_ = std::make_unique<OperandCollector>(stats);
     // Phase 5: opcoll publishes a REGISTERED redirect-request and clears
@@ -200,12 +199,15 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     // on each unit / opcoll / ldst / wb_arbiter.
     panic_->set_drained_query([this]() { return execution_units_drained(); });
 
-    // Phase 4 wiring: scheduler reads each consumer's ready_out() directly.
-    // ready_out() is now a const accessor over each consumer's committed
-    // state, replacing the prior pre-evaluate setter pair
-    // (set_opcoll_free / set_unit_ready_fn).
-    scheduler_->set_consumers(opcoll_.get(), alu_.get(), mul_.get(), div_.get(),
-                              tlookup_.get(), ldst_.get());
+    // Phase 2 wiring: scheduler holds raw pointers to every cross-stage
+    // dependency (scoreboard, branch tracker, opcoll, units). evaluate()
+    // reads current_busy() / current_pending() / current_in_flight()
+    // through those pointers. Replaces the prior mixed reference/pointer
+    // shape and consolidates all post-construction wiring into a single
+    // setter call.
+    scheduler_->set_dependencies(&scoreboard_, &branch_tracker_,
+                                 opcoll_.get(), alu_.get(), mul_.get(), div_.get(),
+                                 tlookup_.get(), ldst_.get());
 
     warp_trace_slices_.resize(config.num_warps);
     hardware_trace_slices_.resize(kHardwareTrackCount);
@@ -274,31 +276,31 @@ void TimingModel::dispatch_to_unit(const DispatchInput& input) {
 }
 
 bool TimingModel::pipeline_drained() const {
-    return opcoll_->ready_out() &&
-           alu_->ready_out() && !alu_->has_result() &&
-           mul_->ready_out() && !mul_->has_result() &&
-           div_->ready_out() && !div_->has_result() &&
-           tlookup_->ready_out() && !tlookup_->has_result() &&
-           ldst_->ready_out() && ldst_->fifo_empty() &&
+    return !opcoll_->current_busy() &&
+           !alu_->current_busy() && !alu_->next_has_result() &&
+           !mul_->current_busy() && !mul_->next_has_result() &&
+           !div_->current_busy() && !div_->next_has_result() &&
+           !tlookup_->current_busy() && !tlookup_->next_has_result() &&
+           !ldst_->current_busy() && ldst_->next_fifo_empty() &&
            coalescing_->is_idle() &&
            cache_->is_idle() &&
            mem_if_->is_idle() &&
-           !wb_arbiter_->has_pending_work();
+           !wb_arbiter_->current_busy();
 }
 
 bool TimingModel::execution_units_drained() const {
-    return opcoll_->ready_out() &&
-           alu_->ready_out() && !alu_->has_result() &&
-           mul_->ready_out() && !mul_->has_result() &&
-           div_->ready_out() && !div_->has_result() &&
-           tlookup_->ready_out() && !tlookup_->has_result() &&
-           ldst_->ready_out() && ldst_->fifo_empty() &&
-           !wb_arbiter_->has_pending_work();
+    return !opcoll_->current_busy() &&
+           !alu_->current_busy() && !alu_->next_has_result() &&
+           !mul_->current_busy() && !mul_->next_has_result() &&
+           !div_->current_busy() && !div_->next_has_result() &&
+           !tlookup_->current_busy() && !tlookup_->next_has_result() &&
+           !ldst_->current_busy() && ldst_->next_fifo_empty() &&
+           !wb_arbiter_->current_busy();
 }
 
 void TimingModel::discard_writeback_results() {
     auto discard = [](ExecutionUnit& unit) {
-        if (unit.has_result()) {
+        if (unit.next_has_result()) {
             unit.consume_result();
         }
     };
@@ -384,7 +386,7 @@ bool TimingModel::tick() {
     scoreboard_.seed_next();
     // Phase 5 REGISTERED branch-shadow tracker: seed next_ from current_ so
     // unmodified slots carry forward; scheduler.evaluate() reads current_
-    // (via tracker.is_in_flight) and may write next_ (note_branch_issued on
+    // (via tracker.current_in_flight) and may write next_ (note_branch_issued on
     // issue), opcoll.evaluate() may write next_ (note_resolved_correctly on
     // correct-prediction resolve), fetch.commit() may write next_
     // (note_redirect_applied on mispredict-redirect apply), and
@@ -416,9 +418,9 @@ bool TimingModel::tick() {
     //
     // 1. evaluate phase (forward sweep, dataflow order). Each stage reads
     //    its inputs — committed state for REGISTERED edges, the live next_*
-    //    of upstream for COMBINATIONAL edges, the const ready_out() accessor
+    //    of upstream for COMBINATIONAL edges, the const current_busy() accessor
     //    of a downstream consumer for READY/STALL edges — and writes its
-    //    own next_* slot. ready_out() reads only the consumer's own
+    //    own next_* slot. current_busy() reads only the consumer's own
     //    committed state, so the value is stable through the cycle
     //    regardless of where in the evaluate sweep it is queried. Order in
     //    this tick:
@@ -444,7 +446,7 @@ bool TimingModel::tick() {
     // commit-phase block at the end of this tick honors via
     // scheduler/opcoll/gather_file/wb_arbiter -> flush().
 
-    // Phase 4: scheduler reads opcoll_->ready_out() and each unit's ready_out()
+    // Phase 4: scheduler reads opcoll_->current_busy() and each unit's current_busy()
     // directly inside evaluate(); the prior pre-evaluate set_opcoll_free
     // setter is gone.
     scheduler_->evaluate();
@@ -513,7 +515,7 @@ bool TimingModel::tick() {
     mem_if_->commit();
     wb_arbiter_->commit();
     // The gather buffer's write-port scratch must be cleared after the
-    // arbiter observes has_result() for this cycle.
+    // arbiter observes next_has_result() for this cycle.
     gather_file_->commit();
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage
@@ -571,14 +573,14 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     if (auto warp = opcoll_->resident_warp()) {
         snapshot.opcoll_warp = *warp;
     }
-    snapshot.opcoll_cycles_remaining = opcoll_->cycles_remaining();
+    snapshot.opcoll_cycles_remaining = opcoll_->current_cycles_remaining();
     snapshot.alu_busy = alu_->busy();
     snapshot.mul_busy = mul_->busy();
     snapshot.mul_pipeline_occupancy = mul_->pipeline_occupancy();
     snapshot.div_busy = div_->busy();
     snapshot.tlookup_busy = tlookup_->busy();
     snapshot.ldst_busy = ldst_->busy();
-    snapshot.ldst_fifo_depth = static_cast<uint32_t>(ldst_->fifo_entries().size());
+    snapshot.ldst_fifo_depth = static_cast<uint32_t>(ldst_->next_fifo_entries().size());
     snapshot.active_mshrs = cache_->active_mshr_count();
     snapshot.secondary_mshrs = cache_->secondary_mshr_count();
     snapshot.pinned_lines = cache_->pinned_line_count();
@@ -684,7 +686,7 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
                  pending->is_load || pending->is_store ? pending->trace.mem_addresses[0] : 0);
     }
 
-    for (const auto& entry : ldst_->fifo_entries()) {
+    for (const auto& entry : ldst_->next_fifo_entries()) {
         set_warp(entry.warp_id, WarpTraceState::LDST_FIFO, WarpRestReason::NONE,
                  entry.trace.pc, entry.trace.decoded.raw, ExecUnit::LDST, entry.dest_reg,
                  entry.is_load || entry.is_store,
@@ -694,10 +696,10 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     if (const auto* entry = coalescing_->current_entry()) {
         WarpTraceState state = WarpTraceState::COALESCING;
         WarpRestReason reason = WarpRestReason::NONE;
-        if (cache_->stall_reason() == CacheStallReason::MSHR_FULL) {
+        if (cache_->next_stall_reason() == CacheStallReason::MSHR_FULL) {
             state = WarpTraceState::AT_REST;
             reason = WarpRestReason::WAIT_L1_MSHR;
-        } else if (cache_->stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+        } else if (cache_->next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
             state = WarpTraceState::AT_REST;
             reason = WarpRestReason::WAIT_L1_WRITE_BUFFER;
         }
@@ -717,8 +719,8 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
                  true, entry.cache_line_addr * config_.cache_line_size_bytes, true);
     }
 
-    if (cache_->pending_fill().valid) {
-        const auto& entry = cache_->mshrs().at(cache_->pending_fill().response.mshr_id);
+    if (cache_->current_pending_fill().valid) {
+        const auto& entry = cache_->mshrs().at(cache_->current_pending_fill().response.mshr_id);
         WarpRestReason reason = entry.is_store ? WarpRestReason::WAIT_L1_WRITE_BUFFER
                                                : WarpRestReason::WAIT_MEMORY_RESPONSE;
         WarpTraceState state = entry.is_store ? WarpTraceState::AT_REST
@@ -837,12 +839,12 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
     }
 
     emit_busy_track(3, kDivTid, "div", snapshot.div_busy, div_->result_entry(),
-                    div_->active_warp(), div_->cycles_remaining());
+                    div_->active_warp(), div_->current_cycles_remaining());
     emit_busy_track(4, kTlookupTid, "tlookup", snapshot.tlookup_busy,
                     tlookup_->result_entry(), tlookup_->active_warp(),
-                    tlookup_->cycles_remaining());
+                    tlookup_->current_cycles_remaining());
     emit_busy_track(5, kLdstTid, "ldst", snapshot.ldst_busy, nullptr, ldst_->active_warp(),
-                    ldst_->cycles_remaining());
+                    ldst_->current_cycles_remaining());
 
     if (const auto* entry = coalescing_->current_entry()) {
         TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
@@ -850,15 +852,15 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                        {"mode", std::string(coalescing_->is_coalesced()
                                                 ? "coalesced" : "serialized")},
                        {"serial_index", static_cast<uint64_t>(coalescing_->serial_index())}};
-        if (cache_->stall_reason() == CacheStallReason::MSHR_FULL) {
+        if (cache_->next_stall_reason() == CacheStallReason::MSHR_FULL) {
             args.emplace_back("stall_reason", std::string("mshr_full"));
-        } else if (cache_->stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+        } else if (cache_->next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
             args.emplace_back("stall_reason", std::string("write_buffer_full"));
         }
         update_track_slice(hardware_trace_slices_[6], kHardwarePid, kCoalescerTid,
                            "coalescer:" + std::to_string(entry->warp_id) + ":" +
                                std::to_string(coalescing_->serial_index()) + ":" +
-                               std::to_string(static_cast<int>(cache_->stall_reason())),
+                               std::to_string(static_cast<int>(cache_->next_stall_reason())),
                            coalescing_->is_coalesced() ? "coalesced" : "serialized",
                            args, snapshot.cycle);
     } else {
@@ -866,28 +868,28 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                            snapshot.cycle);
     }
 
-    if (snapshot.active_mshrs > 0 || snapshot.write_buffer_depth > 0 || cache_->pending_fill().valid) {
+    if (snapshot.active_mshrs > 0 || snapshot.write_buffer_depth > 0 || cache_->current_pending_fill().valid) {
         TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
                        {"active_mshrs", static_cast<uint64_t>(snapshot.active_mshrs)},
                        {"secondary_mshrs", static_cast<uint64_t>(snapshot.secondary_mshrs)},
                        {"pinned_lines", static_cast<uint64_t>(snapshot.pinned_lines)},
                        {"write_buffer_depth", static_cast<uint64_t>(snapshot.write_buffer_depth)}};
-        if (cache_->pending_fill().valid) {
+        if (cache_->current_pending_fill().valid) {
             args.emplace_back("pending_fill_mshr",
-                              static_cast<uint64_t>(cache_->pending_fill().response.mshr_id));
+                              static_cast<uint64_t>(cache_->current_pending_fill().response.mshr_id));
         }
         update_track_slice(hardware_trace_slices_[7], kHardwarePid, kCacheTid,
                            "cache:" + std::to_string(snapshot.active_mshrs) + ":" +
                                std::to_string(snapshot.write_buffer_depth) + ":" +
-                               std::to_string(cache_->pending_fill().valid),
+                               std::to_string(cache_->current_pending_fill().valid),
                            "active", args, snapshot.cycle);
     } else {
         update_track_slice(hardware_trace_slices_[7], kHardwarePid, kCacheTid, "", "", {},
                            snapshot.cycle);
     }
 
-    if (wb_arbiter_->committed_entry()) {
-        const auto& wb = *wb_arbiter_->committed_entry();
+    if (wb_arbiter_->current_committed_entry()) {
+        const auto& wb = *wb_arbiter_->current_committed_entry();
         TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
                        {"warp", static_cast<uint64_t>(wb.warp_id)},
                        {"dest_reg", static_cast<uint64_t>(wb.dest_reg)}};
@@ -965,8 +967,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                          static_cast<int>(branch.warp_id + 1), args);
     }
 
-    if (wb_arbiter_->committed_entry()) {
-        const auto& wb = *wb_arbiter_->committed_entry();
+    if (wb_arbiter_->current_committed_entry()) {
+        const auto& wb = *wb_arbiter_->current_committed_entry();
         structured_trace_->write_instant("writeback", snapshot.cycle, kWarpPid,
                                          static_cast<int>(wb.warp_id + 1),
                                          instruction_args(snapshot.cycle, wb.warp_id, wb.pc,
@@ -982,8 +984,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                           {"panic_pc", static_cast<uint64_t>(panic_->panic_pc())}});
     }
 
-    if (cache_->last_miss_event().valid) {
-        const auto& miss = cache_->last_miss_event();
+    if (cache_->current_last_miss_event().valid) {
+        const auto& miss = cache_->current_last_miss_event();
         TraceArgs args = instruction_args(snapshot.cycle, miss.warp_id, miss.pc,
                                           miss.raw_instruction, ExecUnit::LDST, 0);
         args.emplace_back("line_addr", static_cast<uint64_t>(miss.line_addr));
@@ -993,8 +995,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                          kCacheTid, args);
     }
 
-    if (cache_->last_fill_event().valid) {
-        const auto& fill = cache_->last_fill_event();
+    if (cache_->current_last_fill_event().valid) {
+        const auto& fill = cache_->current_last_fill_event();
         TraceArgs args = instruction_args(snapshot.cycle, fill.warp_id, fill.pc,
                                           fill.raw_instruction, ExecUnit::LDST, 0);
         args.emplace_back("line_addr", static_cast<uint64_t>(fill.line_addr));
@@ -1006,8 +1008,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                          kHardwarePid, kCacheTid, args);
     }
 
-    if (cache_->last_drain_event().valid) {
-        const auto& drain = cache_->last_drain_event();
+    if (cache_->current_last_drain_event().valid) {
+        const auto& drain = cache_->current_last_drain_event();
         TraceArgs args = instruction_args(snapshot.cycle, drain.warp_id, drain.pc,
                                           drain.raw_instruction, ExecUnit::LDST, 0);
         args.emplace_back("line_addr", static_cast<uint64_t>(drain.line_addr));
@@ -1016,8 +1018,8 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
                                          kCacheTid, args);
     }
 
-    if (cache_->last_pin_stall_event().valid) {
-        const auto& pin = cache_->last_pin_stall_event();
+    if (cache_->current_last_pin_stall_event().valid) {
+        const auto& pin = cache_->current_last_pin_stall_event();
         TraceArgs args{{"cycle", static_cast<uint64_t>(snapshot.cycle)},
                        {"warp_id", static_cast<uint64_t>(pin.warp_id)},
                        {"requested_line_addr",
@@ -1106,15 +1108,15 @@ void TimingModel::trace_cycle() const {
         std::cerr << " issue=--";
     }
 
-    std::cerr << " opcoll=" << (opcoll_->ready_out() ? "free" : "busy");
-    std::cerr << " alu=" << (alu_->ready_out() ? "rdy" : "bsy");
-    std::cerr << " mul=" << (mul_->ready_out() ? "rdy" : "bsy");
-    std::cerr << " div=" << (div_->ready_out() ? "rdy" : "bsy");
-    std::cerr << " tlk=" << (tlookup_->ready_out() ? "rdy" : "bsy");
-    std::cerr << " ldst=" << (ldst_->ready_out() ? "rdy" : "bsy");
+    std::cerr << " opcoll=" << (opcoll_->current_busy() ? "busy" : "free");
+    std::cerr << " alu=" << (alu_->current_busy() ? "bsy" : "rdy");
+    std::cerr << " mul=" << (mul_->current_busy() ? "bsy" : "rdy");
+    std::cerr << " div=" << (div_->current_busy() ? "bsy" : "rdy");
+    std::cerr << " tlk=" << (tlookup_->current_busy() ? "bsy" : "rdy");
+    std::cerr << " ldst=" << (ldst_->current_busy() ? "bsy" : "rdy");
 
-    if (wb_arbiter_->committed_entry()) {
-        const auto& wb = *wb_arbiter_->committed_entry();
+    if (wb_arbiter_->current_committed_entry()) {
+        const auto& wb = *wb_arbiter_->current_committed_entry();
         std::cerr << " wb=W" << wb.warp_id << ":x" << static_cast<int>(wb.dest_reg);
     } else {
         std::cerr << " wb=--";

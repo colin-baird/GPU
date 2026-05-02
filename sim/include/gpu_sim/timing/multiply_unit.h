@@ -19,19 +19,19 @@ public:
     MultiplyUnit(uint32_t pipeline_stages, Stats& stats)
         : pipeline_stages_(pipeline_stages), stats_(stats) {}
 
-    bool ready_out() const override {
-        // Pipeline is "stalled" if last cycle the head was ready but the
-        // result buffer was occupied — that's when accept() must be refused.
+    bool current_busy() const override {
+        // Pipeline is "busy" if last cycle the head was ready but the result
+        // buffer was occupied — that's when accept() must be refused.
         if (current_result_buffer_.valid && !current_pipeline_.empty() &&
             current_pipeline_.front().cycles_remaining == 0) {
-            return false;
+            return true;
         }
-        return true;
+        return false;
     }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool has_result() const override;
+    bool next_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::MULTIPLY; }
 
@@ -43,7 +43,7 @@ public:
     const WritebackEntry* result_entry() const {
         // Result-buffer accessor used by snapshots (tracing) which run after
         // the unit's evaluate but also after commit. Read next_* so that
-        // same-tick popped results are visible alongside has_result().
+        // same-tick popped results are visible alongside next_has_result().
         return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
     }
 
@@ -57,9 +57,9 @@ private:
     Stats& stats_;
     // Phase 1 discipline: pipeline_ and result_buffer_ are double-buffered.
     // accept() / evaluate() / consume_result() write only next_*; commit()
-    // flips next_* -> current_*. has_result() and result_entry() read next_*
+    // flips next_* -> current_*. next_has_result() and result_entry() read next_*
     // (COMBINATIONAL same-tick edge with the writeback arbiter to preserve
-    // zero cycle delta); ready_out() reads current_* (queried by scheduler
+    // zero cycle delta); current_busy() reads current_* (queried by scheduler
     // before unit evaluate, sees committed end-of-last-cycle state).
     std::deque<PipelineEntry> current_pipeline_;
     std::deque<PipelineEntry> next_pipeline_;

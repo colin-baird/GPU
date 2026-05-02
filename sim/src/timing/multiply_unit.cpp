@@ -66,8 +66,8 @@ void MultiplyUnit::reset() {
     next_result_buffer_.valid = false;
 }
 
-bool MultiplyUnit::has_result() const {
-    // COMBINATIONAL edge with the writeback arbiter: it queries has_result()
+bool MultiplyUnit::next_has_result() const {
+    // COMBINATIONAL edge with the writeback arbiter: it queries next_has_result()
     // AFTER this unit's evaluate in the same tick, and must see the
     // freshly-popped result. Reading next_* preserves zero cycle-count delta.
     return next_result_buffer_.valid;

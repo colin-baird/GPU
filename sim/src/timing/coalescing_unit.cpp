@@ -9,7 +9,7 @@ CoalescingUnit::CoalescingUnit(LdStUnit& ldst, L1Cache& cache,
       line_size_(line_size), stats_(stats) {}
 
 void CoalescingUnit::evaluate() {
-    // Phase 9 COMBINATIONAL same-tick read. cache.is_stalled() reflects
+    // Phase 9 COMBINATIONAL same-tick read. cache.next_stalled() reflects
     // this cycle's outcome from cache.evaluate() (handle_responses /
     // drain_secondary_chain_head), which runs earlier in TimingModel::tick().
     // Models a same-cycle backpressure handshake; the stall signal is
@@ -17,15 +17,15 @@ void CoalescingUnit::evaluate() {
     // pending_fill state. Tick order (cache.evaluate before
     // coalescing.evaluate) is part of the contract — see inventory row 9
     // in resources/timing_discipline.md.
-    if (cache_.is_stalled()) return;
+    if (cache_.next_stalled()) return;
 
     if (!processing_) {
-        if (ldst_.fifo_empty()) return;
-        const auto& fifo_front = ldst_.fifo_front();
+        if (ldst_.next_fifo_empty()) return;
+        const auto& fifo_front = ldst_.next_fifo_front();
 
         // For loads, the target warp's gather buffer must be free. If busy,
         // stall without popping — another load for this warp is outstanding.
-        if (fifo_front.is_load && gather_file_.is_busy(fifo_front.warp_id)) {
+        if (fifo_front.is_load && gather_file_.current_busy(fifo_front.warp_id)) {
             stats_.gather_buffer_stall_cycles++;
             return;
         }

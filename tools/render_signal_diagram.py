@@ -1,70 +1,54 @@
 #!/usr/bin/env python3
 """Render the timing-model signal-flow architecture poster.
 
-Reads `resources/timing_discipline.md`, parses the per-boundary inventory
-table, extracts cross-stage edges between simulator modules, and emits:
+Drives the architecture poster from one of two sources:
 
-  - A Graphviz DOT file (`tools/signal_diagram.dot`) — the architecture
-    poster, with modules grouped into Frontend & Issue / Execute / Memory /
-    Writeback / Control clusters and edges styled by classification
-    (REGISTERED solid / COMBINATIONAL dashed / READY-STALL dotted).
-  - A Mermaid companion (`tools/signal_diagram.mmd`) for inline embedding
-    in markdown viewers.
+  - **Markdown extractor** (`--source=markdown`): parses
+    `resources/timing_discipline.md`'s per-boundary inventory table.
+    Authored by hand; the cross-check view of the same data.
+  - **AST extractor** (`--source=ast`, default in Phase 4): walks the
+    libclang AST of the timing-model C++ sources, listed in
+    `build/compile_commands.json`. The C++ source is the source of truth.
 
-If Graphviz `dot` is on PATH and `--svg` is passed, the DOT is rendered to
-`tools/signal_diagram.svg` as well.
+Both extractors produce `Module` and `Edge` records (see
+`diagram_types.py`); this script emits Graphviz DOT, Mermaid, and
+optionally SVG from those records.
 
-The discipline document is the source of truth for boundary classifications
-(per project convention). This tool does not read C++ sources directly.
+Output files (under `tools/` by default):
+  - `signal_diagram.dot` — Graphviz source.
+  - `signal_diagram.mmd` — Mermaid companion for inline embedding.
+  - `signal_diagram.svg` — only when `--svg` is passed and `dot` is on PATH.
 
 Usage:
     python3 tools/render_signal_diagram.py
     python3 tools/render_signal_diagram.py --svg
-    python3 tools/render_signal_diagram.py --check    # lint, no output files
+    python3 tools/render_signal_diagram.py --check       # lint, no output files
+    python3 tools/render_signal_diagram.py --validate    # diff AST vs markdown
+    python3 tools/render_signal_diagram.py --source=ast  # AST extractor
 """
 
+from __future__ import annotations
+
 import argparse
-import re
+import os
 import shutil
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+# Ensure sibling modules import cleanly when invoked as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from diagram_types import Edge, ExtractionResult, Module  # noqa: E402
+import diagram_extract_md  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = REPO_ROOT / "resources" / "timing_discipline.md"
 DEFAULT_OUT_DIR = REPO_ROOT / "tools"
+DEFAULT_COMPILE_DB = REPO_ROOT / "build" / "compile_commands.json"
+DEFAULT_SIM_ROOT = REPO_ROOT / "sim"
 
-# Canonical module name -> cluster label. Order within a cluster is
-# preserved in the DOT output to influence layout left-to-right along
-# the natural data-flow order.
-MODULES = [
-    # Frontend & Issue (in tick-order along the front of the pipeline).
-    ("FetchStage",              "Frontend & Issue"),
-    ("DecodeStage",             "Frontend & Issue"),
-    ("WarpScheduler",           "Frontend & Issue"),
-    ("Scoreboard",              "Frontend & Issue"),
-    ("BranchShadowTracker",     "Frontend & Issue"),
-    ("OperandCollector",        "Frontend & Issue"),
-    # Execute units (siblings).
-    ("ALUUnit",                 "Execute"),
-    ("MultiplyUnit",            "Execute"),
-    ("DivideUnit",              "Execute"),
-    ("TLookupUnit",             "Execute"),
-    ("LdStUnit",                "Execute"),
-    # Memory subsystem.
-    ("CoalescingUnit",          "Memory"),
-    ("LoadGatherBufferFile",    "Memory"),
-    ("L1Cache",                 "Memory"),
-    ("ExternalMemoryInterface", "Memory"),
-    # Writeback.
-    ("WritebackArbiter",        "Writeback"),
-    # Control / orchestration. Outside the four primary clusters but
-    # included because the doc classifies edges into these nodes.
-    ("PanicController",         "Control"),
-    ("TimingModel",             "Control"),
-]
-MODULE_CLUSTER = dict(MODULES)
 CLUSTER_ORDER = ["Frontend & Issue", "Execute", "Memory", "Writeback", "Control"]
 
 # Multi-line node labels — PascalCase split so boxes can be near-square
@@ -97,312 +81,90 @@ CLUSTER_COLOR = {
     "Control":          "#ede9fe",
 }
 
-# Alias patterns matched in producer/consumer cells. Order matters: the
-# longest, most-specific names are tried first so that e.g. "L1Cache"
-# matches before the lowercase "cache" alias would. Patterns use word
-# boundaries to avoid matching substrings of unrelated identifiers.
-ALIAS_PATTERNS_RAW = [
-    # Canonical PascalCase identifiers.
-    (r"\bExternalMemoryInterface\b", "ExternalMemoryInterface"),
-    (r"\bLoadGatherBufferFile\b",    "LoadGatherBufferFile"),
-    (r"\bBranchShadowTracker\b",     "BranchShadowTracker"),
-    (r"\bWritebackArbiter\b",        "WritebackArbiter"),
-    (r"\bOperandCollector\b",        "OperandCollector"),
-    (r"\bCoalescingUnit\b",          "CoalescingUnit"),
-    (r"\bWarpScheduler\b",           "WarpScheduler"),
-    (r"\bPanicController\b",         "PanicController"),
-    (r"\bTLookupUnit\b",             "TLookupUnit"),
-    (r"\bMultiplyUnit\b",            "MultiplyUnit"),
-    (r"\bDivideUnit\b",              "DivideUnit"),
-    (r"\bDecodeStage\b",             "DecodeStage"),
-    (r"\bFetchStage\b",              "FetchStage"),
-    (r"\bScoreboard\b",              "Scoreboard"),
-    (r"\bTimingModel\b",             "TimingModel"),
-    (r"\bL1Cache\b",                 "L1Cache"),
-    (r"\bLdStUnit\b",                "LdStUnit"),
-    (r"\bALUUnit\b",                 "ALUUnit"),
-    # Lowercase / shorthand aliases used in prose and code. Snake-case
-    # forms drop the trailing `\b` so that member-access syntax like
-    # `branch_tracker_.foo()` matches (the trailing `_` is a word char,
-    # which would otherwise defeat `\b`).
-    (r"\bbranch_tracker",            "BranchShadowTracker"),
-    (r"\bgather_file",               "LoadGatherBufferFile"),
-    (r"\bwb_arbiter",                "WritebackArbiter"),
-    (r"\bcoalescing\b",              "CoalescingUnit"),
-    (r"\bscheduler\b",               "WarpScheduler"),
-    (r"\bopcoll\b",                  "OperandCollector"),
-    (r"\bmem_if",                    "ExternalMemoryInterface"),
-    (r"\btlookup\b",                 "TLookupUnit"),
-    (r"\bdecode\b",                  "DecodeStage"),
-    (r"\bfetch\b",                   "FetchStage"),
-    (r"\bldst\b",                    "LdStUnit"),
-    (r"\bcache\b",                   "L1Cache"),
-    (r"\bALU\b",                     "ALUUnit"),
-    (r"\bMUL\b",                     "MultiplyUnit"),
-    (r"\bDIV\b",                     "DivideUnit"),
+# Cycle-discipline styling: solid = REGISTERED, dashed = COMBINATIONAL.
+# The back-pressure direction overlay (dotted-blue) is applied at render
+# time based on cluster topology — see `_apply_direction_overlay`. It is
+# orthogonal to the cycle axis: a back-pressure REGISTERED accessor and
+# a back-pressure COMBINATIONAL accessor both get the dotted-blue
+# overlay, but keep their cycle-axis line style.
+EDGE_STYLE = {
+    "REGISTERED":    {"color": "#1f2937", "style": "solid"},
+    "COMBINATIONAL": {"color": "#d97706", "style": "dashed"},
+    "UNKNOWN":       {"color": "#9ca3af", "style": "dashed"},
+}
+
+# Override style applied when an edge is detected as back-pressure
+# (consumer→producer, against the dataflow direction). Color and the
+# empty arrowhead come from the prior READY/STALL style; the line style
+# is preserved from the cycle-axis classification so REGISTERED stays
+# solid-blue (committed-state read) and COMBINATIONAL stays
+# dashed-blue (live mid-tick read).
+BACK_PRESSURE_OVERRIDE = {"color": "#2563eb", "arrowhead": "empty"}
+
+# Module dataflow ordering used to detect back-pressure. Edges whose
+# `src` index is greater than `dst` index in this list run against the
+# natural dataflow and render with the back-pressure overlay.
+MODULE_DATAFLOW_ORDER: list[str] = [
+    "FetchStage", "DecodeStage", "WarpScheduler", "Scoreboard",
+    "BranchShadowTracker", "OperandCollector",
+    "ALUUnit", "MultiplyUnit", "DivideUnit", "TLookupUnit", "LdStUnit",
+    "CoalescingUnit", "LoadGatherBufferFile", "L1Cache",
+    "ExternalMemoryInterface", "WritebackArbiter",
+    "PanicController", "TimingModel",
 ]
-ALIAS_PATTERNS = [(re.compile(p, re.IGNORECASE), c) for p, c in ALIAS_PATTERNS_RAW]
 
 
-# Modules that the prose pluralises into a generic group name. When the
-# group token appears in a cell, the listed canonical members are emitted.
-GROUP_FANOUT = {
-    "ExecutionUnit": ["ALUUnit", "MultiplyUnit", "DivideUnit", "TLookupUnit", "LdStUnit"],
-}
-GROUP_PATTERNS = [(re.compile(rf"\b{name}s?\b"), members) for name, members in GROUP_FANOUT.items()]
-# Prose-form fanouts (snake_case, possibly embedded in identifiers).
-GROUP_PATTERNS.append(
-    (re.compile(r"\bexecution_units?\w*", re.IGNORECASE), GROUP_FANOUT["ExecutionUnit"]),
-)
+def _is_back_pressure(src: str, dst: str) -> bool:
+    """True if an edge runs against the natural dataflow (consumer
+    reading producer's back-pressure signal). Excludes edges to/from
+    Control-cluster modules (PanicController, TimingModel) which are
+    side-channel observers, not part of the linear dataflow."""
+    if src in ("PanicController", "TimingModel"):
+        return False
+    if dst in ("PanicController", "TimingModel"):
+        return False
+    try:
+        si = MODULE_DATAFLOW_ORDER.index(src)
+        di = MODULE_DATAFLOW_ORDER.index(dst)
+    except ValueError:
+        return False
+    return si > di
 
-# Inventory rows that are genuinely internal-to-one-module (no
-# cross-stage edge to draw). Listed here so --check stays clean.
-INTERNAL_ROWS = {6}
-
-# Default short signal name per inventory row, used as the visible edge
-# label for non-overridden rows. Auto-extracted Payload text is too long
-# and not consistently noun-like; these are 1-3 word handles aligned
-# with the doc's prose.
-ROW_LABEL = {
-    1:  "ready",          # decode→fetch back-pressure
-    2:  "pending",        # decode→fetch pending warp id
-    3:  "opcoll ready",
-    4:  "ready",          # unit→sched (5 edges)
-    8:  "scoreboard",
-    11: "gather port",
-    12: "redirect",
-    14: "drained",
-    15: "mem req/resp",
-}
-
-# Some inventory rows compound multiple unrelated signals into one row,
-# which makes the producer×consumer cross-product produce many false
-# edges between modules that happen to co-occur in the prose. For those
-# rows we hand-curate the canonical edges with explicit edge labels.
-# Format: row_number -> list of (src, dst, classification, label).
-ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
-    # Row 5: per-warp branch-shadow bit. Three writers all funnel into
-    # BranchShadowTracker; scheduler reads the tracker.
-    5: [
-        ("WarpScheduler",       "BranchShadowTracker", "REGISTERED", "branch issued"),
-        ("OperandCollector",    "BranchShadowTracker", "REGISTERED", "branch resolved"),
-        ("FetchStage",          "BranchShadowTracker", "REGISTERED", "redirect applied"),
-        ("BranchShadowTracker", "WarpScheduler",       "REGISTERED", "in_flight"),
-    ],
-    # Row 7: each execution unit publishes its result via a REGISTERED
-    # result_buffer that WritebackArbiter consumes (with a same-tick
-    # has_result COMBINATIONAL probe). Plus the LdSt→Coalescing addr-gen
-    # edge is COMBINATIONAL.
-    7: [
-        ("ALUUnit",      "WritebackArbiter", "REGISTERED",    "result"),
-        ("MultiplyUnit", "WritebackArbiter", "REGISTERED",    "result"),
-        ("DivideUnit",   "WritebackArbiter", "REGISTERED",    "result"),
-        ("TLookupUnit",  "WritebackArbiter", "REGISTERED",    "result"),
-        ("LdStUnit",     "WritebackArbiter", "REGISTERED",    "result"),
-        ("LdStUnit",     "CoalescingUnit",   "COMBINATIONAL", "addr_gen FIFO"),
-    ],
-    # Row 9: CoalescingUnit drives three downstream subsystems mid-tick;
-    # L1Cache stall flows back same-cycle COMBINATIONAL.
-    9: [
-        ("CoalescingUnit", "LdStUnit",             "REGISTERED",    "FIFO pop"),
-        ("CoalescingUnit", "LoadGatherBufferFile", "REGISTERED",    "claim"),
-        ("CoalescingUnit", "L1Cache",              "REGISTERED",    "load/store"),
-        ("L1Cache",        "CoalescingUnit",       "COMBINATIONAL", "stalled"),
-    ],
-    # Row 10: cache external surface. record_cycle_trace reads
-    # registered scratch; CoalescingUnit reads the COMBINATIONAL stall
-    # signal (already covered by row 9, deduped at emit time).
-    10: [
-        ("L1Cache", "TimingModel",    "REGISTERED",    "trace events"),
-        ("L1Cache", "CoalescingUnit", "COMBINATIONAL", "stalled"),
-    ],
-    # Row 13 mixes two distinct signals: (a) DecodeStage publishes the
-    # EBREAK request that TimingModel reads at top-of-tick, and (b) the
-    # panic-flush cascade where PanicController triggers flush() on
-    # scheduler / opcoll / gather buffer / writeback arbiter at the
-    # commit-phase boundary.
-    13: [
-        ("DecodeStage",     "TimingModel",          "REGISTERED", "ebreak"),
-        ("PanicController", "WarpScheduler",        "REGISTERED", "flush"),
-        ("PanicController", "OperandCollector",     "REGISTERED", "flush"),
-        ("PanicController", "LoadGatherBufferFile", "REGISTERED", "flush"),
-        ("PanicController", "WritebackArbiter",     "REGISTERED", "flush"),
-    ],
-}
-
-
-def find_modules(cell: str) -> list[str]:
-    """Return the canonical module names mentioned in a cell, deduped,
-    in first-occurrence order."""
-    hits: list[tuple[int, str]] = []
-    for pat, canonical in ALIAS_PATTERNS:
-        for m in pat.finditer(cell):
-            hits.append((m.start(), canonical))
-    for pat, members in GROUP_PATTERNS:
-        for m in pat.finditer(cell):
-            for member in members:
-                hits.append((m.start(), member))
-    hits.sort()
-    out: list[str] = []
-    seen: set[str] = set()
-    for _, canonical in hits:
-        if canonical not in seen:
-            out.append(canonical)
-            seen.add(canonical)
-    return out
-
-
-def parse_inventory(md: str) -> list[dict]:
-    """Extract rows from the per-boundary inventory markdown table."""
-    rows: list[dict] = []
-    lines = md.splitlines()
-    header: list[str] | None = None
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if (
-            header is None
-            and line.lstrip().startswith("| #")
-            and "Producer" in line
-            and "Consumer" in line
-        ):
-            header = [c.strip() for c in line.strip().strip("|").split("|")]
-            i += 2  # skip the |---|---| separator
-            continue
-        if header is not None:
-            stripped = line.strip()
-            if not stripped.startswith("|"):
-                header = None
-                i += 1
-                continue
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
-            if cells and cells[0].isdigit():
-                # Some rows in the doc collapse the tick-order column into
-                # an adjacent cell, producing fewer cells than the header
-                # has columns. Pad with empties so dict access is safe.
-                if len(cells) < len(header):
-                    cells = cells + [""] * (len(header) - len(cells))
-                row = dict(zip(header, cells))
-                # Stash the full row as a single string for whole-row keyword
-                # fallbacks (e.g. classification heuristics).
-                row["__full__"] = stripped
-                row["row_number"] = int(cells[0])
-                rows.append(row)
-        i += 1
-    return rows
-
-
-def classify(row: dict) -> list[str]:
-    """Classifications mentioned in a row.
-
-    Prefers the dedicated Classification cell, but falls back to scanning
-    the whole row when the cell lacks the keyword (a few rows in the doc
-    use the Classification cell for free-form notes and label the actual
-    discipline elsewhere — e.g. row 11's `next_*` arbitration is described
-    in Current state, row 14's wired-callable semantics are in Refactor
-    phase prose).
-    """
-    primary = row.get("Classification", "").lower()
-    found: list[str] = []
-    if "registered" in primary:
-        found.append("REGISTERED")
-    if "combinational" in primary:
-        found.append("COMBINATIONAL")
-    if "ready/stall" in primary:
-        found.append("READY/STALL")
-    if found:
-        return found
-    full = row.get("__full__", "").lower()
-    if "registered" in full or "next_" in full:
-        found.append("REGISTERED")
-    if "combinational" in full:
-        found.append("COMBINATIONAL")
-    if "ready/stall" in full or "ready_out" in full:
-        found.append("READY/STALL")
-    return found or ["UNKNOWN"]
-
-
-def short_payload(s: str) -> str:
-    """Compress a payload cell for use as an edge label."""
-    s = re.sub(r"`([^`]+)`", r"\1", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    if len(s) > 48:
-        s = s[:45] + "..."
-    return s
-
-
-def edges_for_row(row: dict) -> list[dict]:
-    """Generate styled edges for one inventory row.
-
-    Strategy: take the cross-product of canonical modules mentioned in
-    the Producer cell vs. the Consumer cell. Self-edges and edges that
-    duplicate an earlier (src, dst, class) tuple within the same row are
-    suppressed. This is a deliberate first-cut: a few rows with many
-    writers (e.g. row 5's branch tracker fan-in) over-generate edges,
-    but those over-generated edges are still architecturally truthful
-    (the named modules really do touch each other in that row).
-    """
-    row_num = row["row_number"]
-    default_label = ROW_LABEL.get(row_num) or short_payload(row.get("Payload", ""))
-
-    if row_num in ROW_OVERRIDES:
-        return [
-            {"src": s, "dst": d, "classification": c, "row": row_num, "label": lbl}
-            for (s, d, c, lbl) in ROW_OVERRIDES[row_num]
-        ]
-
-    producers = find_modules(row.get("Producer", ""))
-    consumers = find_modules(row.get("Consumer", ""))
-    classes = classify(row)
-    primary = classes[0]
-
-    seen: set[tuple[str, str, str]] = set()
-    edges: list[dict] = []
-    for src in producers:
-        for dst in consumers:
-            if src == dst:
-                continue
-            key = (src, dst, primary)
-            if key in seen:
-                continue
-            seen.add(key)
-            edges.append({
-                "src": src,
-                "dst": dst,
-                "classification": primary,
-                "row": row_num,
-                "label": default_label,
-            })
-    return edges
+# Validate-mode allow-list. Reserved for future divergences that are
+# legitimate (e.g. a markdown row that documents an architectural
+# carve-out the AST can't infer); empty as of the AST/markdown
+# reconciliation pass.
+VALIDATE_ALLOW_LIST: set[tuple[str, str, str, str]] = set()
 
 
 # ----------------------------------------------------------------------------
 # Output emitters
 # ----------------------------------------------------------------------------
 
-EDGE_STYLE = {
-    "REGISTERED":    {"color": "#1f2937", "style": "solid"},
-    "COMBINATIONAL": {"color": "#d97706", "style": "dashed"},
-    "READY/STALL":   {"color": "#2563eb", "style": "dotted", "arrowhead": "empty"},
-    "UNKNOWN":       {"color": "#9ca3af", "style": "dashed"},
+SOURCE_LEGEND = {
+    "ast":      "generated from sim/{include,src}/timing/ via libclang AST",
+    "markdown": "generated from resources/timing_discipline.md",
 }
 
 
-def emit_dot(edges: list[dict]) -> str:
+def emit_dot(modules: list[Module], edges: list[Edge],
+             *, source: str = "ast") -> str:
+    """Emit a Graphviz DOT representation of the diagram."""
     out: list[str] = []
     out.append("digraph signal_flow {")
     out.append('  rankdir=TB;')
     # Title and a small inline legend live in an HTML graph label so the
     # legend doesn't form a disconnected component (which used to confuse
     # graphviz's rank assignment).
+    subtitle = SOURCE_LEGEND.get(source, SOURCE_LEGEND["ast"])
     legend_html = (
         '<<table border="0" cellborder="0" cellspacing="2">'
         '<tr><td align="center" colspan="3"><font point-size="14"><b>Timing-model signal flow</b></font><br/>'
-        '<font point-size="9">generated from resources/timing_discipline.md</font></td></tr>'
+        f'<font point-size="9">{subtitle}</font></td></tr>'
         '<tr>'
         '<td><font color="#1f2937">━━</font> REGISTERED (1-cycle)</td>'
         '<td><font color="#d97706">┄┄</font> COMBINATIONAL (same-cycle)</td>'
-        '<td><font color="#2563eb">┈┈▷</font> READY/STALL (back-pressure)</td>'
+        '<td><font color="#2563eb">▷</font> back-pressure direction overlay</td>'
         '</tr></table>>'
     )
     out.append(
@@ -422,11 +184,12 @@ def emit_dot(edges: list[dict]) -> str:
     out.append('  edge  [fontname="Helvetica", fontsize=10, color="#374151"];')
     out.append("")
 
+    cluster_of: dict[str, str] = {m.name: m.cluster for m in modules}
     by_cluster: dict[str, list[str]] = defaultdict(list)
-    for name, cluster in MODULES:
-        by_cluster[cluster].append(name)
+    for m in modules:
+        by_cluster[m.cluster].append(m.name)
 
-    for ci, cluster in enumerate(CLUSTER_ORDER):
+    for cluster in CLUSTER_ORDER:
         if not by_cluster.get(cluster):
             continue
         sanitized = cluster.replace(" ", "_").replace("&", "and")
@@ -458,64 +221,69 @@ def emit_dot(edges: list[dict]) -> str:
         out.append("  }")
         out.append("")
 
-
-    # Edges. Group by (src, dst, classification) and aggregate row numbers.
-    # Within a group, distinct labels are joined with " / ".
-    grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    # Group edges by (src, dst, classification) so parallel rows collapse
+    # onto a single rendered edge with combined labels.
+    grouped: dict[tuple[str, str, str], list[Edge]] = defaultdict(list)
     for e in edges:
-        grouped[(e["src"], e["dst"], e["classification"])].append(e)
-
-    # Per-node fan counts (used to choose head/tail label placement: put
-    # labels at whichever endpoint is the "spread" side, so labels stay
-    # near unique anchors instead of stacking at a shared endpoint).
-    fan_out: dict[str, int] = defaultdict(int)
-    fan_in: dict[str, int] = defaultdict(int)
-    for (s, d, _) in grouped:
-        fan_out[s] += 1
-        fan_in[d] += 1
+        grouped[(e.src, e.dst, e.classification)].append(e)
 
     for (src, dst, klass), group in sorted(grouped.items()):
-        style = EDGE_STYLE[klass]
-        sorted_group = sorted(group, key=lambda g: g["row"])
-        rows_label = ",".join(str(g["row"]) for g in sorted_group)
+        style = dict(EDGE_STYLE.get(klass, EDGE_STYLE["UNKNOWN"]))
+        # Apply the back-pressure direction overlay when the edge runs
+        # consumer→producer (against the natural dataflow ordering in
+        # `MODULE_DATAFLOW_ORDER`). The overlay tints the color and
+        # switches the arrowhead while preserving the cycle-axis line
+        # style — so a back-pressure REGISTERED edge is solid blue and
+        # a back-pressure COMBINATIONAL edge is dashed blue.
+        back_pressure = _is_back_pressure(src, dst)
+        if back_pressure:
+            style.update(BACK_PRESSURE_OVERRIDE)
+        sorted_group = sorted(group, key=lambda g: (g.source_row if g.source_row is not None else 0))
+        rows_label = ",".join(
+            str(g.source_row) for g in sorted_group if g.source_row is not None
+        )
         labels_seen: list[str] = []
         for g in sorted_group:
-            if g["label"] and g["label"] not in labels_seen:
-                labels_seen.append(g["label"])
-        edge_label = " / ".join(labels_seen) if labels_seen else f"row {rows_label}"
+            if g.label and g.label not in labels_seen:
+                labels_seen.append(g.label)
+        edge_label = " / ".join(labels_seen) if labels_seen else (
+            f"row {rows_label}" if rows_label else ""
+        )
         attrs = [f'color="{style["color"]}"', f'style={style["style"]}']
         if "arrowhead" in style:
             attrs.append(f'arrowhead={style["arrowhead"]}')
         # constraint=false marks edges that shouldn't influence rank
         # assignment, so layout follows the main data-flow DAG and these
         # edges float around it.
-        # - READY/STALL: flow backward against data direction.
+        # - back-pressure: flow backward against data direction.
         # - Control-cluster edges (PanicController, TimingModel): a
         #   side-channel observer; letting these edges constrain ranks
         #   pulls TimingModel away from PanicController and stretches
         #   the Control cluster across the whole graph height.
-        if (klass == "READY/STALL"
-                or MODULE_CLUSTER.get(src) == "Control"
-                or MODULE_CLUSTER.get(dst) == "Control"):
+        if (back_pressure
+                or cluster_of.get(src) == "Control"
+                or cluster_of.get(dst) == "Control"):
             attrs.append("constraint=false")
         # xlabel = external auxiliary label. With forcelabels=true on
         # the graph, graphviz repositions xlabels along the edge to
         # avoid collisions with nodes, cluster boxes, and other labels.
         # This works better than head/tail anchoring for dense graphs.
         attrs.append(f'xlabel="{edge_label}"')
-        attrs.append(f'tooltip="row {rows_label}: {edge_label}"')
+        tooltip = f"row {rows_label}: {edge_label}" if rows_label else edge_label
+        attrs.append(f'tooltip="{tooltip}"')
         out.append(f'  "{src}" -> "{dst}" [{", ".join(attrs)}];')
 
     out.append("}")
     return "\n".join(out) + "\n"
 
 
-def emit_mermaid(edges: list[dict]) -> str:
+def emit_mermaid(modules: list[Module], edges: list[Edge]) -> str:
+    """Emit a Mermaid flowchart for inline embedding."""
     out: list[str] = []
     out.append("flowchart LR")
     by_cluster: dict[str, list[str]] = defaultdict(list)
-    for name, cluster in MODULES:
-        by_cluster[cluster].append(name)
+    for m in modules:
+        by_cluster[m.cluster].append(m.name)
     for cluster in CLUSTER_ORDER:
         if not by_cluster.get(cluster):
             continue
@@ -525,27 +293,152 @@ def emit_mermaid(edges: list[dict]) -> str:
             out.append(f"    {name}")
         out.append("  end")
 
-    grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[Edge]] = defaultdict(list)
     for e in edges:
-        grouped[(e["src"], e["dst"], e["classification"])].append(e)
+        grouped[(e.src, e.dst, e.classification)].append(e)
     for (src, dst, klass), group in sorted(grouped.items()):
-        sorted_group = sorted(group, key=lambda g: g["row"])
+        sorted_group = sorted(group, key=lambda g: (g.source_row if g.source_row is not None else 0))
         labels_seen: list[str] = []
         for g in sorted_group:
-            if g["label"] and g["label"] not in labels_seen:
-                labels_seen.append(g["label"])
-        edge_label = " / ".join(labels_seen) if labels_seen else "row " + ",".join(
-            str(g["row"]) for g in sorted_group
-        )
+            if g.label and g.label not in labels_seen:
+                labels_seen.append(g.label)
+        if labels_seen:
+            edge_label = " / ".join(labels_seen)
+        else:
+            rows = [str(g.source_row) for g in sorted_group if g.source_row is not None]
+            edge_label = "row " + ",".join(rows) if rows else ""
         # Mermaid requires escaping pipe and quotes in labels.
         edge_label = edge_label.replace("|", "\\|").replace('"', "'")
-        if klass == "REGISTERED" or klass == "UNKNOWN":
-            out.append(f"  {src} -->|{edge_label}| {dst}")
-        elif klass == "COMBINATIONAL":
+        # Mermaid doesn't have a great way to overlay direction tints, so
+        # the cycle axis dictates arrow style: solid (REGISTERED) /
+        # dashed (COMBINATIONAL). Back-pressure direction is implicit in
+        # the (src, dst) pair when read alongside the cluster layout.
+        if klass == "COMBINATIONAL":
             out.append(f"  {src} -.->|{edge_label}| {dst}")
-        else:  # READY/STALL
-            out.append(f"  {src} -. {edge_label} .-> {dst}")
+        else:
+            out.append(f"  {src} -->|{edge_label}| {dst}")
     return "\n".join(out) + "\n"
+
+
+# ----------------------------------------------------------------------------
+# Extraction dispatch
+# ----------------------------------------------------------------------------
+
+def run_extractor(source: str, *, md_path: Path, compile_db: Path,
+                  sim_root: Path) -> ExtractionResult:
+    """Dispatch to the requested extractor and return its result."""
+    if source == "markdown":
+        return diagram_extract_md.extract(md_path)
+    if source == "ast":
+        try:
+            import diagram_extract_ast  # noqa: WPS433 — lazy import
+        except ImportError as exc:
+            print(
+                f"error: AST extractor unavailable ({exc}). Install via:\n"
+                "    pip install -r tools/requirements.txt\n"
+                "  or rerun with --source=markdown.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return diagram_extract_ast.extract(
+            compile_commands=compile_db,
+            sim_root=sim_root,
+        )
+    raise ValueError(f"unknown source: {source!r}")
+
+
+# ----------------------------------------------------------------------------
+# Validation
+# ----------------------------------------------------------------------------
+
+def diff_results(ast: ExtractionResult, md: ExtractionResult,
+                 *, strict: bool = False) -> tuple[bool, list[str]]:
+    """Compare two extraction results.
+
+    Returns (had_differences, lines_to_print). Edges are compared on the
+    (src, dst, classification) triple; labels are ignored because the
+    extractors generate them differently. When `strict=False` the
+    `VALIDATE_ALLOW_LIST` is honored — listed differences are reported
+    as informational and don't flip `had_differences`.
+    """
+    lines: list[str] = []
+    had_diff = False
+
+    ast_modules = {m.name for m in ast.modules}
+    md_modules = {m.name for m in md.modules}
+    only_ast_mods = sorted(ast_modules - md_modules)
+    only_md_mods = sorted(md_modules - ast_modules)
+    if only_ast_mods:
+        had_diff = True
+        lines.append(f"modules only in AST: {only_ast_mods}")
+    if only_md_mods:
+        had_diff = True
+        lines.append(f"modules only in markdown: {only_md_mods}")
+
+    ast_edges = {(e.src, e.dst, e.classification) for e in ast.edges}
+    md_edges = {(e.src, e.dst, e.classification) for e in md.edges}
+
+    def _split_allowed(diffs: set[tuple[str, str, str]], side: str
+                       ) -> tuple[list, list]:
+        unexpected, allowed = [], []
+        for triple in sorted(diffs):
+            key = (*triple, side)
+            (allowed if key in VALIDATE_ALLOW_LIST else unexpected).append(triple)
+        return unexpected, allowed
+
+    only_ast = ast_edges - md_edges
+    only_md = md_edges - ast_edges
+    ast_unexpected, ast_allowed = _split_allowed(only_ast, "ast-only")
+    md_unexpected, md_allowed = _split_allowed(only_md, "markdown-only")
+
+    if ast_unexpected:
+        had_diff = True
+        lines.append(f"edges only in AST ({len(ast_unexpected)}):")
+        for triple in ast_unexpected:
+            lines.append(f"  {triple[0]} -> {triple[1]} [{triple[2]}]")
+    if ast_allowed and strict:
+        had_diff = True
+        lines.append(f"allow-listed AST-only edges ({len(ast_allowed)}):")
+        for triple in ast_allowed:
+            lines.append(f"  {triple[0]} -> {triple[1]} [{triple[2]}]")
+    elif ast_allowed:
+        lines.append(f"allow-listed AST-only edges ({len(ast_allowed)}, ignored):")
+        for triple in ast_allowed:
+            lines.append(f"  {triple[0]} -> {triple[1]} [{triple[2]}]")
+
+    if md_unexpected:
+        had_diff = True
+        lines.append(f"edges only in markdown ({len(md_unexpected)}):")
+        for triple in md_unexpected:
+            lines.append(f"  {triple[0]} -> {triple[1]} [{triple[2]}]")
+    if md_allowed and strict:
+        had_diff = True
+        lines.append(f"allow-listed markdown-only edges ({len(md_allowed)}):")
+        for triple in md_allowed:
+            lines.append(f"  {triple[0]} -> {triple[1]} [{triple[2]}]")
+    elif md_allowed:
+        lines.append(f"allow-listed markdown-only edges ({len(md_allowed)}, ignored):")
+        for triple in md_allowed:
+            lines.append(f"  {triple[0]} -> {triple[1]} [{triple[2]}]")
+
+    # Classification disagreements: same (src, dst), different class.
+    ast_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
+    md_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for e in ast.edges:
+        ast_pairs[(e.src, e.dst)].add(e.classification)
+    for e in md.edges:
+        md_pairs[(e.src, e.dst)].add(e.classification)
+    disagreements: list[tuple[tuple[str, str], set[str], set[str]]] = []
+    for pair in sorted(set(ast_pairs) & set(md_pairs)):
+        if ast_pairs[pair] != md_pairs[pair]:
+            disagreements.append((pair, ast_pairs[pair], md_pairs[pair]))
+    if disagreements:
+        had_diff = True
+        lines.append(f"classification disagreements ({len(disagreements)}):")
+        for (src, dst), a, m in disagreements:
+            lines.append(f"  {src} -> {dst}: ast={sorted(a)} markdown={sorted(m)}")
+
+    return had_diff, lines
 
 
 # ----------------------------------------------------------------------------
@@ -556,45 +449,82 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--input", type=Path, default=DEFAULT_INPUT,
                     help="Path to timing_discipline.md (default: %(default)s)")
+    ap.add_argument("--compile-db", type=Path, default=DEFAULT_COMPILE_DB,
+                    help="Path to compile_commands.json for the AST extractor "
+                         "(default: %(default)s)")
+    ap.add_argument("--sim-root", type=Path, default=DEFAULT_SIM_ROOT,
+                    help="Path to the sim source root (default: %(default)s)")
+    ap.add_argument("--source", choices=("markdown", "ast"), default="ast",
+                    help="Extractor to use (default: %(default)s)")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
                     help="Output directory (default: %(default)s)")
     ap.add_argument("--svg", action="store_true",
                     help="Also render an SVG via `dot` if available")
     ap.add_argument("--check", action="store_true",
-                    help="Lint only: report rows that produced no edges and exit nonzero on findings")
+                    help="Lint only: report extractor warnings and exit nonzero")
+    ap.add_argument("--validate", action="store_true",
+                    help="Run both extractors and diff their results; exit "
+                         "nonzero on any difference (the allow-list at "
+                         "render_signal_diagram.VALIDATE_ALLOW_LIST is "
+                         "empty by default — both sources should agree)")
+    ap.add_argument("--strict", action="store_true",
+                    help="With --validate, also fail on allow-listed "
+                         "differences (no-op while VALIDATE_ALLOW_LIST is "
+                         "empty)")
     args = ap.parse_args(argv)
 
-    md = args.input.read_text()
-    rows = parse_inventory(md)
-    if not rows:
-        print(f"error: no inventory table found in {args.input}", file=sys.stderr)
+    if args.validate:
+        md_result = run_extractor(
+            "markdown",
+            md_path=args.input,
+            compile_db=args.compile_db,
+            sim_root=args.sim_root,
+        )
+        ast_result = run_extractor(
+            "ast",
+            md_path=args.input,
+            compile_db=args.compile_db,
+            sim_root=args.sim_root,
+        )
+        had_diff, lines = diff_results(ast_result, md_result, strict=args.strict)
+        for line in lines:
+            print(line)
+        if not had_diff:
+            print("validate: no unexpected differences")
+        return 1 if had_diff else 0
+
+    result = run_extractor(
+        args.source,
+        md_path=args.input,
+        compile_db=args.compile_db,
+        sim_root=args.sim_root,
+    )
+
+    def _is_summary(w: str) -> bool:
+        # Each extractor's leading warning is an informational summary
+        # ("parsed N rows..." for markdown, "AST extractor: parsed N
+        # TUs..." for AST). They are not findings.
+        return w.startswith("parsed ") or w.startswith("AST extractor:")
+
+    for w in result.warnings:
+        if _is_summary(w):
+            print(w)
+        else:
+            print(f"warning: {w}", file=sys.stderr)
+
+    if not result.modules and not result.edges:
+        print("error: extractor produced no output", file=sys.stderr)
         return 2
 
-    all_edges: list[dict] = []
-    empty_rows: list[int] = []
-    unknown_rows: list[int] = []
-    for row in rows:
-        edges = edges_for_row(row)
-        if not edges and row["row_number"] not in INTERNAL_ROWS:
-            empty_rows.append(row["row_number"])
-        if classify(row) == ["UNKNOWN"]:
-            unknown_rows.append(row["row_number"])
-        all_edges.extend(edges)
-
-    print(f"parsed {len(rows)} inventory rows -> {len(all_edges)} edges")
-    if empty_rows:
-        print(f"warning: rows with no extractable edges: {empty_rows}", file=sys.stderr)
-    if unknown_rows:
-        print(f"warning: rows with unrecognised classification: {unknown_rows}", file=sys.stderr)
-
     if args.check:
-        return 1 if (empty_rows or unknown_rows) else 0
+        findings = [w for w in result.warnings if not _is_summary(w)]
+        return 1 if findings else 0
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     dot_path = args.out_dir / "signal_diagram.dot"
     mmd_path = args.out_dir / "signal_diagram.mmd"
-    dot_path.write_text(emit_dot(all_edges))
-    mmd_path.write_text(emit_mermaid(all_edges))
+    dot_path.write_text(emit_dot(result.modules, result.edges, source=args.source))
+    mmd_path.write_text(emit_mermaid(result.modules, result.edges))
     print(f"wrote {dot_path}")
     print(f"wrote {mmd_path}")
 
@@ -606,17 +536,17 @@ def main(argv: list[str] | None = None) -> int:
             # `dot` may emit non-fatal init_rank warnings on densely
             # clustered graphs and exit nonzero even though it wrote the
             # SVG. Treat the file's existence as the success signal.
-            result = subprocess.run(
+            svg_result = subprocess.run(
                 ["dot", "-Tsvg", str(dot_path), "-o", str(svg_path)],
                 capture_output=True, text=True,
             )
             if svg_path.exists() and svg_path.stat().st_size > 0:
                 print(f"wrote {svg_path}")
-                if result.returncode != 0:
-                    print(f"note: dot reported a warning (exit {result.returncode}): {result.stderr.strip()}", file=sys.stderr)
+                if svg_result.returncode != 0:
+                    print(f"note: dot reported a warning (exit {svg_result.returncode}): {svg_result.stderr.strip()}", file=sys.stderr)
             else:
-                print(f"error: dot failed (exit {result.returncode}): {result.stderr}", file=sys.stderr)
-                return result.returncode
+                print(f"error: dot failed (exit {svg_result.returncode}): {svg_result.stderr}", file=sys.stderr)
+                return svg_result.returncode
 
     return 0
 

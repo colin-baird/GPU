@@ -51,10 +51,16 @@ struct SchedulerFixture {
         }
 
         scheduler = std::make_unique<WarpScheduler>(
-            num_warps, warps.data(), scoreboard, branch_tracker, func_model, stats);
-        // Phase 4: no consumers wired -> default "all ready". Tests that
-        // need to gate opcoll or a specific unit busy use the override hooks
-        // (set_opcoll_ready_override / set_unit_ready_override) below.
+            num_warps, warps.data(), func_model, stats);
+        // Phase 2: scoreboard and branch_tracker are now wired via
+        // set_dependencies() (post-construction pointer wiring) instead of
+        // through the constructor. opcoll/unit pointers stay null in this
+        // fixture; tests that need to gate opcoll or a specific unit busy
+        // use the override hooks (set_opcoll_ready_override /
+        // set_unit_ready_override) below.
+        scheduler->set_dependencies(&scoreboard, &branch_tracker,
+                                    nullptr, nullptr, nullptr, nullptr,
+                                    nullptr, nullptr);
     }
 
     // Push a decoded instruction into a warp's buffer
@@ -209,7 +215,7 @@ TEST_CASE("WarpScheduler: sets scoreboard pending on issue", "[scheduler]") {
     f.scoreboard.commit();
 
     // After commit, x5 should be pending
-    REQUIRE(f.scoreboard.is_pending(0, 5));
+    REQUIRE(f.scoreboard.current_pending(0, 5));
 }
 
 TEST_CASE("WarpScheduler: RR pointer advances even when idle", "[scheduler]") {

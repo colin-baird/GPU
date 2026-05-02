@@ -22,4 +22,16 @@ if(BUILD_TESTS)
     add_subdirectory(tests/softmax_row)
     add_subdirectory(tests/embedding_gather)
     add_subdirectory(tests/layernorm_lite)
+    add_subdirectory(tests/synthetic)
+
+    # Cross-stage accessor naming lint. Phase 6 of the
+    # naming-and-access-discipline refactor: enforcement mode (any
+    # finding fails the test). Use `tools/lint_timing_naming.py
+    # --report-only` locally to inspect findings without failing.
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME timing_naming_lint
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_SOURCE_DIR}/tools/lint_timing_naming.py)
+    endif()
 endif()

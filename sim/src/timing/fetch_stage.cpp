@@ -11,13 +11,13 @@ FetchStage::FetchStage(uint32_t num_warps, WarpState* warps,
 
 bool FetchStage::query_decode_ready() const {
     if (has_ready_override_) return decode_ready_override_;
-    if (decode_) return decode_->ready_to_consume_fetch();
+    if (decode_) return !decode_->current_busy();
     return true;  // no decode wired (unit-test default): never backpressure
 }
 
 std::optional<uint32_t> FetchStage::query_decode_pending_warp() const {
     if (has_pending_override_) return decode_pending_warp_override_;
-    if (decode_) return decode_->pending_warp();
+    if (decode_) return decode_->current_pending_warp();
     return std::nullopt;
 }
 
@@ -102,7 +102,12 @@ void FetchStage::commit() {
     // becomes visible to fetch.commit() at cycle N+1, applying the flush
     // there. This adds +1 cycle to mispredict-recovery vs. the prior
     // mid-tick mutation — accepted by Option A.
-    const RedirectRequest req = read_redirect_request(redirect_override_, opcoll_);
+    RedirectRequest req;
+    if (redirect_override_) {
+        req = *redirect_override_;
+    } else if (opcoll_) {
+        req = opcoll_->current_redirect_request_or_override(std::nullopt);
+    }
     if (req.valid) {
         apply_redirect(req.warp_id, req.target_pc);
     }

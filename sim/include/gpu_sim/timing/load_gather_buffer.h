@@ -32,7 +32,7 @@ public:
 
     LoadGatherBufferFile(uint32_t num_warps, Stats& stats);
 
-    bool is_busy(uint32_t warp_id) const;
+    bool current_busy(uint32_t warp_id) const;
 
     void claim(uint32_t warp_id, uint8_t dest_reg, uint32_t pc,
                uint64_t issue_cycle, uint32_t raw_instruction);
@@ -52,14 +52,14 @@ public:
     // Panic flush hook. Called at the commit-phase boundary when the panic
     // signal becomes active. Delegates to reset().
     void flush();
-    bool has_result() const override;
+    bool next_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
     // LoadGatherBufferFile is a writeback source (consumed by the writeback
     // arbiter), never a scheduler dispatch target. The scheduler routes
-    // LDST instructions to LdStUnit, so ready_out() is a constant true that
-    // the scheduler never queries.
-    bool ready_out() const override { return true; }
+    // LDST instructions to LdStUnit, so current_busy() is a constant false
+    // that the scheduler never queries.
+    bool current_busy() const override { return false; }
 
     uint32_t num_buffers() const { return num_warps_; }
     const LoadGatherBuffer& buffer(uint32_t warp_id) const { return buffers_[warp_id]; }

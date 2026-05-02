@@ -272,8 +272,8 @@ TEST_CASE("Trace snapshot: load miss is classified as memory_wait", "[integratio
     TimingModel timing(f.config, f.model, f.stats);
     bool saw_memory_wait = false;
     for (uint32_t i = 0; i < 40 && timing.tick(); ++i) {
-        REQUIRE(timing.last_cycle_snapshot().has_value());
-        const auto& warp = timing.last_cycle_snapshot()->warps[0];
+        REQUIRE(timing.current_cycle_snapshot().has_value());
+        const auto& warp = timing.current_cycle_snapshot()->warps[0];
         if (warp.state == WarpTraceState::MEMORY_WAIT) {
             saw_memory_wait = true;
             REQUIRE(warp.rest_reason == WarpRestReason::WAIT_MEMORY_RESPONSE);
@@ -303,8 +303,8 @@ TEST_CASE("Trace snapshot: MSHR pressure is classified as wait_l1_mshr", "[integ
     TimingModel timing(f.config, f.model, f.stats);
     bool saw_mshr_wait = false;
     for (uint32_t i = 0; i < 60 && timing.tick(); ++i) {
-        REQUIRE(timing.last_cycle_snapshot().has_value());
-        const auto& snapshot = *timing.last_cycle_snapshot();
+        REQUIRE(timing.current_cycle_snapshot().has_value());
+        const auto& snapshot = *timing.current_cycle_snapshot();
         for (uint32_t w = 0; w < 2; ++w) {
             const auto& warp = snapshot.warps[w];
             if (warp.state == WarpTraceState::AT_REST &&

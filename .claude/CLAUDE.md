@@ -42,8 +42,15 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
   include/runner/                # Runner headers
 /tests/                        # Backend-agnostic test suites
   riscv-isa/                     # Official RISC-V ISA compliance tests
+  synthetic/                     # Targeted spec-edge kernels (Phase 6 bug-hunt)
+  test_signal_diagram.py         # Snapshot test for the AST signal-flow extractor
 /tools/                        # Developer tooling
   bench_compare.py               # A/B benchmark comparison and history tracking
+  render_signal_diagram.py       # Architecture poster renderer: emits DOT/Mermaid/SVG
+  diagram_types.py               # Module/Edge dataclasses shared by extractors and renderer
+  diagram_extract_ast.py         # libclang-driven extractor (the default `--source=ast`)
+  diagram_extract_md.py          # Markdown-driven extractor (cross-check via `--source=markdown`)
+  requirements.txt               # Python deps for the AST extractor (clang>=14)
 /resources/
   gpu_architectural_spec.md      # Full architectural spec (the source of truth)
   riscv_card.md                  # RISC-V ISA reference card
@@ -61,6 +68,7 @@ Build from the project root: `cmake -B build && cmake --build build -j8`
 3. **Uniform interfaces** — all execution units use valid-in/valid-out with warp tags.
 4. **Hide latency via warp switching** — multiple resident warps cover memory and long-latency operation delays.
 5. **FPGA-friendly** — DSP slices for multiply, BRAMs for storage, no associative matching or multi-ported structures.
+6. **Synchronous pipeline discipline.** Every cross-stage signal in the timing model is either REGISTERED forward (consumer reads producer's `current_*` next cycle, +1 cycle of pipeline depth) or COMBINATIONAL backward (producer asserts mid-cycle, consumer reads same cycle). When designing any new cross-stage edge, sketch both the forward data wire and the backward stall/control wire before writing code. If a proposed design has only a forward edge with a registered "response" or "accept" slot, you've reached for a state machine where a ready/stall wire is the canonical hardware answer. The evaluate sweep runs back-to-front so backward producers run before their consumers. See [/resources/timing_discipline.md](/resources/timing_discipline.md).
 
 ## Target Workload
 
@@ -158,6 +166,7 @@ This rule applies in every context — multi-agent workflow, direct implementati
 | New feature or capability visible to users (new CLI flags, new execution mode, new benchmark) | `README.md`, `resources/onboarding.md` if it affects workflow |
 | New documentation artifact created | `AGENTS.md` Key References |
 | Agent prompt or workflow rule changed | `AGENTS.md` |
+| New cross-stage accessor in the timing model | Lint passes (`tools/lint_timing_naming.py`, enforced via CTest target `timing_naming_lint`) |
 | Change kept without targeted tests | Add entry to `UNTESTED.md` |
 | Targeted tests committed for a logged change | Remove entry from `UNTESTED.md` |
 
@@ -185,7 +194,7 @@ These apply to all agents and the orchestrator:
 - Don't make assumptions about any interfaces — consult the documentation and implementation files.
 - When creating a new documentation artifact, use Markdown, place it in `./resources`, and add a pointer to the Key References section of `AGENTS.md`.
 - Strictly adhere to the architectural spec. Ask before making assumptions or deviations.
-- Strictly adhere to the coding standard documentation (`/resources/cpp_coding_standard.md`).
+- Strictly adhere to the coding standard documentation (`/resources/cpp_coding_standard.md`). Cross-stage accessors in the timing model follow the prefix / postfix / polarity rules documented in `/resources/cpp_coding_standard.md` § Cross-stage accessor naming; the rationale and per-boundary inventory are in `/resources/timing_discipline.md`.
 - When creating new sources of build artifacts, update the global `.gitignore` to exclude them from tracking.
 - Use `bash ./tests/run_workload_benchmarks.sh --build-dir build` as the canonical workload benchmark entry point. Benchmark automation and validation should consume its `RESULT` and `SUMMARY` lines rather than scraping individual benchmark binaries directly.
 - Use `python3 tools/bench_compare.py --baseline <git-ref>` for A/B benchmark comparisons when evaluating architectural changes. The tool builds the baseline in a temporary worktree, runs all benchmarks, computes deltas, and stores results in a local SQLite database for trend analysis. All six benchmark binaries support `--json` for structured output. Key flags: `--bench <name>` to filter, `--threshold <pct>` to control highlighting, `--history <bench>` to view trends.

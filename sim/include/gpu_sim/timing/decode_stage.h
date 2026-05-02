@@ -38,8 +38,7 @@ public:
     const EBreakRequest& current_ebreak_request() const {
         return current_ebreak_request_;
     }
-    bool has_pending() const { return pending_.valid; }
-    std::optional<uint32_t> pending_warp() const {
+    std::optional<uint32_t> current_pending_warp() const {
         if (!pending_.valid) return std::nullopt;
         return pending_.target_warp;
     }
@@ -47,11 +46,12 @@ public:
         return pending_.valid ? &pending_.entry : nullptr;
     }
 
-    // True if decode can accept a new fetch output this cycle. Reads only
+    // Back-pressure (REGISTERED + back-pressure direction): true when
+    // decode cannot accept a new fetch output this cycle. Reads only
     // committed state (pending_, mutated only by commit()): decode.evaluate()
     // consumes a new fetch output only when its pending slot is empty at
     // evaluate time, which equals committed state.
-    bool ready_to_consume_fetch() const { return !pending_.valid; }
+    bool current_busy() const { return pending_.valid; }
 
     // Phase 5: wire opcoll so decode.commit() can read its REGISTERED
     // current_redirect_request() and invalidate any matching pending entry.
@@ -91,7 +91,7 @@ private:
     // Pending decode result (staged for commit). pending_ is committed state
     // at evaluate time: it was last mutated by the previous cycle's commit()
     // (push attempt) or evaluate() (pull). The READY/STALL contract requires
-    // FetchStage::evaluate() to read ready_to_consume_fetch() (computed from
+    // FetchStage::evaluate() to read current_busy() (computed from
     // pending_) before this cycle's decode.evaluate() mutates it — this is
     // ensured by tick order: fetch.evaluate() runs before decode.evaluate().
     struct PendingDecode {

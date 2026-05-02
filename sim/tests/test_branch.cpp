@@ -248,11 +248,16 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     branch_tracker.note_branch_issued(0);
     branch_tracker.commit();
 
-    WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
-                            func_model, stats);
-    // Phase 4: with no consumers wired the scheduler defaults to "all ready",
-    // matching the prior behavior of these explicit setters. Overrides remain
-    // available if a test wants to gate ALU/opcoll explicitly.
+    WarpScheduler scheduler(1, warps.data(), func_model, stats);
+    // Phase 2: scoreboard and branch_tracker now arrive via
+    // set_dependencies() (post-construction pointer wiring) instead of
+    // through the constructor. With opcoll/units left null, the scheduler
+    // defaults to "all ready" — matching the prior behavior of these
+    // explicit setters. Overrides remain available if a test wants to
+    // gate ALU/opcoll explicitly.
+    scheduler.set_dependencies(&scoreboard, &branch_tracker,
+                               nullptr, nullptr, nullptr, nullptr,
+                               nullptr, nullptr);
 
     scoreboard.seed_next();
     branch_tracker.seed_next();
@@ -291,7 +296,7 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     REQUIRE(stats.total_instructions_issued == 1);
     REQUIRE(warps[0].instr_buffer.is_empty());
 
-    // Self-check: if the `if (branch_tracker_.is_in_flight(w))` block in
+    // Self-check: if the `if (branch_tracker_.current_in_flight(w))` block in
     // warp_scheduler.cpp were removed, the first evaluate() would issue
     // the ADDI (output has_value, ISSUED diagnostic, instructions_issued == 1,
     // warp_stall_branch_shadow == 0) — every one of the first-phase
@@ -422,7 +427,7 @@ TEST_CASE("Branch: mispredict flush drains warp buffer and forces refill delay",
             buffer_empty_stall_before = stats.warp_stall_buffer_empty[0];
         }
         if (mispredict_seen && !refill_rest_observed) {
-            const auto& snap = timing.last_cycle_snapshot();
+            const auto& snap = timing.current_cycle_snapshot();
             // Phase 5 (+1 cycle on mispredict): the redirect is now
             // REGISTERED through opcoll.commit -> fetch.commit, so the
             // mispredict-cycle's flush is deferred by one cycle. The warp

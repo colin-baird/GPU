@@ -25,8 +25,8 @@ public:
     void add_source(ExecutionUnit* unit);
 
     // The writeback that happened this cycle (for stats/trace)
-    const std::optional<WritebackEntry>& committed_entry() const { return committed_; }
-    bool has_pending_work() const;
+    const std::optional<WritebackEntry>& current_committed_entry() const { return committed_; }
+    bool current_busy() const;
     uint32_t ready_source_count() const;
 
 private:

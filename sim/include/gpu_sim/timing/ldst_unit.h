@@ -21,11 +21,11 @@ class LdStUnit : public ExecutionUnit {
 public:
     LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats);
 
-    bool ready_out() const override { return !current_busy_; }
+    bool current_busy() const override { return current_busy_; }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool has_result() const override;
+    bool next_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
 
@@ -35,11 +35,11 @@ public:
     // LdStUnit::evaluate -- COMBINATIONAL edge. These accessors expose the
     // live (next_*) FIFO so a freshly-pushed entry is visible to coalescing
     // in the same tick (preserving zero cycle delta with pre-Phase-1 code).
-    bool fifo_empty() const { return next_addr_gen_fifo_.empty(); }
-    const AddrGenFIFOEntry& fifo_front() const { return next_addr_gen_fifo_.front(); }
+    bool next_fifo_empty() const { return next_addr_gen_fifo_.empty(); }
+    const AddrGenFIFOEntry& next_fifo_front() const { return next_addr_gen_fifo_.front(); }
     void fifo_pop() { next_addr_gen_fifo_.pop_front(); }
     bool busy() const { return current_busy_; }
-    uint32_t cycles_remaining() const { return current_cycles_remaining_; }
+    uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
     std::optional<uint32_t> active_warp() const {
         if (!current_busy_) return std::nullopt;
         return current_pending_entry_.warp_id;
@@ -49,7 +49,7 @@ public:
     }
     // Live FIFO view for coalescing-related trace dumps. Reads next_* so the
     // entry just pushed by this tick's evaluate is visible alongside the rest.
-    const std::deque<AddrGenFIFOEntry>& fifo_entries() const { return next_addr_gen_fifo_; }
+    const std::deque<AddrGenFIFOEntry>& next_fifo_entries() const { return next_addr_gen_fifo_; }
 
 private:
     uint32_t num_ldst_units_;

@@ -11,13 +11,13 @@ class ALUUnit : public ExecutionUnit {
 public:
     explicit ALUUnit(Stats& stats) : stats_(stats) {}
 
-    bool ready_out() const override {
-        return !current_result_buffer_.valid && !current_has_pending_;
+    bool current_busy() const override {
+        return current_result_buffer_.valid || current_has_pending_;
     }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool has_result() const override;
+    bool next_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::ALU; }
 
@@ -31,7 +31,7 @@ public:
         return current_has_pending_ ? &current_pending_input_ : nullptr;
     }
     const WritebackEntry* result_entry() const {
-        // Matches has_result(): read next_* so same-tick popped results are
+        // Matches next_has_result(): read next_* so same-tick popped results are
         // visible to the writeback arbiter and the post-evaluate trace path.
         return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
     }

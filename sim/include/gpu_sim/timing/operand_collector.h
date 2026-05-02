@@ -53,12 +53,27 @@ public:
         return current_redirect_request_;
     }
 
-    // READY/STALL discipline: ready_out() is a const accessor reading only
-    // committed (current_busy_) state. WarpScheduler::evaluate() queries it
-    // during its own evaluate() this same tick; post-commit observers
+    // Phase 3 of the naming-and-access-discipline refactor: replaces the
+    // free function `read_redirect_request(override, opcoll)`. Folding
+    // the override-vs-current_redirect_request_ choice into a member
+    // function gives the libclang AST extractor a statically resolvable
+    // receiver (this opcoll) and removes a parameter-bound cross-stage
+    // read. FetchStage::commit() and DecodeStage::commit() each call this
+    // through their wired `opcoll_` pointer; the caller still gates on
+    // `opcoll_ != nullptr` for the unit-test default.
+    RedirectRequest current_redirect_request_or_override(
+        const std::optional<RedirectRequest>& override_request) const {
+        if (override_request) return *override_request;
+        return current_redirect_request_;
+    }
+
+    // Back-pressure discipline (REGISTERED + back-pressure direction):
+    // current_busy() is a const accessor reading only committed
+    // (current_busy_) state. WarpScheduler::evaluate() queries it during
+    // its own evaluate() this same tick; post-commit observers
     // (pipeline_drained / execution_units_drained / trace_cycle / unit
     // tests) call the same accessor.
-    bool ready_out() const { return !current_busy_; }
+    bool current_busy() const { return current_busy_; }
 
     void evaluate() override;
     void commit() override;
@@ -82,7 +97,7 @@ public:
     // Read by build_cycle_snapshot() / record_cycle_trace(), which run after
     // every stage's commit(). They observe committed end-of-cycle state.
     bool busy() const { return current_busy_; }
-    uint32_t cycles_remaining() const { return current_cycles_remaining_; }
+    uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
     std::optional<uint32_t> resident_warp() const {
         if (!current_busy_) return std::nullopt;
         return current_instr_.warp_id;
@@ -121,18 +136,5 @@ private:
 
     BranchShadowTracker* branch_tracker_ = nullptr;
 };
-
-// Resolve the redirect-request signal observed by FetchStage::commit and
-// DecodeStage::commit. Each stage may carry a test-only override (set when
-// the stage is exercised in isolation); when present it takes precedence
-// over the wired OperandCollector. With neither override nor opcoll wired,
-// the returned request is invalid (RedirectRequest::valid == false).
-inline RedirectRequest read_redirect_request(
-    const std::optional<RedirectRequest>& override_request,
-    const OperandCollector* opcoll) {
-    if (override_request) return *override_request;
-    if (opcoll) return opcoll->current_redirect_request();
-    return RedirectRequest{};
-}
 
 } // namespace gpu_sim

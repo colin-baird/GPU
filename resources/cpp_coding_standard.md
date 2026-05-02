@@ -392,24 +392,105 @@ public:
 
 ## Cross-stage signaling discipline (timing model)
 
-Every cross-stage signal in the timing model belongs to exactly one of three
-classes, declared at the call site:
+Every cross-stage signal in the timing model is classified along **two
+independent axes**:
 
-- **REGISTERED** — producer writes `next_*` in `evaluate()`; `commit()`
-  latches `next_* → current_*`; consumer reads `current_*` only. 1-cycle
-  handshake, independent of `tick()` ordering. The default class for any
-  state that should reach the consumer on a later cycle.
-- **COMBINATIONAL** — producer's `next_*` (or a transient) is read by the
-  consumer in the same `evaluate()` phase. Order in `tick()` is part of the
-  contract and must be commented at the call site (producer name, consumer
-  name, why the order matters).
-- **READY/STALL** — consumer exposes a `const` `ready_out()` accessor
-  that reads its own `current_*` only. Producer reads
-  `consumer.ready_out()` during its own `evaluate()`. The value is
-  stable across the evaluate phase, so the producer's position in the
-  sweep does not affect what it reads. Used for backpressure.
+- **Cycle axis** — *when* is the read sampled?
+  - **REGISTERED** — producer writes `next_*` in `evaluate()`; `commit()`
+    latches `next_* → current_*`; consumer reads `current_*` only. 1-cycle
+    handshake, independent of `tick()` ordering. The default class for any
+    state that should reach the consumer on a later cycle.
+  - **COMBINATIONAL** — producer's `next_*` (or a transient) is read by
+    the consumer in the same `evaluate()` phase. Order in `tick()` is
+    part of the contract and must be commented at the call site
+    (producer name, consumer name, why the order matters).
+- **Direction axis** — *what does the edge mean architecturally?* Either
+  forward-data (consumer reads payload flowing upstream→downstream) or
+  back-pressure (the upstream producer reads a downstream consumer's
+  "are you ready?" signal). This axis is *architectural metadata* that
+  controls visualization style; it does not affect the read pattern.
+
+The cycle axis is mechanically encoded by the accessor's name prefix.
+
+## Cross-stage accessor naming
+
+Every public `const` accessor returning `bool`, `std::optional<…>`, or a
+payload reference on a timing-model class must follow the rules below.
+Lifecycle hooks (`evaluate`, `commit`, `reset`, `flush`, `seed_next`,
+`accept`, `consume_result`, `add_source`, `set_*`) are exempt.
+
+### Prefixes — one per cycle discipline
+
+| Prefix | Cycle discipline | Read semantics |
+|--------|------------------|----------------|
+| `current_*()` | **REGISTERED** | const accessor returning the producer's `current_*` slot (committed state, flipped at end-of-cycle by `commit()`). Stable through the entire evaluate phase regardless of where in the sweep it is queried. |
+| `next_*()` | **COMBINATIONAL** | const accessor returning the producer's `next_*` slot (live mid-tick value). Ordering-sensitive; call-site comment required to identify which producer must run first. |
+
+The back-pressure idiom uses the same two prefixes — a back-pressure
+signal is a `current_*()` (or `next_*()`) accessor on the consumer that
+the producer reads during its own evaluate. There is no `ready_*()`
+prefix.
+
+### Postfix design language — three shapes
+
+| Shape | Returns | Postfix grammar | Examples |
+|-------|---------|-----------------|----------|
+| **State predicate** | `bool` | `<prefix>_<adjective>` | `current_busy()`, `current_idle()`, `next_stalled()`, `current_in_flight(w)`, `current_pending(w, r)`, `next_fifo_empty()` |
+| **Possession predicate** | `bool` | `<prefix>_has_<noun>` | `next_has_result()`, `next_has_response()` |
+| **Payload accessor** | non-`bool` | `<prefix>_<noun>` | `current_output()`, `current_pending_warp()`, `current_redirect_request()`, `next_fifo_front()` |
 
 Rules:
+
+- **State predicates** describe a *condition* the producer is in. Bare
+  adjective phrase, no `is_*` / `has_*` filler. Multi-word adjectives
+  (`in_flight`, `fifo_empty`) split on underscores.
+- **Possession predicates** describe whether the producer *holds* a
+  thing. Reserved for accessors that precede a `consume_*` call.
+- **Payload accessors** return the thing itself. Bare noun.
+- **Scope is carried by parameters, not name suffixes.**
+  `current_busy(WarpId w)` not `current_busy_for_warp(w)`.
+
+### Polarity — asserted = blocking
+
+Every state predicate returns `true` when the *condition that prevents
+forward progress* is in effect. The reader writes `if (predicate)
+skip;` with no negation in the common case. Possession predicates have
+the opposite polarity (`true` = ownership) because they precede a
+consume; the two shapes don't conflict because their grammar is
+distinct.
+
+Inverse-polarity twins are forbidden. A class exposing `current_busy()`
+must not also expose `current_ready()`; pick one and stick with it.
+
+### Field-access shape — one per relationship type
+
+| Lifetime | Holder type |
+|----------|-------------|
+| Owned | `std::unique_ptr<T>` (only `TimingModel` qualifies) |
+| Mandatory at construction, never null | `T&` (constructor parameter) |
+| Wired post-construction, may be null in tests | `T*` (`set_*` setter, `nullptr` default) |
+
+Mixing references and pointers within one class for dependencies that
+have the same lifetime is forbidden.
+
+### No parameter-bound cross-stage reads
+
+Cross-stage reads must have a statically resolvable receiver. Lambdas
+parameterized over module pointers (e.g. `query_unit_ready` taking an
+`ExecutionUnit*` and an override slot) and free functions taking a
+module pointer to indirect a read (e.g. `read_redirect_request(override,
+OperandCollector*)`) are forbidden — they hide the producer endpoint
+from libclang static analysis. Inline at the call site, or move the
+read onto a method on the producer module.
+
+### REGISTERED state must be private
+
+Every `current_*` / `next_*` field is `private`. Cross-stage observers
+go through accessors so a future refactor that changes the field's
+underlying shape (single slot vs. double-buffered, struct vs. POD) does
+not change the AST surface the diagram extractor walks.
+
+### Discipline overview rules
 
 - **Any cross-stage signal in the timing model must be classified at the
   call site.** Plain mutable members read by one stage and written by
@@ -420,16 +501,20 @@ Rules:
   `current_[]` / `next_[]` / `seed_next()` / `commit()` shape verbatim.
 - **Pre-evaluate setters that latch live state from another stage**
   (e.g. `set_opcoll_free`, `set_decode_pending_warp`, `set_units_drained`,
-  `set_unit_ready_fn`) are forbidden. Expose the signal as a `const`
-  `ready_out()` accessor on the consumer instead.
+  `set_unit_ready_fn`) are forbidden. Expose the signal as a
+  `current_*()` accessor on the consumer instead.
 - **Mid-tick mutations of committed state that bypass `commit()`**
   (side-channel `redirect_warp`, `invalidate_warp`, `reset()` cascades) are
   forbidden. Express the request as a REGISTERED signal and let each stage
   flush at its own commit.
 
+`tools/lint_timing_naming.py` enforces the prefix / postfix / polarity
+/ field-shape rules mechanically (report-only initially; CI-enforced
+once Phase 6 of the naming-and-access-discipline plan lands).
+
 See [`/resources/timing_discipline.md`](/resources/timing_discipline.md) for
-the full per-boundary inventory and the phasing of the cross-stage
-signaling refactor.
+the full per-boundary inventory, the rationale for each rule, and the
+phasing of the cross-stage signaling refactor.
 
 ---
 

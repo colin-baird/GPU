@@ -39,11 +39,11 @@ SimConfig make_dramsim3_config(uint32_t num_mshrs = 4,
     return c;
 }
 
-// Pump evaluate() until either `mem.has_response()` or a hard cap. Returns
+// Pump evaluate() until either `mem.next_has_response()` or a hard cap. Returns
 // the number of fabric cycles elapsed.
 uint32_t pump_until_response(DRAMSim3Memory& mem) {
     uint32_t n = 0;
-    while (!mem.has_response() && n < MAX_EVALUATES) {
+    while (!mem.next_has_response() && n < MAX_EVALUATES) {
         mem.evaluate();
         ++n;
     }
@@ -88,7 +88,7 @@ TEST_CASE("DRAMSim3Memory: chunk reassembly emits one response per line",
     CHECK(mem.in_flight_count() == 1u);
 
     const uint32_t cycles = pump_until_response(mem);
-    REQUIRE(mem.has_response());
+    REQUIRE(mem.next_has_response());
 
     // A 128 B line moves as 4 BL8 transactions over a 32-bit DDR3 bus.
     // Each BL8 occupies 4 tCK of data-bus time (8 beats / 2 beats-per-tCK).
@@ -103,7 +103,7 @@ TEST_CASE("DRAMSim3Memory: chunk reassembly emits one response per line",
     CHECK_FALSE(resp.is_write);
 
     // Exactly one response — no duplicates from chunk reassembly.
-    CHECK_FALSE(mem.has_response());
+    CHECK_FALSE(mem.next_has_response());
     CHECK(stats.external_memory_reads == 1u);
 }
 
@@ -124,7 +124,7 @@ TEST_CASE("DRAMSim3Memory: 8 reads with distinct mshr_ids each return once",
 
     std::set<uint32_t> seen_mshrs;
     std::set<uint32_t> seen_lines;
-    while (mem.has_response()) {
+    while (mem.next_has_response()) {
         auto r = mem.get_response();
         CHECK_FALSE(r.is_write);
         CHECK(seen_mshrs.insert(r.mshr_id).second);
@@ -199,7 +199,7 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     CHECK_FALSE(mem.is_idle());
 
     pump_until_drained(mem);
-    while (mem.has_response()) (void)mem.get_response();
+    while (mem.next_has_response()) (void)mem.get_response();
     CHECK(mem.is_idle());
     CHECK(mem.in_flight_count() == 0u);
     CHECK(mem.response_count() == 0u);
@@ -221,7 +221,7 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     // After reset, the backend still functions: a fresh read drains.
     REQUIRE(mem.submit_read(0x300, 0));
     pump_until_drained(mem);
-    REQUIRE(mem.has_response());
+    REQUIRE(mem.next_has_response());
     auto r = mem.get_response();
     CHECK(r.line_addr == 0x300u);
     CHECK(r.mshr_id   == 0u);
@@ -283,7 +283,7 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
     for (uint32_t cycle = 0; cycle < kCycleCap; ++cycle) {
         // Cache-side drain (equivalent of L1Cache::handle_responses): consume
         // all leading writes, then at most one read per cycle.
-        while (mem.has_response()) {
+        while (mem.next_has_response()) {
             const auto resp = mem.get_response();
             if (resp.is_write) {
                 REQUIRE(writes_in_flight.erase(resp.line_addr) == 1u);
@@ -388,7 +388,7 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     // The remaining propagation (coalescing -> ldst -> scheduler -> warp trace
     // WAIT_L1_WRITE_BUFFER) is structural: each stage forwards `is_stalled()`
     // or its own busy bit unchanged. CoalescingUnit::evaluate early-returns on
-    // cache.is_stalled(); LdStUnit::ready_out() returns !busy_ which stays high
+    // cache.next_stalled(); LdStUnit::current_busy() returns !busy_ which stays high
     // when addr_gen_fifo is full; the warp scheduler's unit-ready check stalls
     // any LDST issuer; build_cycle_snapshot maps stall_reason ==
     // WRITE_BUFFER_FULL to WarpRestReason::WAIT_L1_WRITE_BUFFER (timing_model.cpp
@@ -435,10 +435,10 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     gather_file.commit();
     // Pump until the line is filled. Bound the wait so an unrelated
     // regression doesn't deadlock this test.
-    for (uint32_t i = 0; i < 1000 && !gather_file.has_result(); ++i) {
+    for (uint32_t i = 0; i < 1000 && !gather_file.next_has_result(); ++i) {
         pump_one_cycle();
     }
-    REQUIRE(gather_file.has_result());
+    REQUIRE(gather_file.next_has_result());
     (void)gather_file.consume_result();
     cache.commit();
     gather_file.commit();
@@ -480,10 +480,10 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
         gather_file.commit();
 
         if (rejected_this_cycle) {
-            CHECK(cache.is_stalled());
-            CHECK(cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
+            CHECK(cache.next_stalled());
+            CHECK(cache.next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
         }
-        if (cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
+        if (cache.next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL) {
             ++observed_wb_full_cycles;
         }
     }

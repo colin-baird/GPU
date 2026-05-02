@@ -27,42 +27,48 @@ flowchart LR
     PanicController
     TimingModel
   end
-  ALUUnit -. drained .-> PanicController
-  ALUUnit -. ready .-> WarpScheduler
+  ALUUnit -->|drained| PanicController
+  ALUUnit -->|busy| WarpScheduler
   ALUUnit -->|result| WritebackArbiter
-  BranchShadowTracker -->|in_flight| WarpScheduler
-  CoalescingUnit -->|load/store| L1Cache
-  CoalescingUnit -->|FIFO pop| LdStUnit
+  BranchShadowTracker -->|in flight| WarpScheduler
+  CoalescingUnit -->|process load / process store| L1Cache
+  CoalescingUnit -->|fifo pop| LdStUnit
   CoalescingUnit -->|claim| LoadGatherBufferFile
-  DecodeStage -. ready / pending .-> FetchStage
+  DecodeStage -->|ready to consume fetch / pending warp| FetchStage
   DecodeStage -->|ebreak| TimingModel
-  DivideUnit -. drained .-> PanicController
-  DivideUnit -. ready .-> WarpScheduler
+  DivideUnit -->|drained| PanicController
+  DivideUnit -->|busy| WarpScheduler
   DivideUnit -->|result| WritebackArbiter
+  ExternalMemoryInterface -.->|has response| L1Cache
   FetchStage -->|redirect applied| BranchShadowTracker
+  FetchStage -->|output| DecodeStage
   L1Cache -.->|stalled| CoalescingUnit
-  L1Cache -->|mem req/resp| ExternalMemoryInterface
-  L1Cache -->|gather port| LoadGatherBufferFile
+  L1Cache -->|response| ExternalMemoryInterface
+  L1Cache -.->|try write| LoadGatherBufferFile
   L1Cache -->|trace events| TimingModel
-  LdStUnit -.->|addr_gen FIFO| CoalescingUnit
-  LdStUnit -. drained .-> PanicController
-  LdStUnit -. ready .-> WarpScheduler
+  LdStUnit -.->|fifo empty / fifo front| CoalescingUnit
+  LdStUnit -->|drained| PanicController
+  LdStUnit -->|busy| WarpScheduler
   LdStUnit -->|result| WritebackArbiter
-  MultiplyUnit -. drained .-> PanicController
-  MultiplyUnit -. ready .-> WarpScheduler
+  LoadGatherBufferFile -->|busy| CoalescingUnit
+  LoadGatherBufferFile -->|result| WritebackArbiter
+  MultiplyUnit -->|drained| PanicController
+  MultiplyUnit -->|busy| WarpScheduler
   MultiplyUnit -->|result| WritebackArbiter
   OperandCollector -->|branch resolved| BranchShadowTracker
   OperandCollector -->|redirect| DecodeStage
   OperandCollector -->|redirect| FetchStage
-  OperandCollector -. opcoll ready .-> WarpScheduler
+  OperandCollector -->|drained| PanicController
+  OperandCollector -->|ready out| WarpScheduler
   PanicController -->|flush| LoadGatherBufferFile
   PanicController -->|flush| OperandCollector
   PanicController -->|flush| WarpScheduler
   PanicController -->|flush| WritebackArbiter
   Scoreboard -->|scoreboard| WarpScheduler
-  TLookupUnit -. drained .-> PanicController
-  TLookupUnit -. ready .-> WarpScheduler
+  TLookupUnit -->|drained| PanicController
+  TLookupUnit -->|busy| WarpScheduler
   TLookupUnit -->|result| WritebackArbiter
   WarpScheduler -->|branch issued| BranchShadowTracker
+  WarpScheduler -->|scoreboard| Scoreboard
+  WritebackArbiter -->|drained| PanicController
   WritebackArbiter -->|scoreboard| Scoreboard
-  WritebackArbiter -->|scoreboard| WarpScheduler

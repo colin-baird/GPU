@@ -48,7 +48,7 @@ void TLookupUnit::reset() {
     next_pending_result_.valid = false;
 }
 
-bool TLookupUnit::has_result() const {
+bool TLookupUnit::next_has_result() const {
     // COMBINATIONAL edge with the writeback arbiter (same-tick visibility,
     // zero cycle delta).
     return next_result_buffer_.valid;

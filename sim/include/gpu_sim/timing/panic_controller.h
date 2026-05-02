@@ -28,7 +28,7 @@ public:
     // when it needs to query whether all execution units / opcoll / ldst
     // FIFO / writeback arbiter are drained. The callable is expected to
     // read only committed (current_*) state — the caller (TimingModel)
-    // composes it from each unit's is_ready()/has_result() etc., which
+    // composes it from each unit's is_ready()/next_has_result() etc., which
     // are already REGISTERED accessors. Wired once at construction by
     // TimingModel; tests may also drive it directly to override the
     // drained query.

@@ -4,8 +4,8 @@ namespace gpu_sim {
 
 void OperandCollector::accept(const IssueOutput& issue) {
     // Phase 2 discipline: writes only into next_* slots. The scheduler's
-    // pre-evaluate ready_out() check (which reads current_busy_) gates calling
-    // accept() so we never overwrite an in-flight instruction.
+    // pre-evaluate current_busy() check (which reads current_busy_) gates
+    // calling accept() so we never overwrite an in-flight instruction.
     next_busy_ = true;
     next_instr_ = issue;
     // 2 cycles for 3-operand (VDOT8), 1 cycle for everything else.

@@ -64,12 +64,12 @@ TEST_CASE("Cache: coalesced load hit populates all 32 gather slots", "[cache]") 
     f.claim(/*warp_id=*/0);
     REQUIRE(f.cache.process_load(256, 0, FULL_MASK, results, 1, 0, 0));
     REQUIRE(f.stats.load_misses == 1);
-    REQUIRE_FALSE(f.gather_file.has_result()); // still waiting on fill
+    REQUIRE_FALSE(f.gather_file.next_has_result()); // still waiting on fill
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
     // Fill should have populated all 32 slots via the gather buffer.
-    REQUIRE(f.gather_file.has_result());
+    REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb = f.gather_file.consume_result();
     REQUIRE(wb.valid);
     REQUIRE(wb.warp_id == 0);
@@ -83,7 +83,7 @@ TEST_CASE("Cache: coalesced load hit populates all 32 gather slots", "[cache]") 
     auto results2 = make_results(5000);
     REQUIRE(f.cache.process_load(256, 0, FULL_MASK, results2, 2, 0, 0));
     REQUIRE(f.stats.load_hits == 1);
-    REQUIRE(f.gather_file.has_result()); // all 32 slots filled in one cycle
+    REQUIRE(f.gather_file.next_has_result()); // all 32 slots filled in one cycle
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
     WritebackEntry wb2 = f.gather_file.consume_result();
     REQUIRE(wb2.dest_reg == 7);
@@ -101,14 +101,14 @@ TEST_CASE("Cache: load miss allocates single MSHR and fill lands in gather buffe
     REQUIRE(f.cache.active_mshr_count() == 1);
     REQUIRE(f.stats.load_misses == 1);
     REQUIRE(f.stats.external_memory_reads == 1);
-    REQUIRE_FALSE(f.gather_file.has_result());
+    REQUIRE_FALSE(f.gather_file.next_has_result());
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
 
     // Fill releases the MSHR and deposits the full line into the gather buffer.
     REQUIRE(f.cache.active_mshr_count() == 0);
-    REQUIRE(f.gather_file.has_result());
+    REQUIRE(f.gather_file.next_has_result());
     WritebackEntry wb = f.gather_file.consume_result();
     REQUIRE(wb.dest_reg == 5);
     REQUIRE(wb.values[0] == 42);
@@ -130,7 +130,7 @@ TEST_CASE("Cache: store hit pushes line into write buffer", "[cache]") {
     REQUIRE(f.cache.process_store(0, 0, 2, 0, 0));
     REQUIRE(f.stats.store_hits == 1);
     REQUIRE(f.cache.write_buffer_size() == 1);
-    REQUIRE_FALSE(f.gather_file.is_busy(0));
+    REQUIRE_FALSE(f.gather_file.current_busy(0));
 }
 
 TEST_CASE("Cache: store miss allocates MSHR (write-allocate)", "[cache]") {
@@ -148,7 +148,7 @@ TEST_CASE("Cache: store miss allocates MSHR (write-allocate)", "[cache]") {
     // writeback should appear in the gather file.
     REQUIRE(f.cache.active_mshr_count() == 0);
     REQUIRE(f.cache.write_buffer_size() == 1);
-    REQUIRE_FALSE(f.gather_file.has_result());
+    REQUIRE_FALSE(f.gather_file.next_has_result());
 }
 
 TEST_CASE("Cache: MSHR exhaustion returns false and signals stall", "[cache]") {
@@ -171,8 +171,8 @@ TEST_CASE("Cache: MSHR exhaustion returns false and signals stall", "[cache]") {
     REQUIRE(f.stats.mshr_stall_cycles == 1);
     // Phase 9: cache observable state is REGISTERED — commit to observe.
     f.cache.commit();
-    REQUIRE(f.cache.is_stalled());
-    REQUIRE(f.cache.stall_reason() == CacheStallReason::MSHR_FULL);
+    REQUIRE(f.cache.next_stalled());
+    REQUIRE(f.cache.next_stall_reason() == CacheStallReason::MSHR_FULL);
 }
 
 TEST_CASE("Cache: MSHR stall clears once a fill completes", "[cache]") {
@@ -191,12 +191,12 @@ TEST_CASE("Cache: MSHR stall clears once a fill completes", "[cache]") {
     REQUIRE_FALSE(f.cache.process_load(NUM_MSHRS * LINE_SIZE * 100, 0, FULL_MASK,
                                        results, 2, 0, 0));
     f.cache.commit();
-    REQUIRE(f.cache.is_stalled());
+    REQUIRE(f.cache.next_stalled());
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
     // Drain the writeback so the buffer is free.
-    while (f.gather_file.has_result()) {
+    while (f.gather_file.next_has_result()) {
         (void)f.gather_file.consume_result();
     }
     f.end_cycle();
@@ -267,7 +267,7 @@ TEST_CASE("Cache: write buffer full stalls store hits", "[cache]") {
     REQUIRE_FALSE(f.cache.process_store(0, 0, 1, 0, 0));
     REQUIRE(f.stats.write_buffer_stall_cycles == 1);
     f.cache.commit();
-    REQUIRE(f.cache.stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
+    REQUIRE(f.cache.next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
 }
 
 TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") {
@@ -292,7 +292,7 @@ TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
     f.cache.commit();
-    REQUIRE(f.cache.is_stalled());
+    REQUIRE(f.cache.next_stalled());
     REQUIRE_FALSE(f.cache.is_idle());
 
     // Drain one write-buffer entry and retry the pending fill. evaluate()
@@ -303,7 +303,7 @@ TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") 
     f.cache.drain_write_buffer();
     f.cache.evaluate();
     f.cache.commit();
-    REQUIRE_FALSE(f.cache.is_stalled());
+    REQUIRE_FALSE(f.cache.next_stalled());
 }
 
 TEST_CASE("Cache: reset clears all state", "[cache]") {

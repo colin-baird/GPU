@@ -21,20 +21,22 @@ struct WritebackEntry {
 class ExecutionUnit {
 public:
     virtual ~ExecutionUnit() = default;
-    // READY/STALL discipline: ready_out() is a const accessor that reads only
-    // the unit's own committed (current_*) state. The scheduler queries it
-    // during evaluate() to decide whether dispatch is permitted this cycle;
+    // Back-pressure discipline (REGISTERED + back-pressure direction):
+    // current_busy() is a const accessor that reads only the unit's own
+    // committed (current_*) state and returns true when the unit cannot
+    // accept more work this cycle. The scheduler queries it during
+    // evaluate() to decide whether dispatch is permitted this cycle;
     // post-commit drain checks (TimingModel::execution_units_drained) read
     // the same accessor. ExecutionUnit is a separate hierarchy from
     // PipelineStage (units produce results consumed by WritebackArbiter
-    // rather than participating in the unified evaluate/commit fan-in), but
-    // both hierarchies share the discipline. See
+    // rather than participating in the unified evaluate/commit fan-in),
+    // but both hierarchies share the discipline. See
     // resources/timing_discipline.md.
-    virtual bool ready_out() const = 0;
+    virtual bool current_busy() const = 0;
     virtual void evaluate() = 0;
     virtual void commit() = 0;
     virtual void reset() = 0;
-    virtual bool has_result() const = 0;
+    virtual bool next_has_result() const = 0;
     virtual WritebackEntry consume_result() = 0;
     virtual ExecUnit get_type() const = 0;
 };
@@ -52,10 +54,10 @@ public:
     void evaluate() override {}
     void commit() override {}
     void reset() override { queue_.clear(); }
-    // QueuedWritebackSource has no dispatch input; it is always "ready" from
+    // QueuedWritebackSource has no dispatch input; it is never "busy" from
     // the scheduler's perspective (the scheduler never targets it).
-    bool ready_out() const override { return true; }
-    bool has_result() const override { return !queue_.empty(); }
+    bool current_busy() const override { return false; }
+    bool next_has_result() const override { return !queue_.empty(); }
 
     WritebackEntry consume_result() override {
         WritebackEntry entry = queue_.front();
@@ -64,10 +66,6 @@ public:
     }
 
     ExecUnit get_type() const override { return type_; }
-
-    const WritebackEntry* front_entry() const {
-        return queue_.empty() ? nullptr : &queue_.front();
-    }
 
     size_t queue_depth() const { return queue_.size(); }
 

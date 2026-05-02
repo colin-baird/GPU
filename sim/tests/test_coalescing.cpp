@@ -43,7 +43,7 @@ DispatchInput make_load_dispatch(uint32_t warp_id, uint8_t dest_reg,
 
 // Bring the ldst unit to the state where its FIFO has a pending entry.
 void settle_ldst(LdStUnit& ldst) {
-    for (int i = 0; i < 16 && ldst.fifo_empty(); ++i) {
+    for (int i = 0; i < 16 && ldst.next_fifo_empty(); ++i) {
         ldst.evaluate();
         ldst.commit();
     }
@@ -71,7 +71,7 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     auto input = make_load_dispatch(0, 5, addrs);
     f.ldst.accept(input, 1);
     settle_ldst(f.ldst);
-    REQUIRE_FALSE(f.ldst.fifo_empty());
+    REQUIRE_FALSE(f.ldst.next_fifo_empty());
 
     // One coalescing step should pop the FIFO, claim the gather buffer, and
     // issue a single cache load request for the whole warp.
@@ -81,7 +81,7 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     REQUIRE(f.stats.serialized_requests == 0);
     REQUIRE(f.stats.load_misses == 1);
     REQUIRE(f.cache.active_mshr_count() == 1);
-    REQUIRE(f.gather_file.is_busy(0));
+    REQUIRE(f.gather_file.current_busy(0));
     f.gather_file.commit();
 
     // Wait for the fill to complete and land in the gather buffer.
@@ -90,7 +90,7 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     }
     f.cache.evaluate();
     f.cache.handle_responses();
-    REQUIRE(f.gather_file.has_result());
+    REQUIRE(f.gather_file.next_has_result());
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
 
     WritebackEntry wb = f.gather_file.consume_result();
@@ -110,13 +110,13 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
     auto input = make_load_dispatch(0, 6, addrs);
     f.ldst.accept(input, 1);
     settle_ldst(f.ldst);
-    REQUIRE_FALSE(f.ldst.fifo_empty());
+    REQUIRE_FALSE(f.ldst.next_fifo_empty());
 
     // First step: pop FIFO, claim buffer, issue lane-0 request.
     f.coal.evaluate();
     REQUIRE(f.stats.serialized_requests == 1);
     REQUIRE(f.stats.coalesced_requests == 0);
-    REQUIRE(f.gather_file.is_busy(0));
+    REQUIRE(f.gather_file.current_busy(0));
     f.gather_file.commit();
 
     // Drive the remaining 31 serialized requests through. Each cycle the
@@ -143,7 +143,7 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
         if (f.gather_file.buffer(0).filled_count == WARP_SIZE) break;
     }
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
-    REQUIRE(f.gather_file.has_result());
+    REQUIRE(f.gather_file.next_has_result());
 
     WritebackEntry wb = f.gather_file.consume_result();
     REQUIRE(wb.dest_reg == 6);
@@ -201,7 +201,7 @@ TEST_CASE("Coalescing: store serialization walks 32 lanes without gather buffer 
     // starts idle.
     for (uint32_t step = 0;
          step < 256 &&
-         (!f.coal.is_idle() || !f.ldst.fifo_empty() || !f.cache.is_idle());
+         (!f.coal.is_idle() || !f.ldst.next_fifo_empty() || !f.cache.is_idle());
          ++step) {
         f.coal.evaluate();
         f.cache.evaluate();
@@ -210,8 +210,8 @@ TEST_CASE("Coalescing: store serialization walks 32 lanes without gather buffer 
     }
 
     // Stores never claim the gather buffer.
-    REQUIRE_FALSE(f.gather_file.is_busy(0));
-    REQUIRE_FALSE(f.gather_file.has_result());
+    REQUIRE_FALSE(f.gather_file.current_busy(0));
+    REQUIRE_FALSE(f.gather_file.next_has_result());
     REQUIRE(f.stats.store_misses == WARP_SIZE);
     REQUIRE(f.stats.coalesced_requests == 0);
     REQUIRE(f.stats.serialized_requests == 1);

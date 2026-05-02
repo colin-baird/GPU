@@ -43,11 +43,11 @@ public:
     void run(uint64_t max_cycles = 0);
 
     uint64_t cycle_count() const { return cycle_; }
-    const std::optional<CycleTraceSnapshot>& last_cycle_snapshot() const {
+    const std::optional<CycleTraceSnapshot>& current_cycle_snapshot() const {
         return last_cycle_snapshot_;
     }
-    const std::optional<WritebackEntry>& last_committed_writeback() const {
-        return wb_arbiter_->committed_entry();
+    const std::optional<WritebackEntry>& current_committed_writeback() const {
+        return wb_arbiter_->current_committed_entry();
     }
 
 private:

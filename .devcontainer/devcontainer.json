@@ -27,8 +27,15 @@
     }
   },
   "remoteUser": "dev",
+  "initializeCommand": "mkdir -p ${localEnv:HOME}/.claude-state/gpu-sim/projects ${localEnv:HOME}/.claude-state/gpu-sim/sessions ${localEnv:HOME}/.claude-state/gpu-sim/shell-snapshots ${localEnv:HOME}/.claude-state/gpu-sim/file-history ${localEnv:HOME}/.claude-state/gpu-sim/tasks ${localEnv:HOME}/.claude-state/gpu-sim/backups",
   "mounts": [
     "source=gpu-sim-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}/.claude-state/gpu-sim/projects,target=/home/dev/.claude/projects,type=bind",
+    "source=${localEnv:HOME}/.claude-state/gpu-sim/sessions,target=/home/dev/.claude/sessions,type=bind",
+    "source=${localEnv:HOME}/.claude-state/gpu-sim/shell-snapshots,target=/home/dev/.claude/shell-snapshots,type=bind",
+    "source=${localEnv:HOME}/.claude-state/gpu-sim/file-history,target=/home/dev/.claude/file-history,type=bind",
+    "source=${localEnv:HOME}/.claude-state/gpu-sim/tasks,target=/home/dev/.claude/tasks,type=bind",
+    "source=${localEnv:HOME}/.claude-state/gpu-sim/backups,target=/home/dev/.claude/backups,type=bind",
     "source=${localEnv:HOME}/.claude/settings.json,target=/home/dev/.claude/settings.json,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/statusline-command.sh,target=/home/dev/.claude/statusline-command.sh,type=bind,readonly"
   ],

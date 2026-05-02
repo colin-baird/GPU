@@ -60,7 +60,7 @@ void LdStUnit::reset() {
     next_addr_gen_fifo_.clear();
 }
 
-bool LdStUnit::has_result() const {
+bool LdStUnit::next_has_result() const {
     // LD/ST unit doesn't produce results through writeback buffer directly.
     // Load results come from cache/MSHR fill path.
     return false;

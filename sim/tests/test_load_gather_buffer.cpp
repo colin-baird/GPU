@@ -56,7 +56,7 @@ TEST_CASE("LoadGatherBuffer: coalesced write fills all 32 slots in one cycle",
     LoadGatherBufferFile file(NUM_WARPS, stats);
 
     file.claim(0, /*dest_reg=*/7, /*pc=*/0, /*issue_cycle=*/0, /*raw=*/0);
-    REQUIRE(file.is_busy(0));
+    REQUIRE(file.current_busy(0));
     REQUIRE(file.buffer(0).filled_count == 0);
 
     auto values = make_values(42);
@@ -64,7 +64,7 @@ TEST_CASE("LoadGatherBuffer: coalesced write fills all 32 slots in one cycle",
                            LoadGatherBufferFile::GatherWriteSource::FILL));
 
     REQUIRE(file.buffer(0).filled_count == WARP_SIZE);
-    REQUIRE(file.has_result());
+    REQUIRE(file.next_has_result());
 
     WritebackEntry wb = file.consume_result();
     REQUIRE(wb.valid);
@@ -98,7 +98,7 @@ TEST_CASE("LoadGatherBuffer: partial write populates only selected slots",
     }
 
     // Writeback must not fire yet.
-    REQUIRE_FALSE(file.has_result());
+    REQUIRE_FALSE(file.next_has_result());
 }
 
 TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
@@ -132,7 +132,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // Lane 0 — hit.
     REQUIRE(cache.process_load(/*addr=*/0, 0, /*mask=*/1u, values, 1, 0, 0));
     REQUIRE(gather_file.buffer(0).filled_count == 1);
-    REQUIRE_FALSE(gather_file.has_result());
+    REQUIRE_FALSE(gather_file.next_has_result());
     gather_file.commit();
 
     // Lanes 1..31 — each a miss on a distinct line.
@@ -145,7 +145,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
 
     // At this point 31 MSHRs are outstanding; only slot 0 is filled.
     REQUIRE(gather_file.buffer(0).filled_count == 1);
-    REQUIRE_FALSE(gather_file.has_result());
+    REQUIRE_FALSE(gather_file.next_has_result());
 
     // Drain the fills one cycle at a time, verifying the writeback does not
     // fire early.
@@ -161,13 +161,13 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
         gather_file.commit();
         uint32_t filled_now = gather_file.buffer(0).filled_count;
         if (filled_now < WARP_SIZE) {
-            REQUIRE_FALSE(gather_file.has_result());
+            REQUIRE_FALSE(gather_file.next_has_result());
         }
         fills_completed = filled_now - 1;
     }
 
     REQUIRE(gather_file.buffer(0).filled_count == WARP_SIZE);
-    REQUIRE(gather_file.has_result());
+    REQUIRE(gather_file.next_has_result());
 }
 
 TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is busy",
@@ -185,24 +185,24 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
 
     // Mark warp 0's gather buffer busy without issuing a load.
     gather_file.claim(0, 1, 0, 0, 0);
-    REQUIRE(gather_file.is_busy(0));
+    REQUIRE(gather_file.current_busy(0));
 
     std::array<uint32_t, WARP_SIZE> addrs;
     for (uint32_t i = 0; i < WARP_SIZE; ++i) addrs[i] = 256 + i * 4;
     auto input = make_load_dispatch(0, 5, addrs);
     ldst.accept(input, 1);
-    for (int i = 0; i < 16 && ldst.fifo_empty(); ++i) {
+    for (int i = 0; i < 16 && ldst.next_fifo_empty(); ++i) {
         ldst.evaluate();
         ldst.commit();
     }
-    REQUIRE_FALSE(ldst.fifo_empty());
+    REQUIRE_FALSE(ldst.next_fifo_empty());
 
     coal.evaluate();
     coal.commit();
 
     REQUIRE(stats.gather_buffer_stall_cycles == 1);
     // FIFO entry must remain (not popped) because the buffer was busy.
-    REQUIRE_FALSE(ldst.fifo_empty());
+    REQUIRE_FALSE(ldst.next_fifo_empty());
     REQUIRE(stats.coalesced_requests == 0);
     REQUIRE(stats.serialized_requests == 0);
 }
@@ -216,7 +216,7 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
     auto values = make_values(1);
     REQUIRE(file.try_write(2, FULL_MASK, values,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
-    REQUIRE(file.has_result());
+    REQUIRE(file.next_has_result());
 
     WritebackEntry wb = file.consume_result();
     REQUIRE(wb.valid);
@@ -227,11 +227,11 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
     for (uint32_t i = 0; i < WARP_SIZE; ++i) {
         REQUIRE_FALSE(buf.slot_valid[i]);
     }
-    REQUIRE_FALSE(file.is_busy(2));
+    REQUIRE_FALSE(file.current_busy(2));
 
     // Re-claim must succeed (no assert, buffer clean).
     file.claim(2, 13, 0, 0, 0);
-    REQUIRE(file.is_busy(2));
+    REQUIRE(file.current_busy(2));
 }
 
 TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
@@ -255,17 +255,17 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
                            LoadGatherBufferFile::GatherWriteSource::FILL));
     file.commit();
 
-    REQUIRE(file.has_result());
+    REQUIRE(file.next_has_result());
     WritebackEntry first = file.consume_result();
     REQUIRE(first.warp_id == 1);
     REQUIRE(first.dest_reg == 5);
 
-    REQUIRE(file.has_result());
+    REQUIRE(file.next_has_result());
     WritebackEntry second = file.consume_result();
     REQUIRE(second.warp_id == 3);
     REQUIRE(second.dest_reg == 7);
 
-    REQUIRE_FALSE(file.has_result());
+    REQUIRE_FALSE(file.next_has_result());
 
     // Next completed buffer after warp 3 should wrap back and prefer the
     // lowest index first: complete warp 0 and warp 2 simultaneously. After

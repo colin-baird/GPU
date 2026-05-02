@@ -151,10 +151,10 @@ TEST_CASE("Panic: committed writeback stays frozen once panic is active", "[pani
 
     bool saw_panic = false;
     for (int i = 0; i < 32 && timing.tick(); ++i) {
-        const auto& snapshot = timing.last_cycle_snapshot();
+        const auto& snapshot = timing.current_cycle_snapshot();
         if (snapshot && snapshot->panic_active) {
             saw_panic = true;
-            REQUIRE_FALSE(timing.last_committed_writeback().has_value());
+            REQUIRE_FALSE(timing.current_committed_writeback().has_value());
         }
     }
 

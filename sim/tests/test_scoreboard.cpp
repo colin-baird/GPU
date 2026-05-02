@@ -10,7 +10,7 @@ TEST_CASE("Scoreboard: r0 never pending", "[scoreboard]") {
     sb.set_pending(0, 0);
     sb.commit();
 
-    REQUIRE_FALSE(sb.is_pending(0, 0));
+    REQUIRE_FALSE(sb.current_pending(0, 0));
 }
 
 TEST_CASE("Scoreboard: set and read pending", "[scoreboard]") {
@@ -20,9 +20,9 @@ TEST_CASE("Scoreboard: set and read pending", "[scoreboard]") {
     sb.set_pending(0, 5);
     sb.commit();
 
-    REQUIRE(sb.is_pending(0, 5));
-    REQUIRE_FALSE(sb.is_pending(0, 6));
-    REQUIRE_FALSE(sb.is_pending(1, 5)); // Different warp
+    REQUIRE(sb.current_pending(0, 5));
+    REQUIRE_FALSE(sb.current_pending(0, 6));
+    REQUIRE_FALSE(sb.current_pending(1, 5)); // Different warp
 }
 
 TEST_CASE("Scoreboard: clear pending", "[scoreboard]") {
@@ -32,13 +32,13 @@ TEST_CASE("Scoreboard: clear pending", "[scoreboard]") {
     sb.seed_next();
     sb.set_pending(0, 10);
     sb.commit();
-    REQUIRE(sb.is_pending(0, 10));
+    REQUIRE(sb.current_pending(0, 10));
 
     // Clear pending
     sb.seed_next();
     sb.clear_pending(0, 10);
     sb.commit();
-    REQUIRE_FALSE(sb.is_pending(0, 10));
+    REQUIRE_FALSE(sb.current_pending(0, 10));
 }
 
 TEST_CASE("Scoreboard: double-buffer isolation", "[scoreboard]") {
@@ -48,11 +48,11 @@ TEST_CASE("Scoreboard: double-buffer isolation", "[scoreboard]") {
     sb.seed_next();
     sb.set_pending(0, 7);
     // Before commit, current should not show it
-    REQUIRE_FALSE(sb.is_pending(0, 7));
+    REQUIRE_FALSE(sb.current_pending(0, 7));
 
     // After commit, current should show it
     sb.commit();
-    REQUIRE(sb.is_pending(0, 7));
+    REQUIRE(sb.current_pending(0, 7));
 }
 
 TEST_CASE("Scoreboard: set and clear in same cycle", "[scoreboard]") {
@@ -62,7 +62,7 @@ TEST_CASE("Scoreboard: set and clear in same cycle", "[scoreboard]") {
     sb.seed_next();
     sb.set_pending(0, 5);
     sb.commit();
-    REQUIRE(sb.is_pending(0, 5));
+    REQUIRE(sb.current_pending(0, 5));
 
     // In one cycle: issue sets reg 8 pending, writeback clears reg 5
     sb.seed_next();
@@ -70,8 +70,8 @@ TEST_CASE("Scoreboard: set and clear in same cycle", "[scoreboard]") {
     sb.clear_pending(0, 5);
     sb.commit();
 
-    REQUIRE(sb.is_pending(0, 8));
-    REQUIRE_FALSE(sb.is_pending(0, 5));
+    REQUIRE(sb.current_pending(0, 8));
+    REQUIRE_FALSE(sb.current_pending(0, 5));
 }
 
 TEST_CASE("Scoreboard: multiple warps independent", "[scoreboard]") {
@@ -83,11 +83,11 @@ TEST_CASE("Scoreboard: multiple warps independent", "[scoreboard]") {
     sb.set_pending(2, 15);
     sb.commit();
 
-    REQUIRE(sb.is_pending(0, 5));
-    REQUIRE_FALSE(sb.is_pending(0, 10));
-    REQUIRE(sb.is_pending(1, 10));
-    REQUIRE_FALSE(sb.is_pending(1, 5));
-    REQUIRE(sb.is_pending(2, 15));
+    REQUIRE(sb.current_pending(0, 5));
+    REQUIRE_FALSE(sb.current_pending(0, 10));
+    REQUIRE(sb.current_pending(1, 10));
+    REQUIRE_FALSE(sb.current_pending(1, 5));
+    REQUIRE(sb.current_pending(2, 15));
 }
 
 TEST_CASE("Scoreboard: seed_next preserves current state", "[scoreboard]") {
@@ -102,7 +102,7 @@ TEST_CASE("Scoreboard: seed_next preserves current state", "[scoreboard]") {
     // Don't modify next at all
     sb.commit();
 
-    REQUIRE(sb.is_pending(0, 3));
+    REQUIRE(sb.current_pending(0, 3));
 }
 
 TEST_CASE("Scoreboard: all registers can be pending", "[scoreboard]") {
@@ -114,9 +114,9 @@ TEST_CASE("Scoreboard: all registers can be pending", "[scoreboard]") {
     }
     sb.commit();
 
-    REQUIRE_FALSE(sb.is_pending(0, 0)); // r0 never pending
+    REQUIRE_FALSE(sb.current_pending(0, 0)); // r0 never pending
     for (uint8_t r = 1; r < 32; ++r) {
-        REQUIRE(sb.is_pending(0, r));
+        REQUIRE(sb.current_pending(0, r));
     }
 }
 
@@ -130,6 +130,6 @@ TEST_CASE("Scoreboard: reset clears everything", "[scoreboard]") {
 
     sb.reset();
 
-    REQUIRE_FALSE(sb.is_pending(0, 5));
-    REQUIRE_FALSE(sb.is_pending(1, 10));
+    REQUIRE_FALSE(sb.current_pending(0, 5));
+    REQUIRE_FALSE(sb.current_pending(1, 10));
 }

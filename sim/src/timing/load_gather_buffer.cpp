@@ -6,7 +6,7 @@ namespace gpu_sim {
 LoadGatherBufferFile::LoadGatherBufferFile(uint32_t num_warps, Stats& stats)
     : num_warps_(num_warps), stats_(stats), buffers_(num_warps) {}
 
-bool LoadGatherBufferFile::is_busy(uint32_t warp_id) const {
+bool LoadGatherBufferFile::current_busy(uint32_t warp_id) const {
     return buffers_[warp_id].busy;
 }
 
@@ -88,7 +88,7 @@ void LoadGatherBufferFile::flush() {
     reset();
 }
 
-bool LoadGatherBufferFile::has_result() const {
+bool LoadGatherBufferFile::next_has_result() const {
     for (const auto& buf : buffers_) {
         if (buf.busy && buf.filled_count == WARP_SIZE) {
             return true;
@@ -121,7 +121,7 @@ WritebackEntry LoadGatherBufferFile::consume_result() {
             return wb;
         }
     }
-    // Caller must check has_result() first.
+    // Caller must check next_has_result() first.
     return WritebackEntry{};
 }
 

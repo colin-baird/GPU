@@ -10,7 +10,7 @@
 
 namespace gpu_sim {
 
-class DecodeStage;          // forward decl: fetch reads decode.ready_to_consume_fetch()
+class DecodeStage;          // forward decl: fetch reads decode.current_busy()
 class BranchShadowTracker;  // forward decl: fetch clears in-flight on redirect apply
 
 struct FetchOutput {
@@ -32,7 +32,7 @@ public:
     const std::optional<FetchOutput>& current_output() const { return current_output_; }
 
     // Wire decode after both stages are constructed. Fetch reads
-    // decode->ready_to_consume_fetch() and decode->pending_warp() during
+    // decode->current_busy() and decode->current_pending_warp() during
     // evaluate() as READY/STALL signals (Phase 3 discipline).
     void set_decode(const DecodeStage* decode) { decode_ = decode; }
 
@@ -69,14 +69,14 @@ public:
 
     // Test hook: explicit override of the decode-pending-warp signal for unit
     // tests that drive FetchStage without a real DecodeStage. When set,
-    // takes precedence over decode_->pending_warp().
+    // takes precedence over decode_->current_pending_warp().
     void set_decode_pending_warp_override(std::optional<uint32_t> warp) {
         decode_pending_warp_override_ = warp;
         has_pending_override_ = true;
     }
 
-    // Test hook: explicit override of decode.ready_to_consume_fetch() for
-    // unit tests. When set, takes precedence over decode_->ready_to_consume_fetch().
+    // Test hook: explicit override of decode.current_busy() for
+    // unit tests. When set, takes precedence over decode_->current_busy().
     void set_decode_ready_override(bool ready) {
         decode_ready_override_ = ready;
         has_ready_override_ = true;

@@ -577,7 +577,8 @@ Validation relies on:
 - end-to-end timing coverage in `test_integration.cpp`
 - targeted timing-path checks in `test_branch.cpp`, `test_cache.cpp`, and `test_timing_components.cpp`
 - optional ISA compliance runs from `tests/riscv-isa/`
-- optional workload-level benchmarking through `matmul_bench`
+- optional workload-level benchmarking through `matmul_bench`, `gemv_bench`, etc.
+- targeted spec-edge synthetic kernels under `tests/synthetic/` (`rr_tiebreak_bench`, `line_boundary_load_bench`, `mshr_same_line_race_bench`, `jalr_storm_bench`, `divide_chain_bench`, `panic_drain_test_bench`) — small RV32IM kernels that probe individual spec ambiguities (RR tie-break, coalescer line-boundary, MSHR same-line merging, JALR mispredict, iterative DIV, EBREAK panic drain); each bench self-asserts an analytical expectation derived from the spec.
 
 The expected workflow for architectural changes is to add or update targeted Catch2 coverage near the affected component, then run the normal regression suite with:
 

@@ -10,19 +10,19 @@ class DivideUnit : public ExecutionUnit {
 public:
     explicit DivideUnit(Stats& stats) : stats_(stats) {}
 
-    bool ready_out() const override {
-        return !current_busy_ && !current_result_buffer_.valid;
+    bool current_busy() const override {
+        return current_busy_ || current_result_buffer_.valid;
     }
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool has_result() const override;
+    bool next_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::DIVIDE; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
     bool busy() const { return current_busy_; }
-    uint32_t cycles_remaining() const { return current_cycles_remaining_; }
+    uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
     std::optional<uint32_t> active_warp() const {
         if (!current_busy_) return std::nullopt;
         return current_pending_result_.warp_id;
@@ -31,7 +31,7 @@ public:
         return current_busy_ ? &current_pending_result_ : nullptr;
     }
     const WritebackEntry* result_entry() const {
-        // Matches has_result(): read next_* so same-tick produced results
+        // Matches next_has_result(): read next_* so same-tick produced results
         // are visible to the writeback arbiter and the post-evaluate trace.
         return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
     }

@@ -13,7 +13,7 @@ void WritebackArbiter::evaluate() {
     // Phase 1 discipline: this is a COMBINATIONAL same-tick edge with each
     // execution unit. Units run their own evaluate() earlier in tick(),
     // depositing freshly-produced results into next_result_buffer_; we read
-    // them via has_result() (live, next_*) and clear them via consume_result()
+    // them via next_has_result() (live, next_*) and clear them via consume_result()
     // (writes next_*.valid=false). The unit's commit() at end-of-tick latches
     // the cleared slot into current_*, matching the pre-Phase-1 cycle counts.
     pending_commit_ = std::nullopt;
@@ -23,7 +23,7 @@ void WritebackArbiter::evaluate() {
 
     for (uint32_t i = 0; i < sources_.size(); ++i) {
         uint32_t idx = (rr_pointer_ + i) % static_cast<uint32_t>(sources_.size());
-        if (sources_[idx]->has_result()) {
+        if (sources_[idx]->next_has_result()) {
             valid_count++;
             if (winner < 0) {
                 winner = static_cast<int32_t>(idx);
@@ -52,13 +52,13 @@ void WritebackArbiter::commit() {
     committed_ = pending_commit_;
 }
 
-bool WritebackArbiter::has_pending_work() const {
+bool WritebackArbiter::current_busy() const {
     if (pending_commit_.has_value()) {
         return true;
     }
 
     for (const auto* source : sources_) {
-        if (source->has_result()) {
+        if (source->next_has_result()) {
             return true;
         }
     }
@@ -69,7 +69,7 @@ bool WritebackArbiter::has_pending_work() const {
 uint32_t WritebackArbiter::ready_source_count() const {
     uint32_t count = 0;
     for (const auto* source : sources_) {
-        if (source->has_result()) {
+        if (source->next_has_result()) {
             count++;
         }
     }

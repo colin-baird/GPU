@@ -20,7 +20,7 @@ void ALUUnit::evaluate() {
     if (next_has_pending_) {
         // 1-cycle latency: result is available after this evaluate. We write
         // into next_result_buffer_; commit() will publish it as
-        // current_result_buffer_, which is what writeback_arbiter.has_result()
+        // current_result_buffer_, which is what writeback_arbiter.next_has_result()
         // reads next cycle.
         next_result_buffer_.valid = true;
         next_result_buffer_.warp_id = next_pending_input_.warp_id;
@@ -51,8 +51,8 @@ void ALUUnit::reset() {
     next_has_pending_ = false;
 }
 
-bool ALUUnit::has_result() const {
-    // COMBINATIONAL edge with the writeback arbiter: it queries has_result()
+bool ALUUnit::next_has_result() const {
+    // COMBINATIONAL edge with the writeback arbiter: it queries next_has_result()
     // AFTER this unit's evaluate in the same tick, and must see the result
     // produced this cycle (zero cycle-count delta). Read next_* (the live,
     // post-evaluate value).

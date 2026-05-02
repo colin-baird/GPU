@@ -30,7 +30,7 @@ public:
     bool submit_read(uint32_t line_addr, uint32_t mshr_id) override;
     bool submit_write(uint32_t line_addr) override;
 
-    bool has_response() const override { return !responses_.empty(); }
+    bool next_has_response() const override { return !responses_.empty(); }
     MemoryResponse get_response() override;
     bool is_idle() const override;
     size_t in_flight_count() const override;

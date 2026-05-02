@@ -49,7 +49,7 @@ void DivideUnit::reset() {
     next_pending_result_.valid = false;
 }
 
-bool DivideUnit::has_result() const {
+bool DivideUnit::next_has_result() const {
     // COMBINATIONAL edge with the writeback arbiter (same-tick visibility,
     // zero cycle delta).
     return next_result_buffer_.valid;

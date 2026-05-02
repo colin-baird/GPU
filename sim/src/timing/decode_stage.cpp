@@ -49,7 +49,12 @@ void DecodeStage::commit() {
     // cycle. Applying the invalidate first prevents this commit from
     // pushing a shadow instruction (the pending entry that decode.evaluate
     // accepted while reading from the wrong path) into the warp's buffer.
-    const RedirectRequest req = read_redirect_request(redirect_override_, opcoll_);
+    RedirectRequest req;
+    if (redirect_override_) {
+        req = *redirect_override_;
+    } else if (opcoll_) {
+        req = opcoll_->current_redirect_request_or_override(std::nullopt);
+    }
     if (req.valid) {
         apply_redirect_invalidate(req.warp_id);
     }

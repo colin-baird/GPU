@@ -273,7 +273,7 @@ void L1Cache::handle_responses() {
         return;
     }
 
-    while (mem_if_.has_response()) {
+    while (mem_if_.next_has_response()) {
         auto resp = mem_if_.get_response();
         if (resp.is_write) {
             // Write ack from write buffer drain -- nothing to do

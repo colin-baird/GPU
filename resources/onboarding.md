@@ -212,6 +212,7 @@ Read `/resources/cpp_coding_standard.md` before writing any C++. Key points:
 - Headers go in `include/gpu_sim/` (or `include/runner/`); implementation in `src/`.
 - No raw owning pointers — use `unique_ptr` or value types.
 - Double-buffered state: `evaluate()` writes to `next_`, `commit()` flips to `current_`.
+- Cross-stage accessors in the timing model follow the prefix (`current_*` / `next_*`), postfix (state predicate / possession predicate / payload accessor), and asserted-blocking polarity rules in `/resources/cpp_coding_standard.md` § Cross-stage accessor naming. The full per-boundary inventory and rationale live in `/resources/timing_discipline.md`. `tools/lint_timing_naming.py` flags violations.
 - No exceptions in hot paths; use return values for errors at system boundaries.
 
 When you add a new source file to the simulator, also add a description entry to `resources/perf_sim_arch.md`.

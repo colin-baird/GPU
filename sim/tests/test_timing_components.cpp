@@ -71,8 +71,8 @@ public:
     void evaluate() override {}
     void commit() override {}
     void reset() override { result_.valid = false; }
-    bool ready_out() const override { return true; }
-    bool has_result() const override { return result_.valid; }
+    bool current_busy() const override { return false; }
+    bool next_has_result() const override { return result_.valid; }
     WritebackEntry consume_result() override {
         WritebackEntry entry = result_;
         result_.valid = false;
@@ -304,14 +304,14 @@ TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "
 
     auto addi_issue = make_issue_output(i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
     opcoll.accept(addi_issue);
-    // Phase 2 discipline: ready_out() reads committed state. Latch via commit()
+    // Phase 2 discipline: current_busy() reads committed state. Latch via commit()
     // before observing the post-accept busy bit.
     opcoll.commit();
-    REQUIRE_FALSE(opcoll.ready_out());
+    REQUIRE(opcoll.current_busy());
     opcoll.evaluate();
     REQUIRE(opcoll.output().has_value());
     opcoll.commit();
-    REQUIRE(opcoll.ready_out());
+    REQUIRE_FALSE(opcoll.current_busy());
 
     opcoll.reset();
 
@@ -320,11 +320,11 @@ TEST_CASE("OperandCollector: standard ops take one cycle and VDOT8 takes two", "
     opcoll.evaluate();
     REQUIRE_FALSE(opcoll.output().has_value());
     opcoll.commit();
-    REQUIRE_FALSE(opcoll.ready_out());
+    REQUIRE(opcoll.current_busy());
     opcoll.evaluate();
     REQUIRE(opcoll.output().has_value());
     opcoll.commit();
-    REQUIRE(opcoll.ready_out());
+    REQUIRE_FALSE(opcoll.current_busy());
 }
 
 TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
@@ -333,19 +333,19 @@ TEST_CASE("ALUUnit: accepted work produces one-cycle writeback", "[timing]") {
     auto issue = make_issue_output(i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
     alu.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 12);
-    // Phase 1 discipline: ready_out() reads committed state, so latch the
+    // Phase 1 discipline: current_busy() reads committed state, so latch the
     // post-accept state before observing.
     alu.commit();
-    REQUIRE_FALSE(alu.ready_out());
+    REQUIRE(alu.current_busy());
     alu.evaluate();
-    REQUIRE(alu.has_result());
+    REQUIRE(alu.next_has_result());
 
     auto wb = alu.consume_result();
     REQUIRE(wb.valid);
     REQUIRE(wb.dest_reg == 5);
     REQUIRE(wb.issue_cycle == 12);
     alu.commit();
-    REQUIRE(alu.ready_out());
+    REQUIRE_FALSE(alu.current_busy());
 }
 
 TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption", "[timing]") {
@@ -357,29 +357,29 @@ TEST_CASE("MultiplyUnit: stalled head result resumes after writeback consumption
                                            isa::OP_ALU_R));
 
     // Phase 1 discipline: each cycle is accept/evaluate followed by commit.
-    // ready_out() reads committed state; has_result() / consume_result() read
+    // current_busy() reads committed state; next_has_result() / consume_result() read
     // and write next_*, so they observe live in-tick state.
     mul.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     mul.evaluate();
-    REQUIRE(mul.has_result());
+    REQUIRE(mul.next_has_result());
     mul.commit();
 
     mul.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
     mul.evaluate();
-    REQUIRE(mul.has_result());
+    REQUIRE(mul.next_has_result());
     mul.commit();
     // Pipeline head ready but result buffer occupied -> committed-state stall.
-    REQUIRE_FALSE(mul.ready_out());
+    REQUIRE(mul.current_busy());
 
     auto first_wb = mul.consume_result();
     REQUIRE(first_wb.dest_reg == 5);
 
     mul.evaluate();
-    REQUIRE(mul.has_result());
+    REQUIRE(mul.next_has_result());
     auto second_wb = mul.consume_result();
     REQUIRE(second_wb.dest_reg == 6);
     mul.commit();
-    REQUIRE(mul.ready_out());
+    REQUIRE_FALSE(mul.current_busy());
 }
 
 TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
@@ -399,33 +399,33 @@ TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
                                         isa::OP_ALU_R));
 
     // Accept 3 ops back-to-back — pipeline must accept on every cycle.
-    REQUIRE(mul.ready_out());
+    REQUIRE_FALSE(mul.current_busy());
     mul.accept(DispatchInput{op0.decoded, op0.trace, op0.warp_id, op0.pc}, 0);
-    REQUIRE(mul.ready_out());
+    REQUIRE_FALSE(mul.current_busy());
     mul.evaluate();  // advance cycle 0→1
     mul.accept(DispatchInput{op1.decoded, op1.trace, op1.warp_id, op1.pc}, 1);
-    REQUIRE(mul.ready_out());
+    REQUIRE_FALSE(mul.current_busy());
     mul.evaluate();  // advance cycle 1→2
     mul.accept(DispatchInput{op2.decoded, op2.trace, op2.warp_id, op2.pc}, 2);
-    REQUIRE(mul.ready_out());
+    REQUIRE_FALSE(mul.current_busy());
 
     // No result yet — op0 was accepted at cycle 0 with 3 cycles remaining, so
     // after 2 evaluates it still has 1 cycle to go.
-    REQUIRE_FALSE(mul.has_result());
+    REQUIRE_FALSE(mul.next_has_result());
     mul.evaluate();  // cycle 2→3: op0 drains
-    REQUIRE(mul.has_result());
+    REQUIRE(mul.next_has_result());
     auto wb0 = mul.consume_result();
     REQUIRE(wb0.dest_reg == 5);
 
     // op1 drains on the very next cycle (II=1 means staggered output).
     mul.evaluate();
-    REQUIRE(mul.has_result());
+    REQUIRE(mul.next_has_result());
     auto wb1 = mul.consume_result();
     REQUIRE(wb1.dest_reg == 6);
 
     // op2 drains one cycle after that.
     mul.evaluate();
-    REQUIRE(mul.has_result());
+    REQUIRE(mul.next_has_result());
     auto wb2 = mul.consume_result();
     REQUIRE(wb2.dest_reg == 7);
 
@@ -440,19 +440,19 @@ TEST_CASE("DivideUnit: result appears after fixed latency", "[timing]") {
 
     div.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 3);
     for (int i = 0; i < 31; ++i) {
-        REQUIRE_FALSE(div.has_result());
+        REQUIRE_FALSE(div.next_has_result());
         div.evaluate();
         div.commit();  // Phase 1: latch per-cycle state for next iteration.
     }
-    REQUIRE_FALSE(div.has_result());
+    REQUIRE_FALSE(div.next_has_result());
     div.evaluate();
-    REQUIRE(div.has_result());
+    REQUIRE(div.next_has_result());
 }
 
 TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle window",
           "[timing]") {
     // Spec §4.5: divide is "iterative (radix-2); busy until complete". A
-    // concurrent accept mid-flight must be impossible — ready_out() must stay
+    // concurrent accept mid-flight must be impossible — current_busy() must stay
     // false for every cycle of the 32-cycle latency and remain false afterward
     // until the result is consumed.
     Stats stats;
@@ -460,24 +460,24 @@ TEST_CASE("DivideUnit: iterative unit reports not-ready across entire 32-cycle w
     auto issue = make_issue_output(r_type(isa::FUNCT7_MULDIV, 2, 1, isa::FUNCT3_DIV, 5,
                                           isa::OP_ALU_R));
 
-    REQUIRE(div.ready_out());
+    REQUIRE_FALSE(div.current_busy());
     div.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-    // Phase 1: ready_out() reads committed state; latch the post-accept state.
+    // Phase 1: current_busy() reads committed state; latch the post-accept state.
     div.commit();
 
     for (int i = 0; i < 32; ++i) {
-        REQUIRE_FALSE(div.ready_out());
+        REQUIRE(div.current_busy());
         div.evaluate();
         div.commit();
     }
 
     // Latency completed but result unconsumed — must still refuse accept.
-    REQUIRE(div.has_result());
-    REQUIRE_FALSE(div.ready_out());
+    REQUIRE(div.next_has_result());
+    REQUIRE(div.current_busy());
 
     div.consume_result();
     div.commit();
-    REQUIRE(div.ready_out());
+    REQUIRE_FALSE(div.current_busy());
 }
 
 // Binds claim #1 (TLOOKUP latency = 17 cycles, spec §2.3 / §4.5).
@@ -490,7 +490,7 @@ TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]
     auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
 
     REQUIRE_FALSE(tlookup.busy());
-    REQUIRE_FALSE(tlookup.has_result());
+    REQUIRE_FALSE(tlookup.next_has_result());
 
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 4);
     // Phase 1: busy() reads committed state; latch the post-accept state.
@@ -501,7 +501,7 @@ TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]
     // must be checked -- a single boundary assertion would miss mid-flight leaks.
     for (uint32_t i = 0; i < 17; ++i) {
         REQUIRE(tlookup.busy());
-        REQUIRE_FALSE(tlookup.has_result());
+        REQUIRE_FALSE(tlookup.next_has_result());
         tlookup.evaluate();
         tlookup.commit();
     }
@@ -509,37 +509,37 @@ TEST_CASE("TLookupUnit: result latency is exactly 17 cycles", "[timing][tlookup]
     // Exactly at the 17th evaluate the result materialises and the unit
     // transitions busy -> result-buffered.
     REQUIRE_FALSE(tlookup.busy());
-    REQUIRE(tlookup.has_result());
+    REQUIRE(tlookup.next_has_result());
 }
 
-TEST_CASE("TLookupUnit: ready_out blocks while busy and while result unconsumed", "[timing][tlookup]") {
+TEST_CASE("TLookupUnit: current_busy blocks while busy and while result unconsumed", "[timing][tlookup]") {
     Stats stats;
     TLookupUnit tlookup(stats);
     auto issue = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP));
 
     // Initially ready
-    REQUIRE(tlookup.ready_out());
+    REQUIRE_FALSE(tlookup.current_busy());
 
     // Not ready while busy
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
-    // Phase 1: ready_out() reads committed state; latch the post-accept state.
+    // Phase 1: current_busy() reads committed state; latch the post-accept state.
     tlookup.commit();
-    REQUIRE_FALSE(tlookup.ready_out());
+    REQUIRE(tlookup.current_busy());
 
     for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE_FALSE(tlookup.ready_out());
+        REQUIRE(tlookup.current_busy());
         tlookup.evaluate();
         tlookup.commit();
     }
 
     // Result is available but unconsumed -- still not ready
-    REQUIRE(tlookup.has_result());
-    REQUIRE_FALSE(tlookup.ready_out());
+    REQUIRE(tlookup.next_has_result());
+    REQUIRE(tlookup.current_busy());
 
     // After consuming, should be ready again
     tlookup.consume_result();
     tlookup.commit();
-    REQUIRE(tlookup.ready_out());
+    REQUIRE_FALSE(tlookup.current_busy());
 }
 
 // Binds claim #2: per-warp initiation interval.
@@ -549,15 +549,15 @@ TEST_CASE("TLookupUnit: ready_out blocks while busy and while result unconsumed"
 // 32 lanes into a single 17-cycle countdown, so intra-warp pipelining is not
 // exposed at the unit interface. What IS observable at this interface is the
 // warp-level II: the unit has a single accept slot gated by
-//     ready_out() = !busy_ && !result_buffer_.valid
+//     current_busy() = !busy_ && !result_buffer_.valid
 // so a second warp cannot be accepted until (a) the prior 17-cycle countdown
 // has completed AND (b) the result has been consumed. Minimum per-warp II is
 // therefore 17 compute cycles + 1 consume cycle = 18 cycles.
 //
-// Self-check: this test fails if the `busy_` arm of ready_out() is removed
-// (the in-flight loop would see ready_out() == true), and fails if the
+// Self-check: this test fails if the `busy_` arm of current_busy() is removed
+// (the in-flight loop would see current_busy() == true), and fails if the
 // `!result_buffer_.valid` arm is removed (the post-completion block would see
-// ready_out() == true before consume_result()). A 0-cycle stub would also
+// current_busy() == true before consume_result()). A 0-cycle stub would also
 // trip the in-flight loop on the very first iteration.
 TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
           "[timing][tlookup]") {
@@ -566,23 +566,23 @@ TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
     auto first = make_issue_output(i_type(16, 1, 0, 5, isa::OP_TLOOKUP), 0);
     auto second = make_issue_output(i_type(16, 1, 0, 6, isa::OP_TLOOKUP), 1);
 
-    REQUIRE(tlookup.ready_out());
+    REQUIRE_FALSE(tlookup.current_busy());
     tlookup.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 0);
-    tlookup.commit();  // Phase 1: latch post-accept state for ready_out() reads.
+    tlookup.commit();  // Phase 1: latch post-accept state for current_busy() reads.
 
-    // In-flight window: ready_out() must be false every cycle of the 17-cycle
+    // In-flight window: current_busy() must be false every cycle of the 17-cycle
     // countdown. This binds the `busy_` arm of the ready gate.
     for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE_FALSE(tlookup.ready_out());
+        REQUIRE(tlookup.current_busy());
         tlookup.evaluate();
         tlookup.commit();
     }
 
-    // Countdown complete but result not yet consumed: ready_out() must still be
+    // Countdown complete but result not yet consumed: current_busy() must still be
     // false. This binds the `!result_buffer_.valid` arm of the ready gate --
     // the unit cannot accept warp B while warp A's result sits unclaimed.
-    REQUIRE(tlookup.has_result());
-    REQUIRE_FALSE(tlookup.ready_out());
+    REQUIRE(tlookup.next_has_result());
+    REQUIRE(tlookup.current_busy());
 
     // Consume drain cycle unblocks the next accept; this is the "+1 consume
     // cycle" component of the warp-level II.
@@ -590,19 +590,19 @@ TEST_CASE("TLookupUnit: per-warp initiation interval blocks second accept",
     REQUIRE(wb1.warp_id == 0);
     REQUIRE(wb1.dest_reg == 5);
     tlookup.commit();
-    REQUIRE(tlookup.ready_out());
+    REQUIRE_FALSE(tlookup.current_busy());
 
     // Second accept now succeeds and runs its own independent 17-cycle
     // countdown -- confirming II is finite and the slot recycles cleanly.
     tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 18);
     tlookup.commit();
     for (uint32_t i = 0; i < 17; ++i) {
-        REQUIRE_FALSE(tlookup.ready_out());
-        REQUIRE_FALSE(tlookup.has_result());
+        REQUIRE(tlookup.current_busy());
+        REQUIRE_FALSE(tlookup.next_has_result());
         tlookup.evaluate();
         tlookup.commit();
     }
-    REQUIRE(tlookup.has_result());
+    REQUIRE(tlookup.next_has_result());
     auto wb2 = tlookup.consume_result();
     REQUIRE(wb2.warp_id == 1);
     REQUIRE(wb2.dest_reg == 6);
@@ -655,9 +655,9 @@ TEST_CASE("TLookupUnit: reset clears all state", "[timing][tlookup]") {
 
     tlookup.reset();
     REQUIRE_FALSE(tlookup.busy());
-    REQUIRE(tlookup.cycles_remaining() == 0);
-    REQUIRE_FALSE(tlookup.has_result());
-    REQUIRE(tlookup.ready_out());
+    REQUIRE(tlookup.current_cycles_remaining() == 0);
+    REQUIRE_FALSE(tlookup.next_has_result());
+    REQUIRE_FALSE(tlookup.current_busy());
 }
 
 TEST_CASE("TLookupUnit: consume_result returns correct writeback metadata", "[timing][tlookup]") {
@@ -731,23 +731,23 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
     auto second = make_issue_output(i_type(4, 1, isa::FUNCT3_LW, 6, isa::OP_LOAD));
     second.trace.is_load = true;
 
-    // Phase 1: ready_out() reads committed state, so commit between cycles.
+    // Phase 1: current_busy() reads committed state, so commit between cycles.
     ldst.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     ldst.evaluate();
     ldst.commit();
-    REQUIRE_FALSE(ldst.fifo_empty());
-    REQUIRE(ldst.ready_out());
+    REQUIRE_FALSE(ldst.next_fifo_empty());
+    REQUIRE_FALSE(ldst.current_busy());
 
     ldst.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
     ldst.evaluate();
     ldst.commit();
-    REQUIRE_FALSE(ldst.ready_out());
+    REQUIRE(ldst.current_busy());
 
     ldst.fifo_pop();
     ldst.evaluate();
     ldst.commit();
-    REQUIRE_FALSE(ldst.fifo_empty());
-    REQUIRE(ldst.ready_out());
+    REQUIRE_FALSE(ldst.next_fifo_empty());
+    REQUIRE_FALSE(ldst.current_busy());
 }
 
 TEST_CASE("MemoryInterface: fixed latency responses preserve submission order", "[timing]") {
@@ -759,9 +759,9 @@ TEST_CASE("MemoryInterface: fixed latency responses preserve submission order", 
     REQUIRE_FALSE(mem_if.is_idle());
 
     mem_if.evaluate();
-    REQUIRE_FALSE(mem_if.has_response());
+    REQUIRE_FALSE(mem_if.next_has_response());
     mem_if.evaluate();
-    REQUIRE(mem_if.has_response());
+    REQUIRE(mem_if.next_has_response());
 
     auto first = mem_if.get_response();
     REQUIRE_FALSE(first.is_write);
@@ -795,19 +795,19 @@ TEST_CASE("WritebackArbiter: round-robin arbitration clears scoreboard in order"
     arbiter.evaluate();
     arbiter.commit();
     scoreboard.commit();
-    REQUIRE(arbiter.committed_entry().has_value());
-    REQUIRE(arbiter.committed_entry()->dest_reg == 5);
-    REQUIRE_FALSE(scoreboard.is_pending(0, 5));
-    REQUIRE(scoreboard.is_pending(0, 6));
+    REQUIRE(arbiter.current_committed_entry().has_value());
+    REQUIRE(arbiter.current_committed_entry()->dest_reg == 5);
+    REQUIRE_FALSE(scoreboard.current_pending(0, 5));
+    REQUIRE(scoreboard.current_pending(0, 6));
     REQUIRE(stats.writeback_conflicts == 1);
 
     scoreboard.seed_next();
     arbiter.evaluate();
     arbiter.commit();
     scoreboard.commit();
-    REQUIRE(arbiter.committed_entry().has_value());
-    REQUIRE(arbiter.committed_entry()->dest_reg == 6);
-    REQUIRE_FALSE(scoreboard.is_pending(0, 6));
+    REQUIRE(arbiter.current_committed_entry().has_value());
+    REQUIRE(arbiter.current_committed_entry()->dest_reg == 6);
+    REQUIRE_FALSE(scoreboard.current_pending(0, 6));
 }
 
 TEST_CASE("WritebackArbiter: queued memory sources preserve simultaneous hit and fill",
@@ -843,21 +843,21 @@ TEST_CASE("WritebackArbiter: queued memory sources preserve simultaneous hit and
     arbiter.evaluate();
     arbiter.commit();
     scoreboard.commit();
-    REQUIRE(arbiter.committed_entry().has_value());
-    REQUIRE(arbiter.committed_entry()->dest_reg == 5);
-    REQUIRE_FALSE(scoreboard.is_pending(0, 5));
-    REQUIRE(scoreboard.is_pending(0, 6));
-    REQUIRE(fill_source.has_result());
+    REQUIRE(arbiter.current_committed_entry().has_value());
+    REQUIRE(arbiter.current_committed_entry()->dest_reg == 5);
+    REQUIRE_FALSE(scoreboard.current_pending(0, 5));
+    REQUIRE(scoreboard.current_pending(0, 6));
+    REQUIRE(fill_source.next_has_result());
     REQUIRE(stats.writeback_conflicts == 1);
 
     scoreboard.seed_next();
     arbiter.evaluate();
     arbiter.commit();
     scoreboard.commit();
-    REQUIRE(arbiter.committed_entry().has_value());
-    REQUIRE(arbiter.committed_entry()->dest_reg == 6);
-    REQUIRE_FALSE(scoreboard.is_pending(0, 6));
-    REQUIRE_FALSE(fill_source.has_result());
+    REQUIRE(arbiter.current_committed_entry().has_value());
+    REQUIRE(arbiter.current_committed_entry()->dest_reg == 6);
+    REQUIRE_FALSE(scoreboard.current_pending(0, 6));
+    REQUIRE_FALSE(fill_source.next_has_result());
 }
 
 TEST_CASE("WritebackArbiter: 3-source sustained contention rotates fairly", "[timing]") {
@@ -893,8 +893,8 @@ TEST_CASE("WritebackArbiter: 3-source sustained contention rotates fairly", "[ti
         arbiter.commit();
         scoreboard.commit();
 
-        REQUIRE(arbiter.committed_entry().has_value());
-        picked[cycle] = arbiter.committed_entry()->source_unit;
+        REQUIRE(arbiter.current_committed_entry().has_value());
+        picked[cycle] = arbiter.current_committed_entry()->source_unit;
     }
 
     // Each source selected exactly once across the 3-cycle window.
@@ -931,9 +931,9 @@ TEST_CASE("WritebackArbiter: scan-from-pointer skips unready sources", "[timing]
     arbiter.commit();
     scoreboard.commit();
 
-    REQUIRE(arbiter.committed_entry().has_value());
-    REQUIRE(arbiter.committed_entry()->source_unit == ExecUnit::DIVIDE);
-    REQUIRE_FALSE(scoreboard.is_pending(0, 20));
+    REQUIRE(arbiter.current_committed_entry().has_value());
+    REQUIRE(arbiter.current_committed_entry()->source_unit == ExecUnit::DIVIDE);
+    REQUIRE_FALSE(scoreboard.current_pending(0, 20));
     REQUIRE(stats.writeback_conflicts == 0);  // only one source was ready
 }
 
@@ -1223,10 +1223,13 @@ TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
     func_model.instruction_memory().write(2, i_type(1, 0, isa::FUNCT3_ADD_SUB, 7, isa::OP_ALU_I));
 
     BranchShadowTracker branch_tracker;
-    WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
-                            func_model, stats);
-    // Phase 4: no consumers wired -> default "all ready" matches the prior
-    // explicit setters.
+    WarpScheduler scheduler(1, warps.data(), func_model, stats);
+    // Phase 2: scoreboard and branch_tracker now wired via
+    // set_dependencies(); opcoll/units null in this fixture so the
+    // scheduler defaults to "all ready".
+    scheduler.set_dependencies(&scoreboard, &branch_tracker,
+                               nullptr, nullptr, nullptr, nullptr,
+                               nullptr, nullptr);
 
     // No fetch is running — buffer will not be refilled. Three evaluate()
     // cycles must each produce an ISSUED, and the fourth must report
@@ -1271,9 +1274,12 @@ TEST_CASE("Depth-1 buffer starves immediately after one issue under fetch stall"
     func_model.instruction_memory().write(0, i_type(1, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
     BranchShadowTracker branch_tracker;
-    WarpScheduler scheduler(1, warps.data(), scoreboard, branch_tracker,
-                            func_model, stats);
-    // Phase 4: no consumers wired -> default "all ready".
+    WarpScheduler scheduler(1, warps.data(), func_model, stats);
+    // Phase 2: scoreboard and branch_tracker now wired via
+    // set_dependencies(); opcoll/units null -> "all ready" default.
+    scheduler.set_dependencies(&scoreboard, &branch_tracker,
+                               nullptr, nullptr, nullptr, nullptr,
+                               nullptr, nullptr);
 
     scoreboard.seed_next();
     scheduler.evaluate();

@@ -21,47 +21,57 @@ SchedulerIssueOutcome WarpScheduler::unit_busy_outcome(ExecUnit unit) {
 }
 
 WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
-                             Scoreboard& scoreboard,
-                             BranchShadowTracker& branch_tracker,
                              FunctionalModel& func_model, Stats& stats)
-    : num_warps_(num_warps), warps_(warps), scoreboard_(scoreboard),
-      branch_tracker_(branch_tracker), func_model_(func_model), stats_(stats) {}
+    : num_warps_(num_warps), warps_(warps),
+      func_model_(func_model), stats_(stats) {}
 
 bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const {
-    // Check rs1
-    if (d.num_src_regs >= 1 && scoreboard_.is_pending(warp, d.rs1)) return false;
-    // Check rs2 (for 2+ operand instructions)
-    if (d.num_src_regs >= 2 && scoreboard_.is_pending(warp, d.rs2)) return false;
+    // No scoreboard wired (unit-test default): no register hazards.
+    if (scoreboard_ == nullptr) return true;
+    if (d.num_src_regs >= 1 && scoreboard_->current_pending(warp, d.rs1)) return false;
+    if (d.num_src_regs >= 2 && scoreboard_->current_pending(warp, d.rs2)) return false;
     // Check rd as source (VDOT8: 3-operand)
-    if (d.reads_rd && scoreboard_.is_pending(warp, d.rd)) return false;
+    if (d.reads_rd && scoreboard_->current_pending(warp, d.rd)) return false;
     return true;
 }
 
 bool WarpScheduler::query_opcoll_ready() const {
-    // Phase 4 READY/STALL: prefer test override, then wired opcoll's
-    // ready_out() (a const accessor over committed state) during
+    // REGISTERED back-pressure: prefer test override, then wired opcoll's
+    // current_busy() (a const accessor over committed state) during
     // scheduler.evaluate() in TimingModel::tick(). Fallback for tests that
     // wire neither: free.
     if (opcoll_ready_override_) return *opcoll_ready_override_;
-    if (opcoll_) return opcoll_->ready_out();
+    if (opcoll_) return !opcoll_->current_busy();
     return true;
 }
 
 bool WarpScheduler::query_unit_ready(ExecUnit unit) const {
-    auto resolve = [](const std::optional<bool>& override_,
-                      const ExecutionUnit* wired) -> bool {
-        if (override_) return *override_;
-        if (wired) return wired->ready_out();
-        return true;
-    };
+    // Phase 3 of the naming-and-access-discipline refactor: the
+    // override-fallback triple was previously hidden behind a lambda
+    // parameterized over `(override, ExecutionUnit*)`. Inlining each case
+    // makes the cross-stage current_busy() read statically resolvable to
+    // its receiver class, which the libclang AST extractor in
+    // tools/diagram_extract_ast.py can attribute correctly.
     switch (unit) {
-        case ExecUnit::ALU:      return resolve(alu_ready_override_, alu_);
-        case ExecUnit::MULTIPLY: return resolve(mul_ready_override_, mul_);
-        case ExecUnit::DIVIDE:   return resolve(div_ready_override_, div_);
-        case ExecUnit::TLOOKUP:  return resolve(tlookup_ready_override_, tlookup_);
-        case ExecUnit::LDST:     return resolve(ldst_ready_override_, ldst_);
-        case ExecUnit::SYSTEM:   return true;
-        default:                 return false;
+        case ExecUnit::ALU:
+            if (alu_ready_override_) return *alu_ready_override_;
+            return alu_ ? !alu_->current_busy() : true;
+        case ExecUnit::MULTIPLY:
+            if (mul_ready_override_) return *mul_ready_override_;
+            return mul_ ? !mul_->current_busy() : true;
+        case ExecUnit::DIVIDE:
+            if (div_ready_override_) return *div_ready_override_;
+            return div_ ? !div_->current_busy() : true;
+        case ExecUnit::TLOOKUP:
+            if (tlookup_ready_override_) return *tlookup_ready_override_;
+            return tlookup_ ? !tlookup_->current_busy() : true;
+        case ExecUnit::LDST:
+            if (ldst_ready_override_) return *ldst_ready_override_;
+            return ldst_ ? !ldst_->current_busy() : true;
+        case ExecUnit::SYSTEM:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -97,10 +107,11 @@ void WarpScheduler::evaluate() {
             continue;
         }
 
-        // Phase 5 REGISTERED: read tracker.is_in_flight(w) which exposes
+        // Phase 5 REGISTERED: read tracker.current_in_flight(w) which exposes
         // current_ (committed) state. The note_branch_issued write below
-        // goes into next_; commit() flips at end of cycle.
-        if (branch_tracker_.is_in_flight(w)) {
+        // goes into next_; commit() flips at end of cycle. No tracker
+        // wired (unit-test default): no branch shadow ever in flight.
+        if (branch_tracker_ != nullptr && branch_tracker_->current_in_flight(w)) {
             stats_.warp_stall_branch_shadow[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::BRANCH_SHADOW;
             continue;
@@ -152,20 +163,22 @@ void WarpScheduler::evaluate() {
         next_output_ = out;
 
         warps_[selected_warp].instr_buffer.pop();
-        if (selected_entry.decoded.has_rd && selected_entry.decoded.rd != 0) {
-            scoreboard_.set_pending(selected_warp, selected_entry.decoded.rd);
+        if (scoreboard_ != nullptr &&
+            selected_entry.decoded.has_rd && selected_entry.decoded.rd != 0) {
+            scoreboard_->set_pending(selected_warp, selected_entry.decoded.rd);
         }
 
         next_diagnostics_[selected_warp] = SchedulerIssueOutcome::ISSUED;
         stats_.total_instructions_issued++;
         stats_.warp_instructions[selected_warp]++;
 
-        if (selected_entry.decoded.type == InstructionType::BRANCH ||
-            selected_entry.decoded.type == InstructionType::JAL ||
-            selected_entry.decoded.type == InstructionType::JALR) {
+        if (branch_tracker_ != nullptr &&
+            (selected_entry.decoded.type == InstructionType::BRANCH ||
+             selected_entry.decoded.type == InstructionType::JAL ||
+             selected_entry.decoded.type == InstructionType::JALR)) {
             // Phase 5 REGISTERED: write into next_; visible to scheduler via
             // current_ after commit() flips at end of cycle.
-            branch_tracker_.note_branch_issued(selected_warp);
+            branch_tracker_->note_branch_issued(selected_warp);
         }
     }
 

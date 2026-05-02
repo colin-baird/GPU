@@ -32,7 +32,7 @@ public:
     virtual bool submit_read(uint32_t line_addr, uint32_t mshr_id) = 0;
     virtual bool submit_write(uint32_t line_addr) = 0;
 
-    virtual bool has_response() const = 0;
+    virtual bool next_has_response() const = 0;
     virtual MemoryResponse get_response() = 0;
     virtual bool is_idle() const = 0;
     virtual size_t in_flight_count() const = 0;
@@ -51,7 +51,7 @@ public:
     bool submit_read(uint32_t line_addr, uint32_t mshr_id) override;
     bool submit_write(uint32_t line_addr) override;
 
-    bool has_response() const override { return !responses_.empty(); }
+    bool next_has_response() const override { return !responses_.empty(); }
     MemoryResponse get_response() override;
     bool is_idle() const override { return in_flight_.empty() && responses_.empty(); }
     size_t in_flight_count() const override { return in_flight_.size(); }

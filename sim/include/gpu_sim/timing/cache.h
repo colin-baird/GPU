@@ -107,13 +107,13 @@ public:
     // discipline class. See resources/timing_discipline.md.
     //
     // COMBINATIONAL same-tick (single-slot, direct mutation, reset at top
-    // of evaluate). Coalescing reads is_stalled() / stall_reason() during
-    // its own evaluate, after cache.evaluate has already produced this
-    // cycle's stall outcome. Models a same-cycle backpressure handshake
+    // of evaluate). Coalescing reads next_stalled() / next_stall_reason()
+    // during its own evaluate, after cache.evaluate has already produced
+    // this cycle's stall outcome. Models a same-cycle backpressure handshake
     // where the cache's stall signal is combinationally driven from
     // registered tag / write-buffer / pending_fill state.
-    bool is_stalled() const { return stalled_; }
-    CacheStallReason stall_reason() const { return stall_reason_; }
+    bool next_stalled() const { return stalled_; }
+    CacheStallReason next_stall_reason() const { return stall_reason_; }
     //
     // REGISTERED (next/current pair flipped by commit()). Trace recording
     // runs at end-of-tick after cache.commit(); reads return committed
@@ -123,12 +123,12 @@ public:
     uint32_t active_mshr_count() const;
     std::vector<uint32_t> active_mshr_warps() const;
     size_t write_buffer_size() const { return write_buffer_.size(); }
-    const PendingCacheFill& pending_fill() const { return current_pending_fill_; }
+    const PendingCacheFill& current_pending_fill() const { return current_pending_fill_; }
     const MSHRFile& mshrs() const { return mshrs_; }
-    const CacheMissTraceEvent& last_miss_event() const { return current_last_miss_event_; }
-    const CacheFillTraceEvent& last_fill_event() const { return current_last_fill_event_; }
-    const CacheSecondaryDrainTraceEvent& last_drain_event() const { return current_last_drain_event_; }
-    const CachePinStallTraceEvent& last_pin_stall_event() const { return current_last_pin_stall_event_; }
+    const CacheMissTraceEvent& current_last_miss_event() const { return current_last_miss_event_; }
+    const CacheFillTraceEvent& current_last_fill_event() const { return current_last_fill_event_; }
+    const CacheSecondaryDrainTraceEvent& current_last_drain_event() const { return current_last_drain_event_; }
+    const CachePinStallTraceEvent& current_last_pin_stall_event() const { return current_last_pin_stall_event_; }
     uint32_t pinned_line_count() const;
     uint32_t secondary_mshr_count() const;
 

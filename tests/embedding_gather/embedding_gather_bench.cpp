@@ -35,6 +35,7 @@ struct Options {
     bool json_output = false;
     std::string memory_backend = "fixed";
     std::string dramsim3_config_path = "";
+    std::string trace_file_path = "";
 };
 
 struct Workload {
@@ -100,6 +101,10 @@ Options parse_options(int argc, char* argv[]) {
             options.dramsim3_config_path = arg.substr(23);
             continue;
         }
+        if (arg.rfind("--trace-file=", 0) == 0) {
+            options.trace_file_path = arg.substr(13);
+            continue;
+        }
         throw std::invalid_argument("unknown argument: " + arg);
     }
 
@@ -160,7 +165,7 @@ bool all_warps_inactive(const FunctionalModel& model, uint32_t num_warps) {
 }
 
 void dump_timeout_snapshot(const TimingModel& timing) {
-    const auto& snapshot_opt = timing.last_cycle_snapshot();
+    const auto& snapshot_opt = timing.current_cycle_snapshot();
     if (!snapshot_opt.has_value()) {
         return;
     }
@@ -275,7 +280,8 @@ int main(int argc, char* argv[]) {
         model.init_kernel(config);
 
         Stats stats;
-        TimingModel timing(config, model, stats);
+        TimingTraceOptions trace_options{options.trace_file_path};
+        TimingModel timing(config, model, stats, trace_options);
         timing.run(options.max_cycles);
 
         if (!all_warps_inactive(model, config.num_warps)) {

@@ -37,6 +37,7 @@ struct Options {
     bool json_output = false;
     std::string memory_backend = "fixed";
     std::string dramsim3_config_path = "";
+    std::string trace_file_path = "";
 };
 
 struct SoftmaxRowCase {
@@ -102,6 +103,10 @@ Options parse_options(int argc, char* argv[]) {
         }
         if (arg.rfind("--dramsim3-config-path=", 0) == 0) {
             options.dramsim3_config_path = arg.substr(23);
+            continue;
+        }
+        if (arg.rfind("--trace-file=", 0) == 0) {
+            options.trace_file_path = arg.substr(13);
             continue;
         }
         throw std::invalid_argument("unknown argument: " + arg);
@@ -294,7 +299,8 @@ int main(int argc, char* argv[]) {
         load_lookup_table(test_case.lookup_table, model);
 
         Stats stats;
-        TimingModel timing(config, model, stats);
+        TimingTraceOptions trace_options{options.trace_file_path};
+        TimingModel timing(config, model, stats, trace_options);
         timing.run(options.max_cycles);
 
         if (!all_warps_inactive(model, config.num_warps)) {
