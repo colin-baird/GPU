@@ -545,6 +545,19 @@ The full refactor plan lives in
   Workload benchmark cycle counts byte-identical to the pre-refactor
   baseline at every phase boundary. See
   `/project-plans/naming-and-access-discipline.md`.
+- **Phase M6** (landed): Test cycle-count recalibration. Most recalibration
+  was performed inline with M1-M5 as the tests broke (commit-driven test
+  surgery: insert `commit()` calls for REGISTERED accessors, drive
+  `evaluate()` calls for slot application, restructure tests that issued
+  multiple submits per cycle). Cross-cutting tests (`test_integration`,
+  `test_panic`) and the six workload benchmarks all pass with their
+  existing cycle bounds — the M1-M4 cycle deltas are small enough not to
+  trip the generous upper-bound checks. Cumulative cycle deltas vs the
+  pre-Phase-10 `b2692a3` baseline are ~3-6% across most workloads, with
+  layernorm_lite seeing the largest improvement (-2 to -10% across phases
+  due to M4's REGISTERED has_result absorbing same-cycle FILL/consume
+  churn). Workload benchmark `max_cycles` budgets unchanged. See
+  `/project-plans/phase-10-memory-discipline.md`.
 - **Phase M5** (landed, infrastructure-only): Cache ↔ mem_if REGISTERED
   forward request slots + COMBINATIONAL backward stall added to
   `ExternalMemoryInterface`. Both `FixedLatencyMemory` and `DRAMSim3Memory`
