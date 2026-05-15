@@ -367,7 +367,7 @@ Each resident warp owns a dedicated **load gather buffer** that assembles the 32
 
 **Write hit:** The cache line is updated in L1 **and** the full cache line is pushed into the write buffer for draining to external memory (write-through).
 
-**Write miss (write-allocate):** A free MSHR is allocated. The cache line is fetched from external memory, installed in L1, then the store data is written into the newly installed line. The updated full cache line is pushed to the write buffer for write-through to external memory. This ensures that a subsequent load to the same address will hit in L1 and see the correct data, eliminating the read-after-write hazard across cache misses.
+**Write miss (write-allocate):** A free MSHR is allocated. The cache line is fetched from external memory, installed in L1, then the store data is written into the newly installed line. The updated full cache line is pushed to the write buffer for write-through to external memory. While the installed line remains resident, a subsequent load to the same address hits in L1 and sees the store's data; read-after-write correctness for a load that arrives while this store miss is still outstanding is provided by same-line MSHR merging (§5.3.1). The residency caveat and the ordering limits that apply once the line is evicted are detailed in §5.4.
 
 #### 5.3.1 MSHRs (Miss Status Holding Registers)
 
@@ -439,10 +439,28 @@ A FIFO buffer between the L1 cache and the external memory interface, absorbing 
 
 ### 5.4 Memory Ordering
 
+This section states the memory-ordering guarantees of the design. It distinguishes two layers, because they differ:
+
+- **Simulator behavior.** In the performance simulator, all load and store *values* are produced by the functional model, which executes every warp in strict program order against a flat memory. The timing model carries no cache-line data — it tracks tags, residency, and timing only (see `perf_sim_arch.md`). The simulator therefore never returns a wrong value, regardless of any reordering the timing model exhibits.
+- **Modeled microarchitecture.** The guarantees and non-guarantees below describe the hardware this spec defines — the ordering that RTL synthesized faithfully from this spec would provide. They are *not* statements about simulator output.
+
+**Issue / scoreboard ordering:**
+
 - **Stall-on-use:** a warp continues executing after issuing a load; it stalls only when a subsequent instruction reads the load's destination register before data arrives.
-- The scoreboard marks load destinations as pending on issue and clears them when the MSHR fill completes and data is written to the register file.
-- No store buffer or store-to-load forwarding. Stores update L1 (if hit) and write through to external memory. Within a single warp, program order ensures correctness.
-- **Read-after-write correctness:** Same-line merging (§5.3.1) guarantees that a load to a cache line with an outstanding store miss is serialized behind that store. The primary store-miss MSHR fetches the line, merges the store data, and pushes the write-through; dependent load secondaries then extract lane values from the resident, updated line. No RAW hazard exists for same-line traffic regardless of whether the load finds the line already resident, finds a tag becoming valid during a fill, or arrives during an in-flight miss.
+- The scoreboard marks load destinations as pending on issue and clears them when the MSHR fill completes and data is written to the register file. This enforces register-level (RAW) dependences for load results.
+
+**Guaranteed:**
+
+- **Same-line read-after-write across misses.** Same-line MSHR merging (§5.3.1) serializes a load to a cache line behind an outstanding store *miss* to that same line: the primary store-miss MSHR fetches the line, merges the store data, and pushes the write-through; dependent load secondaries then extract lane values from the resident, updated line. This holds whether the load finds the line already resident, finds a tag becoming valid during a fill, or arrives during an in-flight miss.
+- **Same-line store ordering.** Stores from one warp to the same cache line drain in program order: the coalescing unit emits them in program order, and a second same-line store either hits the line the first installed or allocates a secondary MSHR in the first's chain, which drains in allocation = program order (§5.3.1, "Chain ordering").
+- **No store buffer or store-to-load forwarding.** A store updates L1 directly — on a hit, or into the installed line after a write-allocate fill. There is no speculative forwarding path from an in-flight store to a younger load.
+
+**Not guaranteed (accepted Phase-1 limitations):**
+
+The single-SM Phase-1 machine has no external observer of memory other than its own load-miss traffic, so the two reorderings below are observable to a correct program only when a load miss races a not-yet-drained write-through (the second item). They are documented here as known limitations of the Phase-1 design, not defects to be fixed; a multi-SM or coherent design would have to close them.
+
+- **Cross-line store→store order at external memory.** The write buffer (§5.3.2) drains FIFO in *insertion* order, and a store's line is inserted at different times for hits versus misses: a store *hit* inserts immediately, a store *miss* inserts only when its write-allocate fill completes (~`external_memory_latency_cycles` later). A younger store that hits a different line therefore reaches external memory *before* an older store that missed. Store→store order is **not** preserved across distinct cache lines. (Same-line store order *is* preserved — see Guaranteed, above.)
+- **No write-buffer snoop on the load-miss path.** The load-miss path checks tags, the pin bit, and MSHR availability; it does **not** inspect the write buffer. The same-line RAW guarantee above covers only stores that are in-flight MSHR *misses*. It does not cover a store that has already completed into L1 and the write buffer: if that line is subsequently evicted (a direct-mapped conflict) and a load then misses the same line *before* the write-through has drained, the load fetches the stale, pre-store value from external memory. A store that *hit* never allocated an MSHR, so MSHR merging cannot catch this case. In particular, a store→load to the same address within a single warp is safe only while the line remains resident; program order alone does not guarantee it across an eviction.
 
 ### 5.5 Instruction Memory
 
