@@ -1,1 +1,6 @@
-{ "plansDirectory": "./project-plans" }
+{ 
+    "plansDirectory": "./project-plans",
+    "attribution": {
+        "commit": ""
+    }
+ }

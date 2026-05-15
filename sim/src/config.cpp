@@ -184,6 +184,8 @@ SimConfig SimConfig::from_json(const std::string& path) {
         else if (key == "arg1") config.kernel_args[1] = num;
         else if (key == "arg2") config.kernel_args[2] = num;
         else if (key == "arg3") config.kernel_args[3] = num;
+        else if (key == "arg4") config.kernel_args[4] = num;
+        else if (key == "arg5") config.kernel_args[5] = num;
     }
 
     return config;
@@ -260,6 +262,8 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         else if (key == "arg1") kernel_args[1] = num;
         else if (key == "arg2") kernel_args[2] = num;
         else if (key == "arg3") kernel_args[3] = num;
+        else if (key == "arg4") kernel_args[4] = num;
+        else if (key == "arg5") kernel_args[5] = num;
     }
 }
 

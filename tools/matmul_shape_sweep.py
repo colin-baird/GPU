@@ -2,29 +2,26 @@
 """Sweep matmul shapes against the DRAMSim3 backend; emit a table and a
 multi-point roofline SVG.
 
-Builds one kernel ELF per (N, K) shape via assembler --defsym, runs the
-bench at the requested (M, N, K), and collects per-shape stats.
+A single kernel ELF handles every (M, N, K) — dimensions are passed at
+runtime through kernel_args. The sweep just invokes the bench per shape.
 """
 import json
 import math
 import os
-import shutil
 import subprocess
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO_ROOT, "build/tests/matmul/matmul_bench")
-KERNEL_S = os.path.join(REPO_ROOT, "tests/matmul/matmul_kernel.S")
-LINK_LD = os.path.join(REPO_ROOT, "tests/matmul/link.ld")
 DRAMSIM3_INI = os.path.join(REPO_ROOT, "sim/configs/dram/DDR3_4Gb_x16_800.ini")
 OUT_SVG = os.path.join(REPO_ROOT, "tools/roofline_matmul_shapes.svg")
-KERNEL_DIR = "/tmp/matmul_kernels"
 
 PEAK_COMPUTE = 64.0
 PEAK_DRAM_OPT = 21.33
 PEAK_DRAM_SUST = 12.4
 CACHE_LINE = 128
 
+# M must be a multiple of MATMUL_M_TILE (=4) — see matmul_kernel.S.
 SHAPES = [
     # (M,   N,   K)
     (128, 128, 128),  # original
@@ -35,34 +32,15 @@ SHAPES = [
     ( 64,  64,  64),  # all small
     (256, 128, 128),  # tall
     ( 64, 256, 128),  # narrow rows, wide output
+    (256, 256, 256),  # bigger square — exercises higher-AI regime
 ]
 
 
-def build_kernel(N, K):
-    cc = shutil.which("riscv64-unknown-elf-gcc") or \
-         shutil.which("riscv32-unknown-elf-gcc")
-    if not cc:
-        sys.exit("RISC-V cross-compiler not found")
-    os.makedirs(KERNEL_DIR, exist_ok=True)
-    elf = os.path.join(KERNEL_DIR, f"k_{N}_{K}.elf")
-    if not os.path.exists(elf):
-        subprocess.check_call([
-            cc, "-march=rv32im_zicsr", "-mabi=ilp32",
-            "-nostdlib", "-nostartfiles",
-            f"-Wa,--defsym=MATMUL_N={N},--defsym=MATMUL_K={K}",
-            "-T", LINK_LD,
-            "-o", elf, KERNEL_S,
-        ])
-    return elf
-
-
 def run_shape(M, N, K):
-    elf = build_kernel(N, K)
     out = subprocess.check_output(
         [BENCH, "--memory-backend=dramsim3",
          f"--dramsim3-config-path={DRAMSIM3_INI}",
          f"--m={M}", f"--n={N}", f"--k={K}",
-         f"--kernel-elf={elf}",
          "--max-cycles=20000000",
          "--json"],
         text=True,

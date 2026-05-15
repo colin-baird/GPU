@@ -17,6 +17,10 @@ using namespace gpu_sim;
 namespace {
 
 constexpr uint32_t kTileCols = 32;
+// Must match MATMUL_M_TILE in matmul_kernel.S. Each warp folds this many rows
+// of A into a single tile_n iteration, reusing every B-chunk M_TILE times to
+// lift arithmetic intensity. M must be divisible by this value.
+constexpr uint32_t kMTile = 4;
 constexpr uint32_t kABaseDefault = 0x00002000;
 
 struct Shape {
@@ -152,6 +156,10 @@ Options parse_options(int argc, char* argv[]) {
     }
     if (options.shape.k % 16u != 0u) {
         throw std::invalid_argument("--k must be a multiple of 16");
+    }
+    if (options.shape.m % kMTile != 0u) {
+        throw std::invalid_argument("--m must be a multiple of " +
+                                    std::to_string(kMTile));
     }
     options.shape.recompute_bases();
 
@@ -370,6 +378,8 @@ int main(int argc, char* argv[]) {
         config.kernel_args[1] = options.shape.b_base;
         config.kernel_args[2] = options.shape.c_base;
         config.kernel_args[3] = options.shape.m;
+        config.kernel_args[4] = options.shape.n;
+        config.kernel_args[5] = options.shape.k;
         config.validate();
 
         FunctionalModel model(config);

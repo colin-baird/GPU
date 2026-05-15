@@ -25,8 +25,9 @@ public:
         regs_[warp][lane][reg] = value;
     }
 
-    // Initialize kernel arguments for all lanes in a warp
-    void init_warp(WarpId warp, const uint32_t kernel_args[4]) {
+    // Initialize kernel arguments for all lanes in a warp.
+    // kernel_args[0..5] populate x1..x6 respectively; remaining regs zeroed.
+    void init_warp(WarpId warp, const uint32_t kernel_args[6]) {
         for (LaneId lane = 0; lane < WARP_SIZE; ++lane) {
             for (RegIndex r = 0; r < NUM_REGS; ++r) {
                 regs_[warp][lane][r] = 0;
@@ -35,6 +36,8 @@ public:
             regs_[warp][lane][2] = kernel_args[1];
             regs_[warp][lane][3] = kernel_args[2];
             regs_[warp][lane][4] = kernel_args[3];
+            regs_[warp][lane][5] = kernel_args[4];
+            regs_[warp][lane][6] = kernel_args[5];
         }
     }
 

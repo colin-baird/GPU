@@ -57,8 +57,8 @@ struct SimConfig {
     uint32_t    dramsim3_request_fifo_depth = 32;
     uint32_t    dramsim3_bytes_per_burst = 32;      // BL8 x 32-bit = 32 B
 
-    // Kernel arguments
-    uint32_t kernel_args[4] = {0, 0, 0, 0};
+    // Kernel arguments — loaded into x1..x6 of every lane at kernel launch.
+    uint32_t kernel_args[6] = {0, 0, 0, 0, 0, 0};
     uint32_t start_pc = 0;
 
     // Simulation options
