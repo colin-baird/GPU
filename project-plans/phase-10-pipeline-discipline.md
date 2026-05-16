@@ -21,7 +21,7 @@ This plan executes **after the memory plan has fully landed.** The starting base
 
 - All memory forward-data edges already REGISTERED.
 - Cache↔mem_if pair already documented as an ordering unit (memory plan Phase M5), so this plan's Phase 10D sweep reversal can proceed without further memory work.
-- Memory unit tests already calibrated to post-memory cycle counts. Cross-cutting tests (`test_integration`, `test_panic`, workload benchmarks) carry defensive `max_cycles` bumps from memory plan's M6; this plan's Phase 10G replaces those defensive bumps with precise post-Phase-10 values.
+- Memory unit tests already calibrated to post-memory cycle counts. **Memory plan M6 landed as a no-op** (commit `857bf82`: "no-op, inline calibration in M1-M5") — calibration was done inline in each M-phase, so there are **no defensive `max_cycles` bumps and no "10G will replace this" comments** in cross-cutting tests or benchmarks. This plan's Phase 10G recalibrates cycle assertions against current values from scratch; it does not "replace" anything left by M6.
 - Issue/execute path still COMBINATIONAL forward at start (this plan converts it).
 
 Cycle-byte-identical claims in this plan are relative to **the post-memory baseline**, not the original pre-Phase-10 baseline. Use `bench_compare.py --baseline <post-memory-ref>` for the relevant comparisons.
@@ -36,16 +36,24 @@ Shared files with the memory plan (memory plan's edits already landed; this plan
 
 The refactor is sequenced so each phase builds successfully and runs the full regression suite. Phases 10A and 10D are byte-identical to the post-memory baseline; every other phase has a deliberate per-benchmark cycle delta captured by `python3 tools/bench_compare.py --baseline <phase-start-ref>`.
 
+**Per-phase test-repair discipline.** Every phase that renames a public accessor or shifts cycle counts repairs its own affected tests *inside the same atomic commit*. The per-phase verification gate ("`cmake --build` succeeds", "`ctest` passes") is real — test repair is **not** deferred to a later phase. Three categories:
+
+- **Compilation fixes (accessor renames).** When a phase renames a public accessor (`next_has_result()`→`current_has_result()` in 10B.1; `output()`→`current_output()` in 10B.2/10B.3), every test translation unit calling the old name migrates in the same commit. A public-method rename is not atomic without its callers — deferring them leaves the build red. Mandatory for 10B.1, 10B.2, 10B.3, 10E.
+- **Exact-match cycle assertions** (`REQUIRE(wb.issue_cycle == 12)` and similar). Re-derived inline in whichever phase moves them. Re-deriving the same assertion across several phases is more work than one batch, but it keeps the per-phase gate meaningful and localizes a wrong delta to the phase that caused it instead of surfacing it as a cumulative mystery at 10G.
+- **Loose-bound assertions** (`cycles < N` ceilings in `test_integration`/`test_panic`; workload-benchmark `max_cycles` budgets). Bumped once, generously, in the first phase that would trip them; tightened to precise post-Phase-10 values in 10G. This is the only test work 10G still owns.
+
+This mirrors what the memory plan did in practice: its M6 ("batched recalibration") landed as a no-op because calibration was inlined into M1-M5 — the only way to keep the build green per phase.
+
 ### Phase 10A — Branch resolution moves to ALUUnit (byte-identical, interim REGISTERED redirect)
 
-Move branch resolution from inline-in-`TimingModel::tick()` (lines 459-484) into `ALUUnit::evaluate()`. Keep the redirect REGISTERED on ALU for now; only the **owner** of the latched slot changes, not its cycle behavior.
+Move branch resolution from inline-in-`TimingModel::tick()` (the post-`opcoll_->output()` block, ~lines 470-495 after the memory plan's edits — re-confirm the range against current code; it still calls `branch_mispredicted()` and writes the redirect via `opcoll_->resolve_branch()`) into `ALUUnit::evaluate()`. Keep the redirect REGISTERED on ALU for now; only the **owner** of the latched slot changes, not its cycle behavior.
 
 **Interim discipline violation, deliberate:** under Principle 6 the redirect is a backward control signal and should be combinational backward, not REGISTERED. Phase 10A keeps it REGISTERED purely as a staging step so the relocation to ALU is byte-identical and reviewable in isolation. The conversion to combinational backward (the discipline-correct form) happens in Phase 10E once the back-to-front sweep is in place. Do **not** treat the REGISTERED-on-ALU shape as a steady-state design.
 
 Files:
 - `/workspace/sim/include/gpu_sim/timing/alu_unit.h`, `/workspace/sim/src/timing/alu_unit.cpp` — add `RedirectRequest current_redirect_request_/next_redirect_request_`, `set_branch_tracker(BranchShadowTracker*)`, `current_redirect_request()`, `current_redirect_request_or_override(...)`, `set_redirect_request_override(...)`. Inside `ALUUnit::evaluate()` after the existing result-buffer write: if `next_pending_input_.trace.is_branch`, run the `branch_mispredicted` check (move from `TimingModel`), call `branch_predictor_->update(...)`, and on mispredict write `next_redirect_request_`; on correct prediction call `branch_tracker_->note_resolved_correctly(w)`. The existing `ALUUnit::accept` already carries `DispatchInput.trace` and `.prediction` into `next_pending_input_` (alu_unit.cpp:5-13), so no payload plumbing is needed.
 - `/workspace/sim/include/gpu_sim/timing/operand_collector.h`, `/workspace/sim/src/timing/operand_collector.cpp` — delete `RedirectRequest`, `set_branch_tracker`, `resolve_branch`, `current_redirect_request_or_override`, both `current_/next_redirect_request_` fields, and `branch_tracker_` pointer. Hoist `RedirectRequest` to `/workspace/sim/include/gpu_sim/timing/execution_unit.h`.
-- `/workspace/sim/src/timing/timing_model.cpp` — delete the inline branch-resolution block (lines 459-484); delete `TimingModel::branch_mispredicted` (lines 324-337) and the declaration; replace `opcoll_->set_branch_tracker(...)` and the `set_opcoll(...)` calls on fetch/decode with `alu_->set_branch_tracker(...)`, `fetch_->set_alu(alu_.get())`, `decode_->set_alu(alu_.get())`. Pass `branch_predictor_` reference into ALU via `alu_->set_branch_predictor(...)`.
+- `/workspace/sim/src/timing/timing_model.cpp` — delete the inline branch-resolution block (~lines 470-495, post-memory-plan; re-confirm); delete `TimingModel::branch_mispredicted` (lines 324-337, still exact) and the declaration; replace `opcoll_->set_branch_tracker(...)` and the `set_opcoll(...)` calls on fetch/decode with `alu_->set_branch_tracker(...)`, `fetch_->set_alu(alu_.get())`, `decode_->set_alu(alu_.get())`. Pass `branch_predictor_` reference into ALU via `alu_->set_branch_predictor(...)`.
 - `/workspace/sim/src/timing/fetch_stage.cpp`, `.h` — change `opcoll_` field/setter to `alu_` (typed `ALUUnit*`); `FetchStage::commit()` reads `alu_->current_redirect_request_or_override(redirect_override_)` instead of opcoll's. Override semantics on `redirect_override_` unchanged.
 - `/workspace/sim/src/timing/decode_stage.cpp`, `.h` — same shape as fetch.
 - `/workspace/sim/tests/test_branch.cpp`, `test_timing_components.cpp` — wire `alu->set_branch_tracker(...)` and `alu->set_redirect_request_override(...)` instead of opcoll equivalents. Keep `fetch.set_redirect_request_override` and `decode.set_redirect_request_override` as test-only late-stage overrides.
@@ -216,7 +224,7 @@ These replace the existing `warp_stall_unit_busy[w]` family with finer-grained r
 - `/workspace/sim/src/timing/timing_model.cpp` — wire `scheduler_->note_writeback_consumed` into the arbiter's per-source consume path (or move the call into the arbiter's evaluate, with the scheduler pointer wired in `set_dependencies`).
 - Tests: rewrite `set_unit_ready_override` / `set_opcoll_ready_override` test hooks (`test_warp_scheduler.cpp`, `test_timing_components.cpp`) to instead manipulate the scheduler's `unit_state_[]` directly through a test-only accessor (`scheduler.test_set_unit_cooldown(...)`, `test_set_unit_in_flight(...)`).
 
-**Atomicity:** single atomic commit. The issue gate, the bitmap reservation at issue time, the bitmap consumption in the arbiter, the in-flight increment/decrement, and the test-hook migration all land together. Splitting would leave the simulator in a state where the scheduler over-issues or under-issues for a window of commits.
+**Atomicity:** single atomic commit. The issue gate, the bitmap reservation at issue time, the bitmap consumption in the arbiter, the in-flight increment/decrement, the test-hook migration, and inline recalibration of the cycle assertions the new issue pattern moves (plus generous bumps to any loose `cycles < N` ceilings) all land together. Splitting would leave the simulator in a state where the scheduler over-issues or under-issues for a window of commits.
 
 **Cycle behavior:** small per-benchmark cycle delta from replacing reactive arbitration with proactive reservation. Today's behavior — multiple units finishing on the same cycle, arbiter picks one and the others stretch their effective latency — gets replaced by the scheduler refusing to issue when a slot is already claimed. Net throughput should be similar (the bottleneck is still 1 writeback/cycle), but cycle-by-cycle issue patterns differ. Capture per-benchmark deltas with `bench_compare.py --baseline <pre-10B.0-ref>`. Substantial regressions indicate the bookkeeping is over-conservative relative to today's reactive arbitration; investigate before proceeding.
 
@@ -227,11 +235,13 @@ These replace the existing `warp_stall_unit_busy[w]` family with finer-grained r
 For each of `ALUUnit`, `MultiplyUnit`, `DivideUnit`, `TLookupUnit` (the gather-buffer source is owned by the memory plan):
 
 - Rename `next_has_result()` → `current_has_result()`, returning the committed slot. The existing `current_result_buffer_` field is sufficient — derive the predicate from `current_result_buffer_.valid`.
-- `consume_result()` continues to invalidate `next_result_buffer_`; under registered semantics the arbiter consumes from the committed slot and the unit clears for the next cycle's commit (one extra cycle of result-occupancy).
-- `WritebackArbiter::evaluate`'s assert (the bitmap-driven consume from 10B.0) flips to read `current_has_result()`. Same change in `pipeline_drained()` (timing_model.cpp:278-289), `execution_units_drained()` (lines 291-299), `discard_writeback_results()` (lines 301-313), and `build_cycle_snapshot()` (lines 568+).
+- **`consume_result()` invalidates `current_result_buffer_`, not `next_result_buffer_`.** This is a behavior change from today's accessor (today's `consume_result()` clears `next_result_buffer_` because the combinational-forward arbiter reads `next_`). Under REGISTERED semantics the arbiter reads `current_`, so the consumed slot is `current_`; `next_result_buffer_` is the producer's (`evaluate()`'s) workspace and must not be touched by the consumer.
+- **`commit()` clears `next_result_buffer_` after the flip** (`current_result_buffer_ = next_result_buffer_; next_result_buffer_.valid = false;`). Today's `commit()` (e.g. `multiply_unit.cpp:59`) copies `next_`→`current_` without clearing `next_`; that relied on `consume_result()` clearing `next_`. With consume no longer touching `next_`, `commit()` must clear it, otherwise a cycle in which the unit produces nothing re-presents the previous result and the arbiter double-consumes it.
+- **Why this matters — pipelined back-to-back writeback.** A pipelined unit (`MultiplyUnit`, `max_in_flight = pipeline_stages_`) can produce a result on consecutive cycles, and the 10B.0 bitmap reserves consecutive slots for consecutive issues — the arbiter `assert(current_has_result())` *requires* the unit to have a result on each reserved cycle. If `consume_result()` invalidated `next_result_buffer_` while `evaluate()` writes the same slot the same cycle, the two collide: the unit can only reload its buffer once consume has cleared it, producing a result every *other* cycle — half throughput, and the 10B.0 arbiter assert fires on the skipped cycle. Invalidating `current_` (consumer) and clearing `next_` at `commit()` (producer) keeps the two disjoint, so back-to-back writeback works. It is also **sweep-order-independent** (correct under both the front-to-back sweep in effect during 10B and the back-to-front sweep after 10D), which removes a hidden ordering dependency. ALU (`max_in_flight = 1`) and DIV/TLOOKUP (`cooldown ≥ latency`) never writeback back-to-back, but the same `consume_result()`/`commit()` shape applies to all four units for uniformity.
+- `WritebackArbiter::evaluate`'s assert (the bitmap-driven consume from 10B.0) flips to read `current_has_result()`. Same change in `pipeline_drained()` (timing_model.cpp:278-289), `execution_units_drained()` (lines 291-299), `discard_writeback_results()` (lines 301-313), and `build_cycle_snapshot()` (line 579+ after the memory plan's edits).
 - **Bump `kIssueToWritebackOffset[]` for the converted unit by 1.** ALU goes 0→1, MUL goes `pipeline_stages-1`→`pipeline_stages`, DIV goes `LATENCY-1`→`LATENCY`, TLOOKUP similarly. Bitmap length recomputes; may grow by 1 if the affected unit was the longest.
 
-Per-unit atomic commit: rename + consume_result semantics + arbiter assert flip + drain/snapshot flips + offset table bump for that unit, all together.
+Per-unit atomic commit: rename + `consume_result()`/`commit()` semantics flip + arbiter assert flip + drain/snapshot flips + offset table bump + migration of every test call site of that unit's renamed accessor + inline recalibration of the cycle assertions that move, all together for that unit.
 
 Cycle delta: +1 cycle per writeback for the converted unit (result waits one extra cycle in the unit's `current_result_buffer_` before the arbiter sees it). Capture with `bench_compare.py`.
 
@@ -274,10 +284,10 @@ fetch
 
 The cache/mem_if/drain_write_buffer triple stays in its current relative order — naive reversal breaks the same-cycle "submit-then-decrement" interaction (`submit_read` appends to `mem_if.in_flight_`, `mem_if.evaluate` decrements it the same cycle, which is the existing memory-latency arithmetic). Treat as one ordering unit per the memory plan's M5 carve-out.
 
-The memory ordering unit runs **before coalescing** in the back-to-front sweep so that combinational-backward signals from cache flow correctly to coalescing within the same cycle. The memory plan's Phase M3 design depends on this ordering: coalescing reads `cache.next_cmd_stall()` mid-evaluate after cache has finished computing its end-of-cycle state. The same ordering supports the existing `cache.next_stalled()` back-pressure (M4 in the memory audit), so this is the canonical position regardless of M3.
+The memory ordering unit runs **before coalescing** in the back-to-front sweep so that combinational-backward signals from cache flow correctly to coalescing within the same cycle. The memory plan's Phase M3 design depends on this ordering: M3 was refactored (commit `3163147`) from the original cmd-retry/`next_cmd_stall()` model to a valid/ready handshake — coalescing now reads `cache.next_cmd_ready()` combinationally, which requires cache to evaluate earlier in the sweep. The same ordering supports the existing `cache.next_stalled()` back-pressure (M4 in the memory audit), so this is the canonical position regardless of M3.
 
 Under REGISTERED forward edges (this plan's Phase 10B and the memory plan's M1-M3 conversions, both already landed by the time 10D runs), every other stage reads only committed state. The reversal places every combinational-backward producer ahead of its consumer:
-- `cache → coalescing` (cache stall signals — `next_stalled` and `next_cmd_stall`): cache runs first ✓
+- `cache → coalescing` (cache back-pressure / ack — `next_stalled` and the M3-refactor `next_cmd_ready`): cache runs first ✓
 - `ALU → fetch/decode/scheduler` (Phase 10E redirect): ALU runs first ✓ (execution units run before opcoll/scheduler/decode/fetch)
 
 Verification: byte-identical to end of Phase 10B.3. If `bench_compare.py` reports any delta, a hidden order dependency exists — investigate before proceeding.
@@ -297,11 +307,11 @@ Single atomic commit: producer slot deletion + all three consumer migrations + t
 
 ### Phase 10F — Tooling and documentation
 
-Atomically tighten the discipline surface so the COMBINATIONAL forward flavor is no longer expressible, and update every documentation artifact to reflect the new architectural model. **Includes test-file accessor migration** so the lint tightening doesn't fail on tests that still read `next_*` accessors that the production code has deprecated.
+Atomically tighten the discipline surface so the COMBINATIONAL forward flavor is no longer expressible, and update every documentation artifact to reflect the new architectural model. Test-file accessor migration is **not** part of 10F — under the per-phase test-repair discipline it already landed phase-by-phase with each accessor rename (10B.1–10B.3, 10E), so the lint can be tightened against an already-clean test tree.
 
 **Tooling:**
 
-- **`/workspace/tools/lint_timing_naming.py`** — add `BACK_PRESSURE_CARVEOUTS` allowlist for the small set of legitimate `next_*` accessors (e.g., `L1Cache::next_stalled`, `L1Cache::next_stall_reason`, `LoadGatherBufferFile::next_port_claimed`, plus the new `ExternalMemoryInterface::next_request_stall` and `L1Cache::next_cmd_stall` from M3/M5). Emit a violation for any `next_*` cross-module read outside this list. Field-name `next_*` declarations on the producer remain allowed (internal staging). The lint must distinguish "this module declares `next_foo_`" (allowed) from "this module reads `other->next_foo()`" (disallowed).
+- **`/workspace/tools/lint_timing_naming.py`** — **scope note:** the current script only inspects *header naming* (prefix / postfix / polarity / field-shape layers); it has no cross-module-read analysis. This step adds a new check that scans `.cpp` call sites for `other->next_*()` reads — that is net-new analysis, not just an allowlist tweak; budget 10F accordingly. Add a `BACK_PRESSURE_CARVEOUTS` allowlist for the small set of legitimate `next_*` accessors: `L1Cache::next_stalled`, `L1Cache::next_stall_reason`, `L1Cache::next_cmd_ready`, `L1Cache::next_cmd_stall_reason` (the last two are the M3-refactor valid/ready handshake — note `next_cmd_stall()` no longer exists, it was deleted in commit `3163147`), `LoadGatherBufferFile::next_port_claimed`, and the M5 `ExternalMemoryInterface::next_request_stall`. Emit a violation for any `next_*` cross-module read outside this list. Field-name `next_*` declarations on the producer remain allowed (internal staging). The lint must distinguish "this module declares `next_foo_`" (allowed) from "this module reads `other->next_foo()`" (disallowed).
 - **`/workspace/tools/diagram_extract_ast.py`** — strip `EDGE_CLASSIFICATION_OVERRIDES` entries for forward-data COMBINATIONAL edges that are now REGISTERED; keep entries for true carve-outs (cache stall, gather port arbitration, mem_if stall). Remove obsolete `next_*` entries from `KNOWN_ACCESSOR_NAMES`/`KNOWN_ACCESSOR_RE`.
 - **`/workspace/tools/diagram_extract_md.py`** — update `ROW_OVERRIDES` so rows 5, 7, 12, 15 reflect REGISTERED forward classifications.
 - **`/workspace/tests/test_signal_diagram.py`** — flip 3-5 entries in the edge floor from COMBINATIONAL to REGISTERED; recompute the floor count from post-refactor extractor output.
@@ -324,7 +334,7 @@ Atomically tighten the discipline surface so the COMBINATIONAL forward flavor is
 - Update `WritebackArbiter` description to reflect bitmap-driven routing (no more round-robin source iteration).
 - Update `ALUUnit` description to mention branch resolution responsibility (post-10A).
 - Update `OperandCollector` description to drop redirect machinery (deleted in 10A).
-- Update `L1Cache` description to mention the new `next_cmd_stall()` (M3) and the cmd/response slot model.
+- Update `L1Cache` description to mention the M3-refactor valid/ready handshake (`next_cmd_ready()`, repurposed `next_cmd_stall_reason()`) and the cmd/response slot model.
 - Update `ExternalMemoryInterface` description to mention `next_request_stall()` and the REGISTERED request slots (M5).
 - Update `CoalescingUnit` description to reflect REGISTERED FIFO read (M1) and REGISTERED command submission (M3).
 - Update `LoadGatherBufferFile` description to mention REGISTERED claim (M2) and `current_has_result` (M4).
@@ -342,14 +352,14 @@ The existing `warp_stall_unit_busy[w]` counter is deprecated; replaced by the fi
 
 **`AGENTS.md` Key References:** no new entries (`/AGENTS.md` is a symlink to `CLAUDE.md`, so the Principle 6 update there is already in place from the prior commit).
 
-**Test file accessor migration:** scatter across `test_timing_components.cpp`, `test_warp_scheduler.cpp`, `test_branch.cpp` of `next_has_result` / `next_busy` / `next_output` reads on the four units that flip to `current_*`. Memory-related test accessor migrations (`test_load_gather_buffer.cpp`, `test_cache.cpp`) belong to the memory plan.
+**Test file accessor migration:** already complete. Production-code accessor renames (`next_has_result` / `next_output` → `current_*`) migrated their test call sites (`test_timing_components.cpp`, `test_warp_scheduler.cpp`, `test_branch.cpp`) inside the same atomic commit as the rename (10B.1–10B.3, 10E), per the per-phase test-repair discipline. 10F's only test-file change is `test_signal_diagram.py` (listed under Tooling above). Memory-related test accessor migrations (`test_load_gather_buffer.cpp`, `test_cache.cpp`) belonged to the memory plan and already landed.
 
-### Phase 10G — Test cycle-count recalibration and benchmark snapshot
+### Phase 10G — Final verification, loose-bound tightening, and benchmark snapshot
 
-Final precise calibration of every cycle-asserting test and benchmark, replacing the defensive `max_cycles` bumps that the memory plan's M6 left in place for cross-cutting tests.
+Exact-match cycle assertions and accessor-rename compilation fixes were already handled inline, phase-by-phase, under the per-phase test-repair discipline. 10G is the closing sweep: tighten the loose bounds, confirm the whole suite against final HEAD, and capture the cumulative benchmark delta.
 
-- Recalibrate every hard-coded cycle assertion across `test_panic.cpp`, `test_timing_components.cpp`, `test_branch.cpp`, `test_warp_scheduler.cpp`, `test_integration.cpp`. Each assertion gets re-derived from the post-refactor binary; existing magic numbers (`REQUIRE(wb.issue_cycle == 12)`, `REQUIRE(timing.cycle_count() < 50)`) are rewritten with the new value plus a brief comment of what changed.
-- Replace memory plan M6's defensive `max_cycles` bumps in `test_integration`, `test_panic`, and the workload benchmarks with precise post-Phase-10 budgets. Strip the "issue-execute plan's 10G will replace this" comments memory plan added.
+- **Tighten loose-bound ceilings.** The generous `cycles < N` bumps in `test_integration` / `test_panic` and the workload-benchmark `max_cycles` budgets that earlier phases bumped to survive intermediate cycle deltas get re-derived to precise post-Phase-10 values, each with a brief comment of the final budget's basis.
+- **Full-suite audit against final HEAD.** Re-run `ctest` and confirm every exact-match assertion recalibrated inline by an earlier phase still holds — this catches an assertion that a *later* phase shifted again but whose earlier fixer did not revisit. Re-derive any that drifted, across `test_panic.cpp`, `test_timing_components.cpp`, `test_branch.cpp`, `test_warp_scheduler.cpp`, `test_integration.cpp`.
 - Run `python3 tools/bench_compare.py --baseline <pre-phase-10-ref>` (the original pre-memory baseline) and capture the cumulative per-benchmark delta from end-of-Phase-9 to end-of-Phase-10. Document the deltas in the Phase 10 summary in `timing_discipline.md`.
 - Update `/workspace/UNTESTED.md` if any deferred test coverage emerges.
 - Build with `-DGPU_SIM_USE_DRAMSIM3=ON` and rerun the regression to validate the cache↔mem_if carve-out under DRAMSim3 holds through both plans.
@@ -375,9 +385,9 @@ Tooling:
 - `/workspace/tools/render_signal_diagram.py` (10F validation)
 
 Tests:
-- `/workspace/sim/tests/test_branch.cpp`, `test_timing_components.cpp` (10A wiring + 10F accessor migration)
-- `/workspace/sim/tests/test_warp_scheduler.cpp` (10F accessor migration)
-- All cycle-asserting tests (10G)
+- `/workspace/sim/tests/test_branch.cpp`, `test_timing_components.cpp` (10A wiring; accessor migration + cycle recalibration inline with 10B.1–10B.3 / 10E)
+- `/workspace/sim/tests/test_warp_scheduler.cpp` (test-hook migration in 10B.0; accessor migration inline with 10B.2–10B.3)
+- All cycle-asserting tests — recalibrated inline by each cycle-changing phase (10B.*, 10E); final loose-bound tightening + full-suite audit in 10G
 - `/workspace/tests/test_signal_diagram.py` (10F)
 
 Documentation:

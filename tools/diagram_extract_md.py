@@ -145,15 +145,15 @@ ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
     # Row 7: each execution unit and the gather-buffer file publish
     # results via REGISTERED result_buffer slots that WritebackArbiter
     # consumes (with a same-tick has_result COMBINATIONAL probe). The
-    # LdSt→Coalescing addr-gen edge is COMBINATIONAL.
+    # LdSt→Coalescing addr-gen FIFO edge is REGISTERED as of Phase M1.
     7: [
-        ("ALUUnit",              "WritebackArbiter", "REGISTERED",    "result"),
-        ("MultiplyUnit",         "WritebackArbiter", "REGISTERED",    "result"),
-        ("DivideUnit",           "WritebackArbiter", "REGISTERED",    "result"),
-        ("TLookupUnit",          "WritebackArbiter", "REGISTERED",    "result"),
-        ("LdStUnit",             "WritebackArbiter", "REGISTERED",    "result"),
-        ("LoadGatherBufferFile", "WritebackArbiter", "REGISTERED",    "result"),
-        ("LdStUnit",             "CoalescingUnit",   "COMBINATIONAL", "addr_gen FIFO"),
+        ("ALUUnit",              "WritebackArbiter", "REGISTERED", "result"),
+        ("MultiplyUnit",         "WritebackArbiter", "REGISTERED", "result"),
+        ("DivideUnit",           "WritebackArbiter", "REGISTERED", "result"),
+        ("TLookupUnit",          "WritebackArbiter", "REGISTERED", "result"),
+        ("LdStUnit",             "WritebackArbiter", "REGISTERED", "result"),
+        ("LoadGatherBufferFile", "WritebackArbiter", "REGISTERED", "result"),
+        ("LdStUnit",             "CoalescingUnit",   "REGISTERED", "addr_gen FIFO"),
     ],
     # Row 8: scoreboard. Both WarpScheduler and WritebackArbiter write
     # via set_pending / clear_pending; scheduler reads is_pending.
@@ -206,11 +206,12 @@ ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
         ("WritebackArbiter",     "PanicController", "REGISTERED", "drained"),
     ],
     # Row 15: cache↔mem_if. L1Cache submits requests (REGISTERED writes
-    # into mem_if's queue); cache reads next_has_response / get_response
-    # mid-evaluate as a COMBINATIONAL same-tick poll.
+    # into mem_if's queue); cache reads current_has_response() /
+    # get_response() — a REGISTERED poll over committed end-of-cycle
+    # state (Phase M5 renamed next_has_response → current_has_response).
     15: [
-        ("L1Cache",                "ExternalMemoryInterface", "REGISTERED",    "mem req/resp"),
-        ("ExternalMemoryInterface", "L1Cache",                "COMBINATIONAL", "has_response"),
+        ("L1Cache",                 "ExternalMemoryInterface", "REGISTERED", "mem request"),
+        ("ExternalMemoryInterface", "L1Cache",                 "REGISTERED", "has_response"),
     ],
 }
 

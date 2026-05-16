@@ -51,9 +51,6 @@ RUN existing_user=$(getent passwd $USER_UID | cut -d: -f1) && \
 RUN mkdir /commandhistory && touch /commandhistory/.bash_history && \
   chown -R $USERNAME /commandhistory
 
-RUN mkdir -p /Users/colinbaird && \
-  ln -s /home/$USERNAME/.claude /Users/colinbaird/.claude
-
 ENV DEVCONTAINER=true
 
 RUN mkdir -p /workspace /home/$USERNAME/.claude && \
