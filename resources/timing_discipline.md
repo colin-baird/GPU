@@ -433,10 +433,17 @@ If a future change adds a new cross-stage edge, append a row here with
 its classification (cycle axis + direction axis) and the phase that lands it.
 
 `tools/render_signal_diagram.py` emits the whole-pipeline architecture
-poster (Graphviz DOT + Mermaid) with modules grouped into Frontend &
+poster (Graphviz DOT + Mermaid + an editable `signal_diagram.drawio`
+file, plus SVG/PNG with `--svg`) with modules grouped into Frontend &
 Issue / Execute / Memory / Writeback / Control clusters and edges styled
-by classification (cycle discipline as line style, direction as overlay).
-The renderer drives off two extractors:
+by classification (cycle discipline as line style, direction as
+overlay). The `.drawio` file carries the same layout but with draggable
+boxes and orthogonal connectors for hand-editing in draw.io /
+diagrams.net. The DOT poster is a fixed 2-D layout —
+Frontend on the left, the Execute units as a vertical bank, Memory to
+the right, Writeback below Memory, and Control as a band across the top
+— pinned by hand-assigned coordinates (`MODULE_GRID`) and rendered with
+Graphviz `neato`, not `dot`. The renderer drives off two extractors:
 
 - **`--source=ast` (default).** The libclang extractor under
   `tools/diagram_extract_ast.py` walks the timing translation units in

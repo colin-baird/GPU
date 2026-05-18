@@ -46,7 +46,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
   test_signal_diagram.py         # CTest-registered snapshot test for the AST signal-flow extractor
 /tools/                        # Developer tooling
   bench_compare.py               # A/B benchmark comparison and history tracking
-  render_signal_diagram.py       # Architecture poster renderer: emits DOT/Mermaid/SVG
+  render_signal_diagram.py       # Architecture poster renderer: emits DOT/Mermaid/draw.io/SVG/PNG
   diagram_types.py               # Module/Edge dataclasses shared by extractors and renderer
   diagram_extract_ast.py         # libclang-driven extractor (the default `--source=ast`)
   diagram_extract_md.py          # Markdown-driven extractor (cross-check via `--source=markdown`)

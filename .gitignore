@@ -1,5 +1,6 @@
 # CMake/Ninja/CTest build output directories
 /build/
+/build-codex/
 /build-review/
 /sim/build/
 /runner/build/

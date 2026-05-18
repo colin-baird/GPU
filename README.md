@@ -59,7 +59,7 @@ Optional, depending on what you want to run:
 
 - `riscv64-unknown-elf-gcc`, `riscv32-unknown-elf-gcc`, or `riscv64-elf-gcc` for workload benchmark kernel builds
 - `riscv64-unknown-elf-gcc` for the RISC-V ISA compliance flow in `tests/riscv-isa/`
-- Graphviz (`dot`) for regenerating `tools/signal_diagram.svg`
+- Graphviz (`neato`) for regenerating `tools/signal_diagram.svg` / `.png`
 - Python libclang bindings plus matching clang resource headers for the AST signal-diagram extractor and timing-naming lint
 
 If no supported RISC-V cross-compiler is installed, the benchmark targets are skipped at CMake configure time.

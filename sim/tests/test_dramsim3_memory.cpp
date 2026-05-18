@@ -205,6 +205,24 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     CHECK(mem.response_count() == 0u);
     CHECK(mem.request_fifo_size() == 0u);
 
+    mem.set_next_read_request(0x90, 0);
+    CHECK_FALSE(mem.is_idle());
+    mem.commit();
+    CHECK_FALSE(mem.is_idle());
+    mem.evaluate();
+    pump_until_drained(mem);
+    while (mem.next_has_response()) (void)mem.get_response();
+    CHECK(mem.is_idle());
+
+    mem.set_next_write_request(0x91);
+    CHECK_FALSE(mem.is_idle());
+    mem.commit();
+    CHECK_FALSE(mem.is_idle());
+    mem.evaluate();
+    pump_until_drained(mem);
+    while (mem.next_has_response()) (void)mem.get_response();
+    CHECK(mem.is_idle());
+
     // Re-submit and reset mid-flight. After reset everything must be clear.
     REQUIRE(mem.submit_read(0x100, 0));
     REQUIRE(mem.submit_read(0x140, 1));

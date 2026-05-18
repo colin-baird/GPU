@@ -187,6 +187,8 @@ MemoryResponse DRAMSim3Memory::get_response() {
 bool DRAMSim3Memory::is_idle() const {
     if (!request_fifo_.empty() || !responses_.empty()) return false;
     if (!write_assembly_.empty()) return false;
+    if (current_read_request_.valid || next_read_request_.valid) return false;
+    if (current_write_request_.valid || next_write_request_.valid) return false;
     for (const auto& a : read_assembly_) {
         if (a.active) return false;
     }
