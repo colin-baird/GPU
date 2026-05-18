@@ -41,6 +41,12 @@ public:
     // block, as before) nor under-gates. Removed in 10B.3 with the others.
     bool current_result_pending() const { return current_busy(); }
 
+    // Phase 10B.0.5: copy the pipeline deque current_* -> next_*. evaluate()
+    // consumes the prior-cycle pipeline state (decrements cycles_remaining,
+    // shifts the deque), so it is genuine multi-cycle carry-forward. The
+    // result buffer is NOT seeded — evaluate() assigns it fresh (or holds it),
+    // so it is a plain double-buffered pipeline register.
+    void seed_next() override;
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -78,6 +84,15 @@ private:
     std::deque<PipelineEntry> next_pipeline_;
     WritebackEntry current_result_buffer_;
     WritebackEntry next_result_buffer_;
+
+    // Phase 10B.0.5: per-cycle scratch flags for Stats relocation. evaluate()
+    // assigns busy_this_cycle_ fresh (the pipeline-non-empty condition);
+    // accept() sets accepted_this_cycle_. Both are consumed at commit() to
+    // perform the mul_stats increments, so a re-evaluated stalled cycle does
+    // not double-count. commit() clears accepted_this_cycle_ (accept() may
+    // not run every cycle); busy_this_cycle_ is assigned fresh by evaluate().
+    bool busy_this_cycle_ = false;
+    bool accepted_this_cycle_ = false;
 };
 
 } // namespace gpu_sim

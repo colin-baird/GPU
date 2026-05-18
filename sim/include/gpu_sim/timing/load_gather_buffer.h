@@ -67,6 +67,16 @@ public:
     // current_claim_request_ if valid. Tick scheduling places this evaluate
     // before cache.evaluate() so that any same-cycle FILL or HIT write
     // observes the freshly-applied claim metadata (busy, dest_reg, etc.).
+    // Phase 10B.0.5: empty body. LoadGatherBufferFile is the variable-latency
+    // load-writeback path, not one of the issue/execute stages the 10B.0.5
+    // double-buffering normalization targets — it is out of scope for that
+    // phase. Its cross-cycle state (the REGISTERED claim-request and
+    // has-result slots) is written by event-shaped methods and flipped at
+    // commit(), not carried via a seeded next_*; the buffers_ vector is
+    // mutated directly. TimingModel::tick() does not call this seed_next();
+    // it exists only to satisfy the ExecutionUnit interface, and the empty
+    // body leaves behavior byte-identical.
+    void seed_next() override {}
     void evaluate() override;
     void commit() override;
     void reset() override;

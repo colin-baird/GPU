@@ -23,6 +23,14 @@ public:
     LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats);
 
     bool current_busy() const override { return current_busy_; }
+    // Phase 10B.0.5: LdSt is a full seed_next participant. Address generation
+    // is multi-cycle — while an addr-gen op is in flight evaluate() consumes
+    // busy_/cycles_remaining_/pending_entry_ from the prior cycle — so these
+    // are genuine carry-forward. seed_next() copies them current_* -> next_*.
+    // The addr_gen_fifo_ deque keeps its M1 commit-phase-mutation discipline
+    // (it is not double-buffered) and is untouched; next_push_ is a fresh
+    // per-cycle staging slot reset at the top of evaluate().
+    void seed_next() override;
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -109,6 +117,13 @@ private:
     // op becomes visible in addr_gen_fifo_. Never decremented; the scheduler's
     // FIFO-occupancy gate uses it as a difference against ldst_issued_total_.
     uint32_t fifo_total_pushes_ = 0;
+
+    // Phase 10B.0.5: per-cycle scratch flags for Stats relocation. evaluate()
+    // assigns busy_this_cycle_ fresh; accept() sets accepted_this_cycle_. Both
+    // consumed at commit() so a re-evaluated stalled cycle does not
+    // double-count ldst_stats.
+    bool busy_this_cycle_ = false;
+    bool accepted_this_cycle_ = false;
 };
 
 } // namespace gpu_sim

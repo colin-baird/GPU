@@ -62,13 +62,23 @@ struct CoalFixture {
     // → cache.evaluate (FILL + secondary + REGISTERED cmd processing) →
     // coalescing.evaluate (stage cmd) → mem_if.evaluate → drain_write_buffer
     // → commits.
+    //
+    // Phase 10B.0.5: this fixture drives only the *downstream* memory
+    // pipeline; settle_ldst() has already pushed the accepted op into ldst's
+    // addr-gen FIFO and tick() never calls ldst.evaluate(). ldst.commit() is
+    // therefore not invoked here: under the explicit double-buffering
+    // convention the LdSt next_push_ staging slot is cleared at the top of
+    // evaluate() (not in commit()), so calling commit() without a preceding
+    // evaluate() would re-apply settle_ldst()'s last staged push every tick.
+    // Under the prior convention ldst.commit() here was a no-op (the last
+    // settle_ldst commit had self-cleared next_push_), so dropping it is
+    // byte-identical.
     void tick() {
         gather_file.evaluate();
         cache.evaluate();
         coal.evaluate();
         mem_if.evaluate();
         cache.drain_write_buffer();
-        ldst.commit();
         coal.commit();
         cache.commit();
         mem_if.commit();

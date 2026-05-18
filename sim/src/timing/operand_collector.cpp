@@ -12,17 +12,27 @@ void OperandCollector::accept(const IssueOutput& issue) {
     next_cycles_remaining_ = (issue.decoded.num_src_regs == 3) ? 2 : 1;
 }
 
+void OperandCollector::seed_next() {
+    // Phase 10B.0.5: re-establish the carry-forward fields in next_* at the
+    // top of the tick. next_output_ is NOT seeded — evaluate() resets it.
+    next_busy_ = current_busy_;
+    next_cycles_remaining_ = current_cycles_remaining_;
+    next_instr_ = current_instr_;
+}
+
 void OperandCollector::evaluate() {
     next_output_ = std::nullopt;
 
-    // Operates on next_*. After the prior tick's commit(), next_* equals
-    // current_* — so for an in-flight instruction the live values describe
-    // what was committed at end-of-last-cycle. If accept() ran earlier this
-    // tick (only valid when current_busy_ was false, i.e. fresh arrival),
-    // next_* now holds the freshly-issued payload.
+    // Operates on next_*. After seed_next() at the top of the tick, next_*
+    // equals current_* — so for an in-flight instruction the live values
+    // describe what was committed at end-of-last-cycle. If accept() ran
+    // earlier this tick (only valid when current_busy_ was false, i.e. fresh
+    // arrival), next_* now holds the freshly-issued payload.
+    // Phase 10B.0.5: assign the per-cycle busy flag fresh;
+    // operand_collector_busy_cycles is incremented at commit() gated on it.
+    busy_this_cycle_ = next_busy_;
     if (!next_busy_) return;
 
-    stats_.operand_collector_busy_cycles++;
     next_cycles_remaining_--;
 
     if (next_cycles_remaining_ == 0) {
@@ -38,9 +48,17 @@ void OperandCollector::evaluate() {
 }
 
 void OperandCollector::commit() {
-    // Flip next_* -> current_* for every double-buffered field. After commit
-    // next_* still holds the same value, so the next tick's evaluate() can
-    // read it directly (matching the in-flight carry-forward case).
+    // Phase 10B.0.5: operand_collector_busy_cycles relocated here from
+    // evaluate() — counting at commit() (skipped on a stalled cycle) means a
+    // re-evaluated cycle is not double-counted. Byte-identical while no stall
+    // exists.
+    if (busy_this_cycle_) {
+        stats_.operand_collector_busy_cycles++;
+        busy_this_cycle_ = false;
+    }
+
+    // Flip next_* -> current_* for every double-buffered field. seed_next()
+    // re-establishes next_* == current_* at the top of the next tick.
     current_busy_ = next_busy_;
     current_cycles_remaining_ = next_cycles_remaining_;
     current_instr_ = next_instr_;
@@ -54,6 +72,7 @@ void OperandCollector::reset() {
     next_cycles_remaining_ = 0;
     current_output_ = std::nullopt;
     next_output_ = std::nullopt;
+    busy_this_cycle_ = false;
 }
 
 void OperandCollector::flush() {

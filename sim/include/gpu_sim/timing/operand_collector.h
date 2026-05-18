@@ -31,6 +31,15 @@ public:
     // observers (pipeline_drained / trace_cycle / unit tests).
     bool current_busy() const { return current_busy_; }
 
+    // Phase 10B.0.5: explicit double-buffering. seed_next() copies the
+    // carry-forward fields current_* -> next_* at the top of the tick.
+    // busy_/cycles_remaining_/instr_ are genuine carry-forward — evaluate()
+    // decrements cycles_remaining and a VDOT8's instr_ is still being
+    // collected on its second opcoll cycle (the scheduler has stopped
+    // presenting it by then). next_output_ is NOT seeded — evaluate() sets it
+    // to nullopt at its top and recomputes it from scratch. Called at the top
+    // of TimingModel::tick() alongside the units' seed_next().
+    void seed_next();
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -81,6 +90,12 @@ private:
     // committed copy used by post-commit observers (branch_redirect tracing).
     std::optional<DispatchInput> current_output_;
     std::optional<DispatchInput> next_output_;
+
+    // Phase 10B.0.5: per-cycle scratch flag for Stats relocation. evaluate()
+    // assigns it fresh (the busy condition); commit() consumes it to
+    // increment operand_collector_busy_cycles, so a re-evaluated stalled cycle
+    // does not double-count.
+    bool busy_this_cycle_ = false;
 };
 
 } // namespace gpu_sim

@@ -9,10 +9,15 @@ void ALUUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // this cycle, latched at commit).
     next_has_pending_ = true;
     next_pending_input_ = input;
-    next_pending_cycle_ = cycle;
+    pending_cycle_ = cycle;
 }
 
 void ALUUnit::evaluate() {
+    // Phase 10B.0.5: assign the per-cycle scratch flag fresh every cycle so a
+    // re-evaluated stalled cycle recomputes it from scratch. commit()
+    // consumes it to perform the Stats increments.
+    processed_this_cycle_ = next_has_pending_;
+
     // Read next_has_pending_ here: this is the input written THIS cycle by
     // accept() (combinational forward inside the unit). Cross-cycle state
     // would be read from current_*; ALU has no committed pending input
@@ -29,9 +34,10 @@ void ALUUnit::evaluate() {
         next_result_buffer_.source_unit = ExecUnit::ALU;
         next_result_buffer_.pc = next_pending_input_.pc;
         next_result_buffer_.raw_instruction = next_pending_input_.decoded.raw;
-        next_result_buffer_.issue_cycle = next_pending_cycle_;
-        stats_.alu_stats.busy_cycles++;
-        stats_.alu_stats.instructions++;
+        next_result_buffer_.issue_cycle = pending_cycle_;
+        // Phase 10B.0.5: alu_stats.busy_cycles / .instructions are incremented
+        // in commit() (gated on processed_this_cycle_), not here — a
+        // re-evaluated stalled cycle must not double-count Stats artifacts.
 
         // Phase 10A: branch resolution, moved here from TimingModel::tick().
         // The next_has_pending_ guard above is mandatory: next_pending_input_
@@ -78,11 +84,20 @@ void ALUUnit::evaluate() {
 }
 
 void ALUUnit::commit() {
+    // Phase 10B.0.5: Stats increments relocated here from evaluate(). Counting
+    // them at commit() (which a stalled cycle skips) means a re-evaluated
+    // cycle is not double-counted. Byte-identical to the prior evaluate()-side
+    // count while no stall exists.
+    if (processed_this_cycle_) {
+        stats_.alu_stats.busy_cycles++;
+        stats_.alu_stats.instructions++;
+        processed_this_cycle_ = false;
+    }
+
     // Flip next_* -> current_* for every double-buffered field.
     current_result_buffer_ = next_result_buffer_;
     current_has_pending_ = next_has_pending_;
     current_pending_input_ = next_pending_input_;
-    current_pending_cycle_ = next_pending_cycle_;
     // Phase 10A: flip the REGISTERED redirect-request slot, then clear next_
     // so a single mispredict does not repeat-fire on subsequent cycles.
     // Fetch and decode read current_redirect_request_ during their own

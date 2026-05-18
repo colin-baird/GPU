@@ -37,6 +37,14 @@ public:
     // removed. (Phase 10F's doc sweep records the deviation.)
     bool current_result_pending() const { return current_result_buffer_.valid; }
 
+    // Phase 10B.0.5: the ALU has 1-cycle latency, so its execution slot
+    // (has_pending_ / pending_input_) is a per-cycle latch of opcoll's
+    // output — not multi-cycle carry-forward state. evaluate() consumes the
+    // value written by accept() THIS tick, never a prior committed value, so
+    // there is nothing to re-establish in next_*. seed_next() is therefore
+    // empty (the ExecutionUnit interface still carries it for the iterative
+    // units). See the classification criterion in the phase-10 plan.
+    void seed_next() override {}
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -122,8 +130,19 @@ private:
     bool next_has_pending_ = false;
     DispatchInput current_pending_input_;
     DispatchInput next_pending_input_;
-    uint64_t current_pending_cycle_ = 0;
-    uint64_t next_pending_cycle_ = 0;
+    // Phase 10B.0.5: not double-buffered. accept() writes it and evaluate()
+    // reads it within the same tick (into next_result_buffer_.issue_cycle);
+    // no consumer ever reads a prior committed value, so it carries no
+    // cross-cycle information for a 1-cycle ALU and needs no current_/next_
+    // pair.
+    uint64_t pending_cycle_ = 0;
+
+    // Phase 10B.0.5: per-cycle scratch flag. evaluate() sets it to whether it
+    // processed an instruction this cycle; commit() consumes it to relocate
+    // the alu_stats.busy_cycles / .instructions increments out of evaluate()
+    // (a re-evaluated stalled cycle must not double-count Stats artifacts).
+    // Not a double-buffered field — evaluate() assigns it fresh each cycle.
+    bool processed_this_cycle_ = false;
 
     // Phase 10A REGISTERED redirect-request signal. evaluate() writes
     // next_redirect_request_ on a mispredicted branch; commit() flips it to

@@ -14,15 +14,27 @@ void DivideUnit::accept(const DispatchInput& input, uint64_t cycle) {
     next_pending_result_.pc = input.pc;
     next_pending_result_.raw_instruction = input.decoded.raw;
     next_pending_result_.issue_cycle = cycle;
-    stats_.div_stats.instructions++;
+    // Phase 10B.0.5: div_stats.instructions is incremented in commit()
+    // (gated on accepted_this_cycle_), not here.
+    accepted_this_cycle_ = true;
+}
+
+void DivideUnit::seed_next() {
+    // Phase 10B.0.5: re-establish the carry-forward iterative state in next_*
+    // at the top of the tick.
+    next_busy_ = current_busy_;
+    next_cycles_remaining_ = current_cycles_remaining_;
+    next_pending_result_ = current_pending_result_;
 }
 
 void DivideUnit::evaluate() {
-    // Operates on next_* (which was seeded equal to current_* by commit()
-    // at the end of the prior tick, and may have been updated by accept()
-    // earlier in this tick).
+    // Operates on next_* (which was seeded equal to current_* by seed_next()
+    // at the top of the tick, and may have been updated by accept() earlier
+    // in this tick).
+    // Phase 10B.0.5: capture the per-cycle busy flag before the body may
+    // clear next_busy_; div_stats.busy_cycles is incremented at commit().
+    busy_this_cycle_ = next_busy_;
     if (next_busy_) {
-        stats_.div_stats.busy_cycles++;
         next_cycles_remaining_--;
         if (next_cycles_remaining_ == 0) {
             next_result_buffer_ = next_pending_result_;
@@ -32,6 +44,18 @@ void DivideUnit::evaluate() {
 }
 
 void DivideUnit::commit() {
+    // Phase 10B.0.5: Stats increments relocated here from evaluate()/accept().
+    // Both per-cycle flags are consumed and cleared at commit() so a commit()
+    // not preceded by an evaluate() never re-counts a stale flag.
+    if (busy_this_cycle_) {
+        stats_.div_stats.busy_cycles++;
+        busy_this_cycle_ = false;
+    }
+    if (accepted_this_cycle_) {
+        stats_.div_stats.instructions++;
+        accepted_this_cycle_ = false;
+    }
+
     current_busy_ = next_busy_;
     current_cycles_remaining_ = next_cycles_remaining_;
     current_pending_result_ = next_pending_result_;
@@ -47,6 +71,8 @@ void DivideUnit::reset() {
     next_result_buffer_.valid = false;
     current_pending_result_.valid = false;
     next_pending_result_.valid = false;
+    busy_this_cycle_ = false;
+    accepted_this_cycle_ = false;
 }
 
 bool DivideUnit::next_has_result() const {

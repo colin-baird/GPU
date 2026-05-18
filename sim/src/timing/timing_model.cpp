@@ -391,6 +391,21 @@ bool TimingModel::tick() {
     // tracker.commit() flips at end-of-cycle alongside scoreboard_.commit().
     branch_tracker_.seed_next();
 
+    // Phase 10B.0.5: explicit double-buffering for the issue/execute stages.
+    // seed_next() copies each stage's internal carry-forward fields
+    // current_* -> next_* before any evaluate() runs, making the "next_* ==
+    // current_* on entry to evaluate()" precondition explicit and
+    // unconditional. While no stall exists this is a redundant copy (the prior
+    // commit() already left next_* == current_*), so it is byte-identical; the
+    // writeback stall (10B.3) relies on it to genuinely freeze a stalled
+    // stage. Units with no carry-forward state (ALUUnit) have an empty body.
+    opcoll_->seed_next();
+    alu_->seed_next();
+    mul_->seed_next();
+    div_->seed_next();
+    tlookup_->seed_next();
+    ldst_->seed_next();
+
     // Phase 6 REGISTERED ebreak observation. decode.commit() at end of the
     // previous cycle latched current_ebreak_request_. Trigger the panic
     // controller at the *top* of this tick (one cycle later than the

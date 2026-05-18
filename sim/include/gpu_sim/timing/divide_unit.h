@@ -24,6 +24,12 @@ public:
     // .valid portion of the old current_busy(). Removed in 10B.3.
     bool current_result_pending() const { return current_result_buffer_.valid; }
 
+    // Phase 10B.0.5: copy the carry-forward iterative state current_* ->
+    // next_*. evaluate() consumes the prior-cycle busy flag and decrements
+    // cycles_remaining, so busy_/cycles_remaining_/pending_result_ are genuine
+    // multi-cycle carry-forward. The result buffer is NOT seeded — evaluate()
+    // assigns it fresh when the countdown reaches zero.
+    void seed_next() override;
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -62,6 +68,13 @@ private:
     WritebackEntry next_pending_result_;
     WritebackEntry current_result_buffer_;
     WritebackEntry next_result_buffer_;
+
+    // Phase 10B.0.5: per-cycle scratch flags for Stats relocation. evaluate()
+    // assigns busy_this_cycle_ fresh; accept() sets accepted_this_cycle_. Both
+    // consumed at commit() so a re-evaluated stalled cycle does not
+    // double-count div_stats.
+    bool busy_this_cycle_ = false;
+    bool accepted_this_cycle_ = false;
 };
 
 } // namespace gpu_sim

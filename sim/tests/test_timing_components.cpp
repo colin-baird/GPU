@@ -68,6 +68,9 @@ class StubExecutionUnit : public ExecutionUnit {
 public:
     explicit StubExecutionUnit(ExecUnit type) : type_(type) {}
 
+    // Phase 10B.0.5: ExecutionUnit gained a pure-virtual seed_next(). The stub
+    // has no carry-forward state, so the override is empty.
+    void seed_next() override {}
     void evaluate() override {}
     void commit() override {}
     void reset() override { result_.valid = false; }
@@ -399,13 +402,22 @@ TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
                                         isa::OP_ALU_R));
 
     // Accept 3 ops back-to-back — pipeline must accept on every cycle.
+    // Phase 10B.0.5: mul_stats.instructions is incremented in commit() (gated
+    // on the per-cycle accepted_this_cycle_ flag), relocated out of accept()
+    // so a re-evaluated stalled cycle cannot double-count. Each cycle now runs
+    // the real lifecycle accept()? -> evaluate() -> commit(); commit() flips
+    // next_pipeline_ -> current_pipeline_ without disturbing the live
+    // next_pipeline_ the pipeline mechanics advance, so result timing is
+    // unchanged.
     REQUIRE_FALSE(mul.current_busy());
     mul.accept(DispatchInput{op0.decoded, op0.trace, op0.warp_id, op0.pc}, 0);
     REQUIRE_FALSE(mul.current_busy());
     mul.evaluate();  // advance cycle 0→1
+    mul.commit();
     mul.accept(DispatchInput{op1.decoded, op1.trace, op1.warp_id, op1.pc}, 1);
     REQUIRE_FALSE(mul.current_busy());
     mul.evaluate();  // advance cycle 1→2
+    mul.commit();
     mul.accept(DispatchInput{op2.decoded, op2.trace, op2.warp_id, op2.pc}, 2);
     REQUIRE_FALSE(mul.current_busy());
 
@@ -413,18 +425,21 @@ TEST_CASE("MultiplyUnit: 3-stage pipelined throughput (II=1)",
     // after 2 evaluates it still has 1 cycle to go.
     REQUIRE_FALSE(mul.next_has_result());
     mul.evaluate();  // cycle 2→3: op0 drains
+    mul.commit();
     REQUIRE(mul.next_has_result());
     auto wb0 = mul.consume_result();
     REQUIRE(wb0.dest_reg == 5);
 
     // op1 drains on the very next cycle (II=1 means staggered output).
     mul.evaluate();
+    mul.commit();
     REQUIRE(mul.next_has_result());
     auto wb1 = mul.consume_result();
     REQUIRE(wb1.dest_reg == 6);
 
     // op2 drains one cycle after that.
     mul.evaluate();
+    mul.commit();
     REQUIRE(mul.next_has_result());
     auto wb2 = mul.consume_result();
     REQUIRE(wb2.dest_reg == 7);
@@ -617,11 +632,18 @@ TEST_CASE("TLookupUnit: stats track busy_cycles=17 and instructions=1 per dispat
     REQUIRE(stats.tlookup_stats.busy_cycles == 0);
     REQUIRE(stats.tlookup_stats.instructions == 0);
 
+    // Phase 10B.0.5: tlookup_stats.instructions / .busy_cycles are now
+    // incremented in commit() (relocated out of accept()/evaluate() so a
+    // re-evaluated stalled cycle cannot double-count). The unit's real
+    // lifecycle is evaluate()+commit() every cycle; the assertions below now
+    // observe the stats after commit(), where they land.
     tlookup.accept(DispatchInput{issue.decoded, issue.trace, issue.warp_id, issue.pc}, 0);
+    tlookup.commit();
     REQUIRE(stats.tlookup_stats.instructions == 1);
 
     for (uint32_t i = 0; i < 17; ++i) {
         tlookup.evaluate();
+        tlookup.commit();
     }
     REQUIRE(stats.tlookup_stats.busy_cycles == 17);
     REQUIRE(stats.tlookup_stats.instructions == 1);
@@ -630,10 +652,12 @@ TEST_CASE("TLookupUnit: stats track busy_cycles=17 and instructions=1 per dispat
     tlookup.consume_result();
     auto second = make_issue_output(i_type(16, 1, 0, 6, isa::OP_TLOOKUP));
     tlookup.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 17);
+    tlookup.commit();
     REQUIRE(stats.tlookup_stats.instructions == 2);
 
     for (uint32_t i = 0; i < 17; ++i) {
         tlookup.evaluate();
+        tlookup.commit();
     }
     REQUIRE(stats.tlookup_stats.busy_cycles == 34);
     REQUIRE(stats.tlookup_stats.instructions == 2);

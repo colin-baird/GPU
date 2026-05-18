@@ -138,6 +138,16 @@ public:
     // but both hierarchies share the discipline. See
     // resources/timing_discipline.md.
     virtual bool current_busy() const = 0;
+    // Phase 10B.0.5: explicit double-buffering. seed_next() copies every
+    // internal carry-forward field current_* -> next_* at the top of the
+    // tick, before evaluate(). It makes the "next_* == current_* on entry to
+    // evaluate()" precondition explicit and unconditional, so a stalled cycle
+    // (skipped commit()) re-establishes it and the next evaluate() re-runs
+    // identically — the prerequisite for the writeback stall (10B.3). Units
+    // with no carry-forward state (ALUUnit — 1-cycle latency) implement it as
+    // an empty body. Called for every unit at the top of TimingModel::tick(),
+    // alongside Scoreboard::seed_next() / BranchShadowTracker::seed_next().
+    virtual void seed_next() = 0;
     virtual void evaluate() = 0;
     virtual void commit() = 0;
     virtual void reset() = 0;
@@ -156,6 +166,10 @@ public:
         }
     }
 
+    // No carry-forward double-buffered state — the queue is mutated directly
+    // by enqueue()/consume_result(), not via a next_* slot — so seed_next()
+    // is empty (same category as ALUUnit).
+    void seed_next() override {}
     void evaluate() override {}
     void commit() override {}
     void reset() override { queue_.clear(); }
