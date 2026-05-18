@@ -356,34 +356,39 @@ Prefer explicit loops over STL algorithms when the loop body involves domain-spe
 
 ## Pipeline Stage Pattern
 
-All timing model components follow the double-buffered three-method
-pattern (`evaluate` / `commit` / `reset`):
+All timing model components follow the double-buffered pattern. A
+pipelined stage exposes `seed_next` / `evaluate` / `commit` / `reset`:
 
 ```cpp
 class MyStage : public PipelineStage {
 public:
-    void evaluate() override;      // Read current_ state, compute next_ state
+    void seed_next();              // next_* = current_* (top of tick)
+    void evaluate() override;      // pure fn of current_*; writes next_*
     void commit() override;        // current_ = next_
     void reset() override;         // Return to initial state
 };
 ```
 
-If a stage exposes a READY/STALL signal, add a `const` accessor that
-reads only its own committed (`current_*`) state. The accessor's value
-is stable across the entire evaluate phase, so any upstream producer
-can query it from inside its own `evaluate()` without an explicit
-backward-sweep step.
+`seed_next()` runs for every stage at the top of `TimingModel::tick()`
+before any `evaluate()`; `commit()` flips at the cycle boundary. See
+"The `seed_next()` / `commit()` double-buffer rule" below.
+
+If a stage exposes a back-pressure signal, add a `current_*()` accessor
+that reads only its own committed state (a REGISTERED back-pressure
+read), or a `next_*()` accessor for a transient computed this cycle and
+read backward (a COMBINATIONAL back-pressure read).
 
 Execution units extend `ExecutionUnit` (a separate hierarchy that
-shares the same convention) with the accept/ready/result interface:
+shares the same convention) with the seed/accept/result interface:
 
 ```cpp
 class MyUnit : public ExecutionUnit {
 public:
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool ready_out() const override;          // const accessor on current_*
-    bool has_result() const override;
-    WritebackEntry consume_result() override;
+    void seed_next() override;                  // next_* = current_*
+    bool current_busy() const override;         // REGISTERED, committed
+    bool current_has_result() const override;   // REGISTERED, committed
+    WritebackEntry consume_result() override;    // pure read, no mutation
     ExecUnit get_type() const override;
 };
 ```
@@ -392,25 +397,39 @@ public:
 
 ## Cross-stage signaling discipline (timing model)
 
-Every cross-stage signal in the timing model is classified along **two
-independent axes**:
+The timing model is a synchronous-logic model: it has exactly **two** kinds
+of cross-stage edge, and they pair one-to-one with the two name prefixes.
+(See `CLAUDE.md` Principle 6, "Synchronous pipeline discipline", for the
+project-level statement; this section is the C++ contract.)
 
-- **Cycle axis** — *when* is the read sampled?
-  - **REGISTERED** — producer writes `next_*` in `evaluate()`; `commit()`
-    latches `next_* → current_*`; consumer reads `current_*` only. 1-cycle
-    handshake, independent of `tick()` ordering. The default class for any
-    state that should reach the consumer on a later cycle.
-  - **COMBINATIONAL** — producer's `next_*` (or a transient) is read by
-    the consumer in the same `evaluate()` phase. Order in `tick()` is
-    part of the contract and must be commented at the call site
-    (producer name, consumer name, why the order matters).
-- **Direction axis** — *what does the edge mean architecturally?* Either
-  forward-data (consumer reads payload flowing upstream→downstream) or
-  back-pressure (the upstream producer reads a downstream consumer's
-  "are you ready?" signal). This axis is *architectural metadata* that
-  controls visualization style; it does not affect the read pattern.
+- **REGISTERED forward edge** (`current_*`) — the *only* flavor for forward
+  data. The producer writes its `next_*` slot in `evaluate()`; `commit()`
+  latches `next_* → current_*`; the consumer reads the producer's
+  `current_*` only. A guaranteed 1-cycle handshake, independent of `tick()`
+  sweep order. Every forward data path in the pipeline is a REGISTERED
+  edge: fetch→decode, scheduler→operand-collector→unit→writeback-arbiter,
+  coalescing→cache, cache→memory-interface, gather-buffer→writeback-arbiter.
+  A combinational-*forward* edge — a consumer reading a producer's `next_*`
+  along the data direction — is **forbidden**: it collapses a cycle of
+  pipeline depth and makes correctness depend on `tick()` ordering.
 
-The cycle axis is mechanically encoded by the accessor's name prefix.
+- **COMBINATIONAL backward control edge** (`next_*`) — the *only*
+  same-cycle classification, and it is restricted to **back-pressure and
+  control**, never forward data. The downstream stage asserts a transient
+  `next_*` signal during its `evaluate()`; the upstream stage reads it the
+  same cycle (the evaluate sweep runs back-to-front, so the downstream
+  producer runs first). These are the stall/ready and redirect signals:
+  decode-busy back to fetch, the cache stall to coalescing, the
+  memory-interface request-stall to the cache, the writeback stall to the
+  units/operand-collector/scheduler, and the branch redirect from the ALU
+  to fetch/decode. A COMBINATIONAL edge requires a call-site comment
+  naming the producer, the consumer, and the tick-order dependency.
+
+Direction is therefore not a free axis: REGISTERED edges are forward-data,
+COMBINATIONAL edges are backward control. The cycle prefix is mechanically
+encoded by the accessor's name (`current_*` / `next_*`) and the lint
+(`tools/lint_timing_naming.py`) enforces that a `next_*` cross-module read
+only ever flows backward (upstream reader, downstream producer).
 
 ## Cross-stage accessor naming
 
@@ -423,13 +442,15 @@ Lifecycle hooks (`evaluate`, `commit`, `reset`, `flush`, `seed_next`,
 
 | Prefix | Cycle discipline | Read semantics |
 |--------|------------------|----------------|
-| `current_*()` | **REGISTERED** | const accessor returning the producer's `current_*` slot (committed state, flipped at end-of-cycle by `commit()`). Stable through the entire evaluate phase regardless of where in the sweep it is queried. |
-| `next_*()` | **COMBINATIONAL** | const accessor returning the producer's `next_*` slot (live mid-tick value). Ordering-sensitive; call-site comment required to identify which producer must run first. |
+| `current_*()` | **REGISTERED forward** | const accessor returning the producer's `current_*` slot (committed state, flipped at end-of-cycle by `commit()`). Stable through the entire evaluate phase regardless of where in the sweep it is queried. The only flavor for forward data. |
+| `next_*()` | **COMBINATIONAL backward** | const accessor returning a transient back-pressure / control signal (a stall, a redirect) asserted by the downstream stage and read same-cycle by the upstream one. Ordering-sensitive; call-site comment required. Never used for forward data. |
 
-The back-pressure idiom uses the same two prefixes — a back-pressure
-signal is a `current_*()` (or `next_*()`) accessor on the consumer that
-the producer reads during its own evaluate. There is no `ready_*()`
-prefix.
+A REGISTERED back-pressure signal — a stall computed purely from the
+consumer's own committed state — is still a `current_*()` accessor (e.g.
+`OperandCollector::current_busy()`). A `next_*()` accessor is reserved for
+a transient computed *this cycle* and read backward, e.g.
+`WritebackArbiter::next_writeback_stall()`, `L1Cache::next_stalled()`,
+`ALUUnit::next_redirect()`. There is no `ready_*()` prefix.
 
 ### Postfix design language — three shapes
 
@@ -490,11 +511,52 @@ go through accessors so a future refactor that changes the field's
 underlying shape (single slot vs. double-buffered, struct vs. POD) does
 not change the AST surface the diagram extractor walks.
 
+### The `seed_next()` / `commit()` double-buffer rule
+
+Every pipelined stage seeds `next_* = current_*` for all of its
+carry-forward state at the top of the tick — before any `evaluate()`
+runs — via a `seed_next()` method, and flips `next_* → current_*` at
+`commit()`. The consequence is the property the whole discipline relies
+on: **`evaluate()` is a pure function of committed (`current_*`) state**
+plus this-tick inputs. It writes only `next_*`; it never depends on a
+mutation a prior `evaluate()` left behind.
+
+This is what makes a stage *re-runnable*. A `commit()`-gated stall (a
+stage that reads a back-pressure signal at the top of `commit()` and
+skips the flip) leaves `next_*` discarded and `current_*` unchanged, so
+`seed_next()` re-establishes `next_* == current_*` next tick and the
+stage's `evaluate()` recomputes the identical result. The writeback
+stall depends on exactly this: the five execution units, the operand
+collector, and the warp scheduler all freeze cleanly because their
+`evaluate()` is a pure function of committed state.
+
+A stage with no genuine cross-cycle carry-forward state (e.g. the 1-cycle
+ALU, whose execution slot is recomputed fresh each tick) implements
+`seed_next()` as an empty body — the interface still carries it for
+uniformity. Only fields that span a cycle boundary are seeded.
+
+### `Stats` increments belong in `commit()`
+
+`Stats` counters are a non-hardware simulation artifact, not pipeline
+state — they are not double-buffered. Because `evaluate()` may re-run on
+a stalled cycle, **`Stats` increments must never be placed in
+`evaluate()` or `accept()`.** Compute the per-cycle condition into a
+plain scratch flag during `evaluate()` if needed, and apply the
+increment as a `commit()`-phase side effect. A stage that skips
+`commit()` on a stalled cycle then naturally counts that cycle exactly
+once when it finally commits. (The warp scheduler is the documented
+exception: it early-returns from `evaluate()` on a stalled cycle, so its
+body never runs on a stalled cycle and its increments stay safely in
+`evaluate()`.)
+
 ### Discipline overview rules
 
 - **Any cross-stage signal in the timing model must be classified at the
   call site.** Plain mutable members read by one stage and written by
   another mid-evaluate are forbidden.
+- **No combinational-forward edges.** A `next_*` cross-module read must
+  flow backward (upstream reader). A forward `next_*` read collapses
+  pipeline depth and is a hard violation.
 - **Use the `Scoreboard` pattern
   (`sim/include/gpu_sim/timing/scoreboard.h`) as the canonical REGISTERED
   reference.** New next/current pairs reuse its

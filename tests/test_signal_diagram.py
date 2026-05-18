@@ -64,7 +64,7 @@ class SignalDiagramTests(unittest.TestCase):
         self.assertEqual(ast_names, md_names)
 
     def test_known_edges_present_with_classification(self) -> None:
-        """A floor of 10 high-signal edges that pin the diagram's spine.
+        """A floor of 15 high-signal edges that pin the diagram's spine.
 
         Each entry is (src, dst, classification). Under the two-axis
         model (Phase 0 of the naming-and-access-discipline refactor),
@@ -74,20 +74,42 @@ class SignalDiagramTests(unittest.TestCase):
         classification. A failing assert here means either the
         architecture changed (update the test) or the AST extractor
         regressed (fix the extractor). Labels are intentionally not
-        asserted — they're cosmetic."""
+        asserted — they're cosmetic.
+
+        Phase 10 reshaped the issue/execute path: 10A moved branch
+        resolution into the ALU, 10B.1/10B.2 registered the
+        scheduler→opcoll→unit pull path, and 10B.3 added the
+        combinational-backward writeback stall. The floor below pins the
+        post-Phase-10 classifications: the issue/execute path is
+        REGISTERED end to end and the writeback stall is COMBINATIONAL.
+        """
         ast_triples = {(e.src, e.dst, e.classification)
                        for e in self.ast_result.edges}
         expected = {
-            ("FetchStage",        "BranchShadowTracker", "REGISTERED"),
-            ("WarpScheduler",     "BranchShadowTracker", "REGISTERED"),
-            ("BranchShadowTracker", "WarpScheduler",     "REGISTERED"),
-            ("CoalescingUnit",    "L1Cache",             "REGISTERED"),
-            ("L1Cache",           "CoalescingUnit",      "COMBINATIONAL"),
-            ("WarpScheduler",     "Scoreboard",          "REGISTERED"),
-            ("WritebackArbiter",  "Scoreboard",          "REGISTERED"),
-            ("ALUUnit",           "WritebackArbiter",    "REGISTERED"),
-            ("ALUUnit",           "PanicController",     "REGISTERED"),
-            ("PanicController",   "WarpScheduler",       "REGISTERED"),
+            # Branch-shadow tracker fan-in/out. Branch resolution moved
+            # into ALUUnit::evaluate() in Phase 10A.
+            ("FetchStage",         "BranchShadowTracker", "REGISTERED"),
+            ("WarpScheduler",      "BranchShadowTracker", "REGISTERED"),
+            ("ALUUnit",            "BranchShadowTracker", "REGISTERED"),
+            ("BranchShadowTracker", "WarpScheduler",      "REGISTERED"),
+            # Memory handshake: forward REGISTERED, backward COMBINATIONAL.
+            ("CoalescingUnit",     "L1Cache",             "REGISTERED"),
+            ("L1Cache",            "CoalescingUnit",      "COMBINATIONAL"),
+            # Scoreboard.
+            ("WarpScheduler",      "Scoreboard",          "REGISTERED"),
+            ("WritebackArbiter",   "Scoreboard",          "REGISTERED"),
+            # Issue/execute pull path — REGISTERED end to end (Phase
+            # 10B.1/10B.2): scheduler→opcoll→unit.
+            ("WarpScheduler",      "OperandCollector",    "REGISTERED"),
+            ("OperandCollector",   "ALUUnit",             "REGISTERED"),
+            # Result path to the writeback arbiter.
+            ("ALUUnit",            "WritebackArbiter",    "REGISTERED"),
+            # Writeback stall — COMBINATIONAL backward (Phase 10B.3).
+            ("WritebackArbiter",   "ALUUnit",             "COMBINATIONAL"),
+            ("WritebackArbiter",   "WarpScheduler",       "COMBINATIONAL"),
+            # Panic-controller side channel.
+            ("ALUUnit",            "PanicController",     "REGISTERED"),
+            ("PanicController",    "WarpScheduler",       "REGISTERED"),
         }
         missing = expected - ast_triples
         self.assertFalse(

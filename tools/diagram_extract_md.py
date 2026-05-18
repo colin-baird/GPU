@@ -102,7 +102,14 @@ GROUP_PATTERNS.append(
 
 # Inventory rows that are genuinely internal-to-one-module (no
 # cross-stage edge to draw). Listed here so --check stays clean.
-INTERNAL_ROWS: set[int] = {6}
+#
+#   - Row 6: OperandCollector's internal next_/current_ double-buffer.
+#   - Row 3: the operand-collector-busy poll the warp scheduler used to
+#     perform was replaced in Phase 10B.0 by an internal issue
+#     scoreboard (`opcoll_cooldown_cycles_`). The scheduler no longer
+#     reads `OperandCollector::current_busy()` cross-stage, so the row
+#     documents scheduler-internal bookkeeping with no edge to draw.
+INTERNAL_ROWS: set[int] = {3, 6}
 
 # Default short signal name per inventory row, used as the visible edge
 # label for non-overridden rows. Auto-extracted Payload text is too long
@@ -134,19 +141,46 @@ ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
         ("DecodeStage", "FetchStage",  "REGISTERED", "busy"),
         ("FetchStage",  "DecodeStage", "REGISTERED", "output"),
     ],
-    # Row 5: per-warp branch-shadow bit. Three writers all funnel into
-    # BranchShadowTracker; scheduler reads the tracker.
+    # Row 3: no cross-stage edge. Phase 10B.0 replaced the scheduler's
+    # poll of `OperandCollector::current_busy()` with an internal issue
+    # scoreboard (`opcoll_cooldown_cycles_`); the operand-collector-busy
+    # signal is no longer read across the stage boundary. The row stays
+    # in the inventory for the historical record but emits no edge (see
+    # also INTERNAL_ROWS).
+    3: [],
+    # Row 4: post-Phase-10B.0 the warp scheduler tracks fully-pipelined
+    # and iterative execution-unit availability from its own issue
+    # scoreboard (`unit_busy_` countdown), not by polling each unit's
+    # `current_busy()`. The one surviving unit→scheduler edge is the
+    # LdSt address-gen FIFO accounting (`current_fifo_size()` /
+    # `current_fifo_total_pushes()` / `current_fifo_capacity()`), which
+    # the scheduler reads to enforce the FIFO-slot bound at issue.
+    4: [
+        ("LdStUnit", "WarpScheduler", "REGISTERED", "fifo accounting"),
+    ],
+    # Row 5: per-warp branch-shadow bit. Three writers funnel into
+    # BranchShadowTracker; scheduler reads the tracker. Branch
+    # resolution moved into `ALUUnit::evaluate()` in Phase 10A, so the
+    # correct-prediction writer is the ALU (not the operand collector).
     5: [
         ("WarpScheduler",       "BranchShadowTracker", "REGISTERED", "branch issued"),
-        ("OperandCollector",    "BranchShadowTracker", "REGISTERED", "branch resolved"),
+        ("ALUUnit",             "BranchShadowTracker", "REGISTERED", "branch resolved"),
         ("FetchStage",          "BranchShadowTracker", "REGISTERED", "redirect applied"),
         ("BranchShadowTracker", "WarpScheduler",       "REGISTERED", "in_flight"),
     ],
-    # Row 7: each execution unit and the gather-buffer file publish
-    # results via REGISTERED result_buffer slots that WritebackArbiter
-    # consumes (with a same-tick has_result COMBINATIONAL probe). The
-    # LdSt→Coalescing addr-gen FIFO edge is REGISTERED as of Phase M1.
+    # Row 7: the REGISTERED issue/execute path. Phase 10B registered
+    # every edge of it: scheduler→opcoll (10B.2), opcoll→unit (10B.1),
+    # unit→wb_arbiter (10B.3). Each execution unit and the gather-buffer
+    # file publish results via REGISTERED result_buffer slots that
+    # WritebackArbiter consumes. The LdSt→Coalescing addr-gen FIFO edge
+    # is REGISTERED as of Phase M1.
     7: [
+        ("WarpScheduler",        "OperandCollector", "REGISTERED", "issue"),
+        ("OperandCollector",     "ALUUnit",          "REGISTERED", "operands"),
+        ("OperandCollector",     "MultiplyUnit",     "REGISTERED", "operands"),
+        ("OperandCollector",     "DivideUnit",       "REGISTERED", "operands"),
+        ("OperandCollector",     "TLookupUnit",      "REGISTERED", "operands"),
+        ("OperandCollector",     "LdStUnit",         "REGISTERED", "operands"),
         ("ALUUnit",              "WritebackArbiter", "REGISTERED", "result"),
         ("MultiplyUnit",         "WritebackArbiter", "REGISTERED", "result"),
         ("DivideUnit",           "WritebackArbiter", "REGISTERED", "result"),
@@ -180,6 +214,17 @@ ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
         ("L1Cache", "TimingModel",    "REGISTERED",    "trace events"),
         ("L1Cache", "CoalescingUnit", "COMBINATIONAL", "stalled"),
     ],
+    # Row 12: misprediction redirect. `ALUUnit::evaluate` asserts the
+    # `next_redirect_` transient (branch resolution lives in the ALU
+    # since Phase 10A); `FetchStage::evaluate` and `DecodeStage::evaluate`
+    # read `alu->next_redirect()` the same cycle and apply the flush.
+    # COMBINATIONAL backward (Phase 10E converted the prior REGISTERED
+    # ALU-staged form to the discipline-correct combinational-backward
+    # transient).
+    12: [
+        ("ALUUnit", "FetchStage",  "COMBINATIONAL", "redirect"),
+        ("ALUUnit", "DecodeStage", "COMBINATIONAL", "redirect"),
+    ],
     # Row 13 mixes two distinct signals: (a) DecodeStage publishes the
     # EBREAK request that TimingModel reads at top-of-tick, and (b) the
     # panic-flush cascade where PanicController triggers flush() on
@@ -212,6 +257,24 @@ ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
     15: [
         ("L1Cache",                 "ExternalMemoryInterface", "REGISTERED", "mem request"),
         ("ExternalMemoryInterface", "L1Cache",                 "REGISTERED", "has_response"),
+    ],
+    # Row 16: the writeback stall. `WritebackArbiter::evaluate` asserts
+    # the COMBINATIONAL `next_writeback_stall()` transient when a
+    # variable-latency load preempts a fixed-latency unit's writeback.
+    # The five execution units and the operand collector read it at the
+    # top of their `commit()` (gating the next_*→current_* flip); the
+    # warp scheduler reads it at the top of `evaluate()` (gating issue).
+    # COMBINATIONAL backward / control — the arbiter is sequenced first
+    # in the evaluate sweep so every upstream consumer reads it
+    # same-cycle.
+    16: [
+        ("WritebackArbiter", "ALUUnit",          "COMBINATIONAL", "writeback stall"),
+        ("WritebackArbiter", "MultiplyUnit",     "COMBINATIONAL", "writeback stall"),
+        ("WritebackArbiter", "DivideUnit",       "COMBINATIONAL", "writeback stall"),
+        ("WritebackArbiter", "TLookupUnit",      "COMBINATIONAL", "writeback stall"),
+        ("WritebackArbiter", "LdStUnit",         "COMBINATIONAL", "writeback stall"),
+        ("WritebackArbiter", "OperandCollector", "COMBINATIONAL", "writeback stall"),
+        ("WritebackArbiter", "WarpScheduler",    "COMBINATIONAL", "writeback stall"),
     ],
 }
 
@@ -257,6 +320,21 @@ def _parse_inventory(md: str) -> list[dict]:
         if header is not None:
             stripped = line.strip()
             if not stripped.startswith("|"):
+                # A blank line inside the inventory table does not end
+                # it: the table may be visually broken by a spacer line
+                # (e.g. an appended row separated for readability). Only
+                # a non-blank, non-pipe line truly closes the table.
+                if not stripped:
+                    # Look ahead past consecutive blank lines: if the
+                    # next non-blank line is another table row, the
+                    # blank line is an intra-table spacer; keep the
+                    # header active.
+                    j = i + 1
+                    while j < len(lines) and not lines[j].strip():
+                        j += 1
+                    if j < len(lines) and lines[j].lstrip().startswith("|"):
+                        i += 1
+                        continue
                 header = None
                 i += 1
                 continue

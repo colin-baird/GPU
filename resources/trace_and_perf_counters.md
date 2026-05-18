@@ -374,7 +374,7 @@ uses the same field names; the text report groups them under labeled headings.
 | `warp_stall_scoreboard[w]` | Scheduler scans in which warp `w` was blocked by scoreboard. |
 | `warp_stall_buffer_empty[w]` | (Reserved) warp stalled because its instruction buffer was empty. |
 | `warp_stall_branch_shadow[w]` | Scheduler scans in which warp `w` was blocked by an in-flight branch/JAL/JALR. |
-| `warp_stall_unit_busy[w]` | Scheduler scans in which warp `w` was blocked by operand-collector-busy or target-unit-busy. |
+| `warp_stall_unit_busy[w]` | Scheduler scans in which warp `w` was blocked at the Phase-10B.0 issue gate — a unit-busy structural hazard, a writeback-bitmap conflict, an LDST FIFO-full condition, or the operand-collector cooldown. Kept as a per-warp **roll-up**; the finer per-reason breakdown lives in the `scheduler_*_stall_cycles` counters below. |
 
 #### Pipeline
 
@@ -386,6 +386,9 @@ uses the same field names; the text report groups them under labeled headings.
 | `scheduler_idle_cycles` | Cycles the scheduler issued no instruction. |
 | `scheduler_frontend_stall_cycles` | Subset: at least one active warp had an empty buffer. |
 | `scheduler_stall_backend_cycles` | Subset: all active warps had buffered instructions but none could issue. |
+| `scheduler_unit_busy_stall_cycles[ExecUnit]` | (Phase 10B.0) Per-unit array indexed by the six `ExecUnit` values. Counts scheduler scans blocked because the target unit's structural-hazard countdown (`unit_busy_[]`) was non-zero — i.e. a non-pipelined unit (`DIVIDE`/`TLOOKUP`) or `LDST` (addr-gen slot) was still occupied. Only the `DIVIDE`, `TLOOKUP`, and `LDST` slots are ever non-zero (the fully-pipelined `ALU`/`MULTIPLY` have iteration latency 0; the `SYSTEM` slot stays zero). A finer breakdown of `warp_stall_unit_busy[]`. |
+| `scheduler_writeback_contention_stall_cycles[ExecUnit]` | (Phase 10B.0) Per-unit array. Counts scheduler scans where a fixed-latency op could not issue because its predicted writeback cycle was already claimed in the scheduler's binding writeback bitmap — the scheduler proactively avoided a fixed-vs-fixed writeback collision. A finer breakdown of `warp_stall_unit_busy[]`. |
+| `scheduler_ldst_fifo_full_stall_cycles` | (Phase 10B.0) Scalar. Counts scheduler scans where an LDST issue was blocked by the event-driven LDST FIFO-occupancy gate (issuing would overflow the LdSt addr-gen FIFO). A finer breakdown of `warp_stall_unit_busy[]`. |
 | `operand_collector_busy_cycles` | Cycles during which the operand collector was occupied. |
 | `branch_predictions` | Predictions scored (equal to branch/JAL/JALR completions). |
 | `branch_mispredictions` | Predictions whose direction/target disagreed with the execution result. |
@@ -398,7 +401,7 @@ Emitted for each of `alu_stats`, `mul_stats`, `div_stats`, `ldst_stats`,
 
 | Field | Meaning |
 |-------|---------|
-| `<unit>_busy_cycles` | Cycles the unit was not `ready_out()`. |
+| `<unit>_busy_cycles` | Cycles the unit processed an instruction (incremented in the unit's `commit()`, gated so a writeback-stalled cycle is not double-counted). |
 | `<unit>_instructions` | Instructions accepted by the unit. |
 | Utilization (derived) | `100 × busy_cycles / total_cycles`, emitted in the text report only. |
 
@@ -426,7 +429,9 @@ Emitted for each of `alu_stats`, `mul_stats`, `div_stats`, `ldst_stats`,
 
 | Field | Meaning |
 |-------|---------|
-| `writeback_conflicts` | Cycles in which more than one arbiter source was ready; only the round-robin winner proceeds. |
+| `fixed_writeback_preempted_cycles` | (Phase 10B.3) Cycles a fixed-latency writeback was held off because a variable-latency load won the writeback port — equivalently, the count of combinational-backward writeback-stall cycles. The semantic successor of the removed `writeback_conflicts` counter: under fixed-priority arbitration there is no round-robin conflict to count, and the scheduler's binding writeback bitmap makes fixed-vs-fixed contention impossible, so the only contention the arbiter resolves is variable-vs-fixed. |
+
+> The pre-Phase-10 `writeback_conflicts` counter was **removed** in Phase 10B.3 along with the arbiter's round-robin policy; `fixed_writeback_preempted_cycles` replaces it.
 
 ### 5.4 Report formats
 

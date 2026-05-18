@@ -17,36 +17,63 @@ cross-stage signal in the timing model so that future stages can be added
 
 ## Tick discipline
 
-Each non-panic tick of `TimingModel::tick()` runs two phases in this
+Each non-panic tick of `TimingModel::tick()` runs three steps in this
 fixed order. The structure is documented in `tick()` itself (see
 `sim/src/timing/timing_model.cpp`); the summary below is the contract
 every new stage must respect.
 
-1. **evaluate phase (forward sweep, dataflow order).** Each stage reads
-   its inputs (committed `current_*` state for REGISTERED edges, the
-   live `next_*` of upstream for COMBINATIONAL edges) and writes its
-   own `next_*` slot. Order:
-   `cache -> fetch -> decode -> scheduler -> opcoll.accept -> opcoll
-   -> dispatch -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if
-   -> cache.drain_write_buffer -> wb_arbiter`.
+0. **seed phase.** Every stage with cross-cycle carry-forward state
+   runs `seed_next()` — `next_* = current_*` for each double-buffered
+   field — so `evaluate()` is a pure function of committed state and a
+   stalled cycle (skipped `commit()`) re-runs identically. This covers
+   `scoreboard`, `branch_tracker`, `opcoll`, the five units, `decode`,
+   and `gather_file`. (`Scoreboard::seed_next()` and
+   `BranchShadowTracker::seed_next()` are the established precedents;
+   Phase 10B.0.5 / 10D.0 made the stage-level `seed_next()` explicit.)
 
-2. **commit phase.** Every stage flips `next_* -> current_*`. Stages
-   are independent at commit time, so the order is for traceability
-   only: `fetch, decode, scheduler, opcoll, units, coalescing, cache,
-   mem_if, wb_arbiter, gather_file, scoreboard, branch_tracker`,
-   followed by the optional Phase 6 panic-flush cascade if armed at
-   top-of-tick.
+1. **evaluate phase (back-to-front sweep, Phase 10D).** The sweep runs
+   in *reverse* dataflow order so every combinational-backward producer
+   runs before its consumer, and every REGISTERED forward edge reads
+   committed (`current_*`) state. Order:
+   `wb_arbiter -> gather_file -> {cache.evaluate -> mem_if.evaluate ->
+   cache.drain_write_buffer} -> coalescing -> alu/mul/div/tlookup/ldst
+   -> opcoll -> fetch -> decode -> scheduler`.
+   Two amendments to a literal back-to-front tail:
+   - **`fetch.evaluate()` runs before `scheduler.evaluate()`** — a
+     documented ordering carve-out. The scheduler's `evaluate()` does an
+     `instr_buffer.pop()`, a committed-state mutation; `fetch`'s
+     `will_be_full` check deliberately reads *committed* instruction-buffer
+     occupancy and must not see the scheduler's same-cycle pop. Running
+     the scheduler first would create a combinational-forward edge into
+     `fetch`. Running `fetch` first preserves the conservative committed
+     read.
+   - **the execution units evaluate before `fetch`/`decode`/`scheduler`**
+     — required so the ALU's combinational-backward branch redirect is
+     asserted before the frontend reads it (Phase 10E).
+   The `cache.evaluate -> mem_if.evaluate -> cache.drain_write_buffer`
+   triple is kept contiguous as one ordering unit (memory-plan M5
+   carve-out).
+
+2. **commit phase.** Every stage flips `next_* -> current_*`, **except**
+   the issue/execute stages (the five units, `opcoll`, `scheduler`)
+   which self-gate `commit()` on `WritebackArbiter::next_writeback_stall()`
+   — a stalled stage skips the flip and holds. The stages are independent
+   at commit time, so order is for traceability only:
+   `fetch, decode, scheduler, opcoll, units, coalescing, cache, mem_if,
+   wb_arbiter, gather_file, scoreboard, branch_tracker`, followed by the
+   optional panic-flush cascade if armed at top-of-tick.
 
 `PipelineStage` (`sim/include/gpu_sim/timing/pipeline_stage.h`)
-formally exposes three methods — `evaluate`, `commit`, `reset` — as
-part of the discipline contract. Back-pressure signals are exposed as
-`const` accessors that read only the producer's own committed
-(`current_*`) state, so the value is stable across the entire evaluate
-phase regardless of where it is queried; there is no separate
-backward-sweep phase. `ExecutionUnit` is a separate hierarchy (units
-have a different lifecycle: they produce results consumed by
-`WritebackArbiter` rather than participating in the unified
-evaluate/commit fan-in) and shares the same convention.
+formally exposes `evaluate`, `commit`, `reset` as part of the
+discipline contract; pipelined stages additionally provide `seed_next`.
+REGISTERED back-pressure signals are `const` accessors that read only
+the producer's own committed (`current_*`) state, stable across the
+evaluate phase. COMBINATIONAL back-pressure signals are transient
+`next_*()` accessors asserted by the downstream stage and read backward
+by the upstream one within the cycle (the back-to-front sweep guarantees
+the producer runs first). `ExecutionUnit` is a separate hierarchy (units
+produce results consumed by `WritebackArbiter` rather than participating
+in the unified evaluate/commit fan-in) and shares the same convention.
 
 ## Signal classifications
 
@@ -79,61 +106,79 @@ back-pressure `current_busy()` signals.
 Accessors that return committed state are named `current_<noun>()` or
 `current_<adjective>()` per the postfix design language below.
 
-#### COMBINATIONAL (`next_*`)
+#### COMBINATIONAL backward control (`next_*`)
 
-The producer's `next_*` (or a freshly-computed transient) is read by the
-consumer in the *same* `evaluate()` phase. The order of calls in
-`tick()` is part of the contract and must be documented at every call
-site that depends on it. This is used where the design intends zero-cycle
-fanout — for example, the scheduler issue → opcoll accept → unit accept
-chain inside a single tick, or the cache fill → gather-buffer write port
-arbitration.
+After Phase 10 the COMBINATIONAL classification is **backward control
+only** — there are no combinational-forward data edges left in the
+timing model. A `next_*` cross-module read is a *back-pressure or
+control* signal: a downstream stage asserts a freshly-computed transient
+during its own `evaluate()`, and an *upstream* stage reads it the same
+cycle to decide whether to advance, hold, or flush. The back-to-front
+evaluate sweep (Phase 10D) guarantees the downstream producer runs
+before the upstream consumer.
 
 ```
-cycle N    : producer.evaluate()  -> writes producer.next_X
-           : consumer.evaluate()  -> reads producer.next_X this cycle
-                                    (depends on producer running first)
+cycle N    : downstream.evaluate()  -> asserts downstream.next_X (transient)
+           : upstream.evaluate()    -> reads downstream.next_X this cycle
+                                      (sweep runs downstream first)
 ```
 
 A COMBINATIONAL edge requires a comment at the call site identifying the
-producer, the consumer, and why ordering matters.
+producer, the consumer, and the tick-order dependency. The four
+COMBINATIONAL-backward edges in the post-Phase-10 model are:
 
-Accessors that return live mid-tick state are named `next_<noun>()` or
-`next_<adjective>()`.
+- `WritebackArbiter::next_writeback_stall()` — read by the five units,
+  `OperandCollector`, and `WarpScheduler` (row 16).
+- `L1Cache::next_stalled()` / `next_cmd_ready()` — read by
+  `CoalescingUnit` (rows 9, 10).
+- `ExternalMemoryInterface::next_request_stall()` — read by `L1Cache`
+  (row 15).
+- `ALUUnit::next_redirect()` — read by `FetchStage` and `DecodeStage`
+  (rows 5, 12).
+
+A combinational-*forward* `next_*` read — a downstream stage's `next_*`
+read by an upstream-of-it consumer along the data direction — is
+**forbidden**: it collapses a cycle of pipeline depth. The
+`tools/lint_timing_naming.py` cross-module pass classifies every
+`other->next_*()` read by dataflow direction and fails the build on a
+forward one.
+
+Accessors that return a transient backward signal are named
+`next_<noun>()` or `next_<adjective>()`.
 
 ### Direction axis — what does the edge mean architecturally?
 
-This axis is **orthogonal to the cycle axis** and is *architectural
-metadata*, not a signal classification. It controls visualization style
-in the rendered diagram but does not affect the read pattern at the
-call site.
+After Phase 10 the direction axis is no longer free: it is *implied* by
+the cycle axis. A REGISTERED (`current_*`) edge carries forward data
+along the dataflow direction; a COMBINATIONAL (`next_*`) edge carries
+backward control against it. The axis remains useful as diagram metadata
+(it sets the rendered edge style) but it is no longer an independent
+classification.
 
-- **forward-data** — the consumer reads payload (instructions, results,
-  trace data) flowing along the natural data direction
-  upstream→downstream. Examples: fetch → decode `current_output()`,
-  opcoll → unit `current_redirect_request()`, alu → wb_arbiter
-  `next_has_result()`.
-- **back-pressure** — the producer (the upstream stage in the dataflow)
-  reads a downstream consumer's "are you ready?" signal so it can
-  decide whether to advance or hold this cycle. The diagram edge
-  conventionally points consumer→producer, against the data direction.
-  Examples: scheduler reading `opcoll_->current_busy()`, scheduler
-  reading `unit->current_busy()`, fetch reading
-  `decode_->current_busy()`, coalescing reading `cache_->next_stalled()`.
+- **forward-data** — REGISTERED. The consumer reads committed payload
+  flowing upstream→downstream. Examples: fetch → decode
+  `current_output()`, opcoll → unit `current_output()`, unit →
+  wb_arbiter `current_has_result()`.
+- **back-pressure / control** — either REGISTERED (a stall computed
+  purely from the consumer's own committed state, e.g.
+  `OperandCollector::current_busy()`) or COMBINATIONAL (a transient
+  asserted this cycle and read backward, e.g.
+  `WritebackArbiter::next_writeback_stall()`, `L1Cache::next_stalled()`,
+  `ALUUnit::next_redirect()`).
 
-Worked example (back-pressure + REGISTERED is the most common case):
-`OperandCollector` exposes `current_busy()` (a `const` accessor that
-reads only its own `current_busy_` slot). The scheduler reads it during
-its own `evaluate()`; the diagram renders the edge consumer→producer
-because the scheduler is *downstream* of opcoll in the data flow but is
-the one performing the read. The discipline is REGISTERED on the cycle
-axis (committed-state read, stable across the evaluate phase) and
-back-pressure on the direction axis (visualization).
+Worked example (REGISTERED back-pressure): `OperandCollector` exposes
+`current_busy()`, a `const` accessor reading only its own committed
+`current_busy_` slot. Note that after Phase 10B.0 the scheduler no
+longer reads it for *issue gating* — issue availability is predicted
+scheduler-side; `current_busy()` survives only for the panic-drain
+query and post-commit observers.
 
-`L1Cache::next_stalled()` is the orthogonal case (back-pressure +
-COMBINATIONAL): coalescing reads cache's stall mid-tick, after
-`cache.evaluate()` has produced this cycle's stall outcome.
-Single-cycle backpressure path; carved out per row 9 / 10 below.
+Worked example (COMBINATIONAL backward): `WritebackArbiter::next_writeback_stall()`
+is a single-slot transient, reset at the top of every `evaluate()` and
+asserted when a load preempted a fixed-latency writeback. The arbiter is
+sequenced first in the evaluate sweep, so the five units, the operand
+collector (in their `commit()`), and the scheduler (in its `evaluate()`)
+all read this cycle's fresh value.
 
 ## Postfix design language
 
@@ -144,8 +189,8 @@ returns.
 | Shape | Returns | Postfix grammar | Examples |
 |-------|---------|-----------------|----------|
 | **State predicate** | `bool` | `<prefix>_<adjective>` | `current_busy()`, `current_idle()`, `next_stalled()`, `current_in_flight(w)`, `current_pending(w, r)`, `next_fifo_empty()` |
-| **Possession predicate** | `bool` | `<prefix>_has_<noun>` | `next_has_result()`, `next_has_response()` |
-| **Payload accessor** | non-`bool` (`std::optional<T>`, payload struct, scalar id) | `<prefix>_<noun>` | `current_output()`, `current_pending_warp()`, `current_redirect_request()`, `current_ebreak_request()`, `next_fifo_front()` |
+| **Possession predicate** | `bool` | `<prefix>_has_<noun>` | `current_has_result()`, `current_has_response()` |
+| **Payload accessor** | non-`bool` (`std::optional<T>`, payload struct, scalar id) | `<prefix>_<noun>` | `current_output()`, `current_pending_warp()`, `next_redirect()`, `current_ebreak_request()`, `next_fifo_front()` |
 
 Rules:
 
@@ -156,7 +201,7 @@ Rules:
    thing. Use the `has_<noun>` form because the question is about
    ownership, not state. Reserve this shape for accessors that are a
    precondition for a follow-up read of the actual thing
-   (`if (next_has_result()) entry = consume_result();`).
+   (`if (current_has_result()) entry = consume_result();`).
 3. **Payload accessors** return the thing itself. Bare noun. The
    prefix already conveys cycle discipline; the noun describes what's
    inside.
@@ -181,7 +226,7 @@ skip;` to bail out; no negation in the common case.
 | `next_fifo_empty()` | producer's FIFO is empty (consumer cannot pop) |
 
 Possession predicates have a distinct polarity rule because they
-describe ownership, not blocking: `next_has_result()` returns `true`
+describe ownership, not blocking: `current_has_result()` returns `true`
 when the result is available. This reads naturally as
 "if-then-consume" rather than "if-blocked-then-skip". The two
 polarities don't conflict because the shapes are different (state
@@ -189,6 +234,93 @@ adjective vs. `has_<noun>`).
 
 The convention eliminates inverse pairs: only one polarity exists per
 concept (`current_busy` survives; `ready_out` does not).
+
+## Four-category signal taxonomy
+
+A `commit()`-gated stall (the writeback stall, row 16) freezes a stage by
+skipping its `next_*→current_*` flip. For that to be correct, every piece
+of state the stage carries must fall into one of four categories, each
+handled differently. The categories were established by Phase 10B.0.5
+(categories 2 and 3) and Phase 10B.3 (category 4).
+
+1. **Boundary I/O registers.** A stage's double-buffered inputs and
+   outputs — `current_output_`/`next_output_` and the like. Frozen by
+   the `commit()`-gate: a stalled stage skips the flip and the held
+   value is retained. Recomputed by `evaluate()` from committed state.
+   A *single-cycle* unit's execution slot is category 1, not category 2:
+   the ALU's `has_pending_` / `pending_input_` span no cycle boundary
+   (`accept()` writes them and `evaluate()` consumes them within the
+   same tick), so they are boundary I/O recomputed each `evaluate()` and
+   are **not** `seed_next()`'d — `ALUUnit::seed_next()` is an empty body.
+
+2. **Internal multi-cycle carry-forward state.** State that genuinely
+   spans cycle boundaries: the iterative units' busy flags and latency
+   countdowns, the multiply pipeline deque, in-flight payloads. Explicitly
+   `seed_next()`'d (`next_* = current_*` at the top of the tick) so a
+   re-runnable `evaluate()` re-establishes its precondition; frozen by
+   the `commit()`-gate. `DecodeStage::pending_` is also category 2 — its
+   `evaluate()` reads last cycle's committed value to decide whether to
+   pull a new fetch output — which is why Phase 10D.0 made it explicitly
+   double-buffered with its own `seed_next()`.
+
+3. **Non-hardware simulation artifacts.** `Stats` counters. Not
+   double-buffered — there is no hardware register behind them. Applied
+   as a `commit()`-phase side effect (a stage computes a per-cycle
+   scratch flag in `evaluate()`, e.g. `processed_this_cycle_`, and
+   increments the counter in `commit()`), so a re-evaluated stalled cycle
+   counts exactly once. `Stats` increments must never sit in `evaluate()`
+   or `accept()`. (The warp scheduler is the documented exception: its
+   `evaluate()` early-returns on a stalled cycle, so its body never runs
+   on a stalled cycle and its increments stay in `evaluate()`.)
+
+4. **Deliberately-ungated control state.** State that is *single*-buffered
+   and updates even during a stall, by design. The sole instance is the
+   ALU's `branch_resolved_` bit. Branch resolution is combinational — the
+   clock-enable gates state latches, not the resolution datapath — so a
+   stalled ALU re-runs `evaluate()` on the same branch each frozen cycle.
+   The branch-predictor update and branch-tracker write are writes to
+   *shared structures*, not pipeline registers, so the gated `commit()`
+   does not protect them. `branch_resolved_` records that the side-effects
+   have already fired for the branch at the resolve stage: they fire only
+   when it is clear, firing them sets it, and a non-stalled `commit()`
+   clears it when the resolve-stage register advances. It is intentionally
+   not `seed_next()`'d and not gated.
+
+## Per-stage scheduler scoreboard
+
+Phase 10B.0 replaced the warp scheduler's downstream availability polling
+with scheduler-side bookkeeping (the "issue scoreboard"). Pre-10B.0 the
+scheduler read `opcoll_->current_busy()` and each `unit->current_busy()`
+to decide eligibility; that is a *backward* read, legitimate on the cycle
+axis, but it coupled issue to the live state of five-plus consumers. The
+bookkeeping replaces it with state the scheduler owns and updates from
+its own issue history:
+
+- **`unit_busy_[]`** — per-unit structural-hazard countdowns, armed at
+  issue, decremented once per non-frozen cycle. Non-zero only for the
+  non-pipelined `DIVIDE`/`TLOOKUP` (compile-time `kUnitIterationLatency`)
+  and `LDST` (runtime addr-gen latency). Category-2 carry-forward state.
+- **`writeback_bitmap_` + `bitmap_head_`** — the binding fixed-latency
+  writeback schedule. A fixed-latency writeback op reserves the slot at
+  `bitmap_head_ + kIssueToWritebackOffset`; the gate refuses a colliding
+  reservation. `bitmap_head_` advances one slot per non-frozen cycle.
+- **`ldst_issued_total_`** — a monotonic count for the event-driven LDST
+  FIFO-occupancy gate; the in-transit population is the difference
+  against the FIFO's committed push counter.
+- **`opcoll_cooldown_cycles_`** — the interim operand-collector cooldown
+  (2 for VDOT8, 1 otherwise).
+
+The writeback stall (row 16) **freezes this bookkeeping**: on a stalled
+cycle the scheduler early-returns from `evaluate()`, so `bitmap_head_`
+does not advance, no countdown decrements, and no reservation is made or
+cleared — the modelled issue stage stays in lockstep with the frozen
+pipeline. The scheduler retains a `LdStUnit*` (to read the REGISTERED
+FIFO-occupancy accessors) and a `WritebackArbiter*` (to read the stall);
+it reads no other execution unit. Phase 10B.3 removed the interim
+writeback-result-buffer issue gate that 10B.0 had added — the
+combinational-backward writeback stall now holds a load-preempted
+fixed-latency result, so the scheduler no longer polls any unit's result
+buffer.
 
 ## Reference implementation
 
@@ -277,19 +409,21 @@ it.
 |---|---|---|---|---|---|---|---|---|
 | 1 | `DecodeStage::current_busy()` (`const` accessor reading `pending_.valid`) plus the natural complement `FetchStage::current_output()` (REGISTERED accessor returning `current_output_`) read by `DecodeStage::evaluate` | `FetchStage::evaluate` (reads decode busy) and `DecodeStage::evaluate` (reads fetch's committed output) | `bool` decode-busy signal + REGISTERED fetch payload | **REGISTERED** for both | back-pressure (decode→fetch busy) + forward-data (fetch→decode output) | tick order: `fetch_.evaluate` -> `decode_.evaluate` (so the value fetch reads is committed-state stable; decode reads the prior cycle's `current_output_`) | compliant | 3 |
 | 2 | `DecodeStage::current_pending_warp()` | `FetchStage::evaluate` (direct accessor read; the `set_decode_pending_warp` setter has been deleted) | optional warp id of decode's pending entry | **REGISTERED** | back-pressure | same tick order as row 1; fetch holds a `DecodeStage*` wired by `TimingModel` | compliant (Phase 3) | 3 |
-| 3 | `OperandCollector::current_busy()` (`const` accessor reading `current_busy_`) | `WarpScheduler::evaluate` (reads `opcoll_->current_busy()` directly via wired pointer) | `bool` opcoll-busy flag | **REGISTERED** | back-pressure | the accessor reads only `current_busy_`, so its value is stable across the entire evaluate phase regardless of where the scheduler queries it; `set_opcoll_free` setter deleted | compliant | 4 |
-| 4 | Each `ExecutionUnit::current_busy()` (`const` accessor on the base; each concrete unit reads its own `current_*`) | `WarpScheduler::evaluate` (reads `unit->current_busy()` via typed pointers wired by `set_dependencies`) | per-unit busy bit | **REGISTERED** | back-pressure | as row 3: each accessor reads only the unit's committed state; `unit_ready_fn_` callback deleted | compliant | 4 |
-| 5 | `WarpScheduler::evaluate` writes `branch_tracker_.note_branch_issued(w)` (next_); `OperandCollector::resolve_branch` writes `note_resolved_correctly(w)` (next_) on correct prediction; `FetchStage::commit` writes `note_redirect_applied(w)` (next_) when applying a redirect | `WarpScheduler::evaluate` reads `branch_tracker_.current_in_flight(w)` (current_) | per-warp branch-shadow bit | **REGISTERED** per-warp `current_`/`next_` pair via `BranchShadowTracker` (Scoreboard pattern) | forward-data (writers publish, scheduler reads) | tick-order: `branch_tracker_.seed_next` -> writers in evaluates -> commits -> `branch_tracker_.commit` | compliant (Phase 5) | 5 |
+| 3 | `OperandCollector::current_busy()` (`const` accessor reading `current_busy_`) | panic-drain query only (`execution_units_drained()`, row 14) — **no longer read by `WarpScheduler`** | `bool` opcoll-busy flag | **REGISTERED** | back-pressure | Phase 10B.0 removed the scheduler's `opcoll_->current_busy()` issue-gating poll; the scheduler now predicts operand-collector occupancy internally via the `opcoll_cooldown_cycles_` countdown. `current_busy()` survives only for the panic-drain query (row 14). | compliant (Phase 10B.0) | 4, 10B.0 |
+| 4 | `LdStUnit::current_fifo_size()` / `current_fifo_total_pushes()` (REGISTERED committed-state accessors); each other `ExecutionUnit::current_busy()` | `WarpScheduler::evaluate` reads the LdSt FIFO accessors for the event-driven LDST FIFO-occupancy issue gate; the per-unit `current_busy()` poll is **no longer read by the scheduler** (panic-drain query only, row 14) | LDST FIFO-occupancy counters / per-unit busy bit | **REGISTERED** | back-pressure | Phase 10B.0 removed the scheduler's `unit->current_busy()` issue-gating poll; the scheduler now predicts unit availability internally via the `unit_busy_[]` iteration-latency countdown and the binding writeback bitmap. The only surviving scheduler→unit cross-stage read is the REGISTERED LDST FIFO-occupancy accounting; each unit's `current_busy()` survives only for the panic-drain query (row 14). | compliant (Phase 10B.0) | 4, 10B.0 |
+| 5 | `WarpScheduler::evaluate` writes `branch_tracker_.note_branch_issued(w)` (next_); `ALUUnit::evaluate` writes `note_resolved_correctly(w)` (next_) on correct prediction (branch resolution moved into the ALU in Phase 10A); `FetchStage::evaluate` writes `note_redirect_applied(w)` (next_) when applying a redirect | `WarpScheduler::evaluate` reads `branch_tracker_.current_in_flight(w)` (current_) | per-warp branch-shadow bit | **REGISTERED** per-warp `current_`/`next_` pair via `BranchShadowTracker` (Scoreboard pattern) | forward-data (writers publish, scheduler reads) | tick-order: `branch_tracker_.seed_next` -> writers in evaluates -> commits -> `branch_tracker_.commit` | compliant (Phase 10A) | 5, 10A |
 | 6 | `OperandCollector::accept()` writes only `next_busy_`/`next_cycles_remaining_`/`next_instr_` | `OperandCollector::evaluate` (reads `next_*` after the prior commit, so equal to committed values until accept overrides) and `OperandCollector::current_busy()` (reads `current_busy_`) | opcoll busy/cycles/instr | **REGISTERED** next/current | (internal) | `accept()` only mutates `next_*`; `commit()` flips next/current for busy, cycles_remaining, instr, and output | compliant (Phase 2) | 2 |
-| 7 | `ALUUnit`/`MultiplyUnit`/`DivideUnit`/`TLookupUnit`/`LdStUnit::accept()` (writes only `next_*`); `LoadGatherBufferFile` is also registered as a writeback source via `wb_arbiter_->add_source` and emits a REGISTERED writeback when all 32 slots fill; `WritebackArbiter::evaluate` calls `consume_result()` which writes `next_result_buffer_.valid = false` | downstream `evaluate()` (writeback arbiter sees `next_has_result()` reading live `next_*` for the COMBINATIONAL same-tick edge); `current_busy()` consumed by scheduler reads `current_*` (committed) | per-unit `pending_input_`/`pending_result_`/`pending_entry_`, `pipeline_`, `addr_gen_fifo_`, `result_buffer_` | mixed: cross-cycle state is **REGISTERED** (`next_*`/`current_*` with `commit()` flip); the wb-arbiter and ldst→coalescing edges are **COMBINATIONAL** (live `next_*` reads to preserve zero cycle delta) | forward-data (units→arbiter, ldst→coalescing) | every unit's `commit()` flips next/current for all double-buffered fields; `accept()` and `consume_result()` write only `next_*` | compliant (Phase 1) | 1 |
+| 7 | each of `ALUUnit`/`MultiplyUnit`/`DivideUnit`/`TLookupUnit`/`LdStUnit` produces a result into its double-buffered `next_result_buffer_`; `LoadGatherBufferFile` is also registered as a writeback source via `wb_arbiter_->add_source`. The opcoll→unit edge is the pull model: each unit's `evaluate()` reads `opcoll_->current_output()` and self-selects by `target_unit` (Phase 10B.1); the scheduler→opcoll edge is the same pull model (10B.2) | `WritebackArbiter::evaluate` reads each source's `current_has_result()` (committed); `consume_result()` is a **pure read** that mutates nothing | per-unit `pending_input_`, `pipeline_`/iterative counters, `result_buffer_` (all `next_*`/`current_*` double-buffered) | **REGISTERED** on every edge of the issue/execute path: `scheduler→opcoll`, `opcoll→unit`, `unit→wb_arbiter`. 10B.1/10B.2/10B.3 each registered one of these, adding one cycle of pipeline depth apiece — see `kIssueToWritebackOffset[]` in `execution_unit.h` | forward-data | every unit's `commit()` flips `next_*→current_*` for all double-buffered fields (gated by the writeback stall, row 16); `accept()` writes only `next_*`; `consume_result()` mutates nothing | compliant (Phase 10B.1–10B.3) | 1, 10B.1, 10B.2, 10B.3 |
 | 8 | `WritebackArbiter::evaluate` writes scoreboard via `scoreboard_.clear_pending()` (releases destinations); `WarpScheduler::evaluate` writes via `scoreboard_.set_pending()` (claims destinations on issue) | scheduler's `evaluate()` reads scoreboard via `current_pending()` (current_) for issue gating | scoreboard pending bits | **REGISTERED** | forward-data | `Scoreboard` already exposes `next_*`/`current_*`, so `set_pending` / `clear_pending` only write `next_` | compliant | none |
 | 9 | `CoalescingUnit::evaluate` reads `ldst_.current_fifo_front()` (Phase M1 REGISTERED), then calls `gather_file_.claim()`, `cache_.process_load()`/`process_store()` mid-evaluate; also reads `cache_.next_stalled()` at top of its evaluate as a same-cycle backpressure signal, and `gather_file_.current_busy(warp)` as a per-warp back-pressure gate before consuming a load from the LdSt FIFO. FIFO pop is staged in coalescing's `next_pop_` and applied via `ldst_.pop_front()` from `CoalescingUnit::commit()`. | LdStUnit FIFO, gather buffer file, cache | REGISTERED FIFO + command-style mutations + COMBINATIONAL stall read + REGISTERED gather-busy read | LdSt FIFO is REGISTERED as of Phase M1: producer (`LdStUnit::commit`) applies the staged push from `next_push_`; consumer (`CoalescingUnit::commit`) applies the staged pop. Producer touches the back, consumer touches the front, so commit order is irrelevant. Reads during evaluate see the stable cycle-start FIFO state. command-style mutations into gather/cache remain documented "internal-subsystem-mutating commands"; the gather-buffer write-port boundary arbitrates via REGISTERED state owned by `LoadGatherBufferFile` (row 11). The `cache.next_stalled()` read is a Phase 9 COMBINATIONAL same-tick edge: cache's stall signal is combinationally driven from registered tag/write-buffer/pending_fill state, and `cache.evaluate()` runs before `coalescing.evaluate()` in tick order. The `gather_file.current_busy()` read is a REGISTERED back-pressure accessor over the gather buffer's committed `current_*` state. | back-pressure (cache→coalescing stall, gather→coalescing busy) + forward-data (coalescing→ldst/gather/cache commands) | gather-buffer port arbitration cleaned up (Phase 7); cache↔coalescing stall edge formally classified COMBINATIONAL with call-site comment in `coalescing_unit.cpp` (Phase 9); LdSt FIFO promoted to REGISTERED with deferred push/pop (Phase M1) | compliant (Phase 7 + 9 + M1) | 7, 9, M1 |
 | 10 | `L1Cache` external observable surface: REGISTERED scratch (`pending_fill_`, four `last_*_event_` slots) flipped by `commit()`, accessors return `current_*`. COMBINATIONAL same-tick (`stalled_`, `stall_reason_`) — single slot, reset at top of `evaluate`, observed mid-tick by coalescing (row 9) and post-commit by `record_cycle_trace`. Internal hardware state (`tags_`, `mshrs_`, `write_buffer_`) intentionally direct-mutated. | `TimingModel::record_cycle_trace` (post-commit, REGISTERED reads); `CoalescingUnit::evaluate` (same-tick, COMBINATIONAL stall read); cache itself; cache test expectations | mixed boundary discipline | mixed: REGISTERED for trace/scratch; COMBINATIONAL for stall | back-pressure (cache→coalescing stall) + forward-data (cache→trace) | Phase 9 carve-out: scratch trace events and the cross-cycle `pending_fill_` carrier go through `current_/next_` pairs so `record_cycle_trace` (which runs after `cache.commit()`) sees committed state via the `current_*` slot. Stall flags stay single-slot COMBINATIONAL because pipelining would cost a cycle of backpressure latency every stall transition (~5% on `embedding_gather`) without a hardware payoff at this cache scale. Internal MSHR/tag/write-buffer mutation stays direct because it has no cross-stage observers — only `L1Cache` itself touches it, and `test_cache.cpp` / `test_cache_mshr_merging.cpp` assert MSHR/tag state synchronously. | compliant (Phase 9); cache external boundary now classified per-field, internals carved out by design | 9 |
 | 11 | `LoadGatherBufferFile::try_write` writes only `next_port_claimed_` (single shared flag, not per-buffer; models §5.3 "one line-to-gather-buffer extraction per cycle"). `L1Cache::handle_responses`, `drain_secondary_chain_head`, and `process_load` HIT path all funnel through `try_write`. | `LoadGatherBufferFile::try_write` reads the live `next_port_claimed_` (combinational first-writer-wins) | intra-cycle write-port arbitration | **COMBINATIONAL** | (internal arbitration) | first-writer-wins via the shared `next_port_claimed_` flag; `commit()` clears the flag at end-of-cycle so the next tick starts unclaimed. FILL > secondary > HIT priority is encoded by tick ordering: `cache_->evaluate()` runs at the top of the non-panic tick (FILL via `handle_responses`, secondary via `drain_secondary_chain_head`); `coalescing_->evaluate()` runs later in the tick (HIT via `process_load`). | tick order: `gather_file.commit` clears the flag at end-of-cycle; first writer in tick N+1 sees `next_port_claimed_ == false` and wins | compliant (Phase 7) | 7 |
-| 12 | `OperandCollector::resolve_branch` writes `next_redirect_request_{valid, warp_id, target_pc}` on misprediction | `FetchStage::commit` and `DecodeStage::commit` read `opcoll.current_redirect_request()` and apply the flush there | flush request and redirect target PC | **REGISTERED** redirect-request via `RedirectRequest` produced by opcoll, consumed by fetch/decode at their own `commit()`. Mispredict-recovery now takes one additional cycle (Option A) | forward-data | tick-order: producer writes `next_` during evaluate; opcoll.commit flips to `current_` at end of cycle N; fetch.commit and decode.commit read `current_` at cycle N+1 (their commits run before opcoll.commit within the same cycle, so they observe last cycle's latched signal) | compliant (Phase 5) | 5 |
+| 12 | `ALUUnit::evaluate` asserts `next_redirect_{valid, warp_id, target_pc}` on a mispredicted branch — branch resolution lives in the ALU (Phase 10A) and the redirect became a combinational-backward transient (Phase 10E) | `FetchStage::evaluate` and `DecodeStage::evaluate` read `alu->next_redirect()` at the top of their own `evaluate()` and apply the flush the same cycle | flush request and redirect target PC | **COMBINATIONAL backward** transient (`RedirectRequest`). Single slot, reset at the top of `ALUUnit::evaluate()`, no `current_*` twin, no `commit()` flip. Asserted exactly once per branch via the `branch_resolved_` control bit even across a multi-cycle writeback stall | back-pressure / control (downstream ALU asserts, upstream frontend reads) | tick-order: the back-to-front sweep runs `ALUUnit::evaluate` before `FetchStage::evaluate`/`DecodeStage::evaluate`, so the frontend reads this cycle's fresh transient. (Phases 10A–10D kept it REGISTERED via the ALU's own slot as an interim staging step; 10E converted it to the discipline-correct combinational-backward form.) | compliant (Phase 10E) | 10A, 10E |
 | 13 | `DecodeStage::current_ebreak_request()` (REGISTERED `next_`/`current_` pair, latched by `decode.commit()`); panic-flush cascade `scheduler/opcoll/gather_file/wb_arbiter->flush()` invoked at commit-phase boundary when `pending_panic_flush_` is armed | `TimingModel::tick()` (observes `current_ebreak_request()` at top of cycle to call `panic_->trigger`); scheduler/opcoll/gather buffer/writeback arbiter (consume `flush()` at commit-phase) | EBREAK request and machine flush | **REGISTERED** ebreak side-channel; per-stage `flush()` at commit-phase replaces the prior mid-evaluate `reset()` cascade. Trigger takes one additional cycle vs. the pre-Phase-6 mid-tick path (Option A) | forward-data (decode→TimingModel; PanicController→cascade targets) | tick order: decode.commit latches ebreak request at end of cycle N; tick top of cycle N+1 reads current_ebreak_request_ and calls panic_->trigger / arms pending_panic_flush_; commit-phase of cycle N+1 invokes flush() on each panic-flush target | compliant (Phase 6) | 6 |
-| 14 | `PanicController::set_drained_query` wires a callable that the controller invokes inside `evaluate()`; the callable composes `execution_units_drained()` from `OperandCollector::current_busy`, each unit's `current_busy` + `next_has_result`/`next_fifo_empty`, and `WritebackArbiter::current_busy` — all const accessors over committed state | `PanicController::evaluate()` (case 2 drain step) | drained bit | **REGISTERED** for committed-state reads (the callable invokes only committed-state accessors) | back-pressure (controller polls accessors on each unit) | wired callable; the prior `set_units_drained()` pre-evaluate setter (which latched live state from another stage) is removed | controller queries drained_query_ inside its own evaluate(); the callable reads only committed-state accessors | compliant (Phase 6) | 6 |
+| 14 | `PanicController::set_drained_query` wires a callable that the controller invokes inside `evaluate()`; the callable composes `execution_units_drained()` from `OperandCollector::current_busy`, each unit's `current_busy` + `current_has_result`/`current_fifo_empty`, and `WritebackArbiter::current_busy` — all const accessors over committed state | `PanicController::evaluate()` (case 2 drain step) | drained bit | **REGISTERED** for committed-state reads (the callable invokes only committed-state accessors) | back-pressure (controller polls accessors on each unit) | wired callable; the prior `set_units_drained()` pre-evaluate setter (which latched live state from another stage) is removed | controller queries drained_query_ inside its own evaluate(); the callable reads only committed-state accessors | compliant (Phase 6) | 6 |
 | 15 | `L1Cache` stages requests via `mem_if_.set_next_read_request()` / `set_next_write_request()` (REGISTERED forward); the write-buffer drain checks `mem_if_.next_request_stall()` before staging (COMBINATIONAL backward, computed from registered queue depth — DRAMSim3's write-region FIFO state for that backend, always-false for FixedLatencyMemory). `mem_if.commit()` flips `next_*_request_` → `current_*_request_`; `mem_if.evaluate()` drains `current_` into `in_flight_`. `L1Cache::handle_responses` reads `mem_if_.current_has_response()` (`next_has_response()` retained as alias) at top of `cache.evaluate`. The synchronous `submit_read` / `submit_write` API is retained as the test-direct path used by `test_dramsim3_memory` and `test_timing_components`. | `ExternalMemoryInterface` (FixedLatencyMemory and DRAMSim3Memory implementations) and `L1Cache` (consumes `current_has_response`) | REGISTERED forward request slots + COMBINATIONAL backward stall + REGISTERED response queue (read combinationally one cycle late) | REGISTERED forward + COMBINATIONAL backward stall (mirrors the M3 cache↔coalescing handshake shape) | back-pressure (mem_if→cache write-region stall) + forward-data (cache→mem_if requests, mem_if→cache responses) | tick order is `cache.evaluate -> ... -> mem_if.evaluate`. A request staged in cycle N (cache.evaluate) is committed at end of cycle N (mem_if.commit) and admitted to in_flight_ at the top of cycle N+1's mem_if.evaluate (1 cycle of REGISTERED admission). Responses produced by mem_if.evaluate in cycle N are dequeued by cache.handle_responses at the top of cycle N+1 (cache reads via current_has_response — committed-state read since mem_if.commit ran end of N; the `next_has_response()` alias predates the rename and reads the same slot). DRAMSim3's write-region FIFO bound is now exposed as `next_request_stall()` rather than a per-call bool return, matching the discipline's asserted-blocking polarity. | compliant (Phase M5); cache↔mem_if boundary now classified per-direction with REGISTERED forward + COMBINATIONAL backward stall, mirroring the M3 cache↔coalescing handshake | M5 |
+
+| 16 | `WritebackArbiter::evaluate` resets `writeback_stall_` at its top, then asserts it when a variable-latency load took the writeback port while a fixed-latency unit also had a result (the fixed unit is preempted) | the five execution units and `OperandCollector` read `wb_arbiter_->next_writeback_stall()` at the top of their `commit()` and self-gate (skip the `next_*→current_*` flip); `WarpScheduler` reads it at the top of `evaluate()` (early-return — issues nothing, advances no issue bookkeeping) and also gates `commit()` | writeback-stall freeze | **COMBINATIONAL** on the cycle axis (transient single slot, no `current_*` twin), **back-pressure / control** on the direction axis | tick-order: `wb_arbiter.evaluate` is sequenced FIRST in the evaluate sweep, so the signal is readable same-cycle by every consumer. A stalled cycle re-evaluates identically next tick because every gated stage's `evaluate()` is a pure function of committed state (`seed_next()` re-establishes `next_*==current_*`) | compliant (Phase 10B.3) | 10B.3 |
 
 If a future change adds a new cross-stage edge, append a row here with
 its classification (cycle axis + direction axis) and the phase that lands it.
@@ -322,8 +456,15 @@ should flag any of them when they appear in the timing model.
 
 - **Plain mutable members read across stages mid-evaluate.** A bool/int
   written by stage A's `evaluate()` and read by stage B's `evaluate()` in
-  the same tick. Use REGISTERED next/current with `current_*` accessor or
-  COMBINATIONAL with a call-site comment.
+  the same tick. Use REGISTERED next/current with `current_*` accessor, or
+  a COMBINATIONAL-backward `next_*` signal with a call-site comment.
+- **Combinational-forward `next_*` reads.** A `next_*` cross-module read
+  whose reader is *downstream* of the producer in dataflow order collapses
+  a cycle of pipeline depth and makes correctness sweep-order-dependent.
+  Forward data must be a REGISTERED `current_*` edge. After Phase 10 no
+  legitimate combinational-forward edge exists; `tools/lint_timing_naming.py`
+  classifies every `other->next_*()` read by direction and fails the build
+  on a forward one.
 - **Pre-evaluate setters that latch live state from another stage.**
   Examples in flight: `set_opcoll_free`, `set_decode_pending_warp`,
   `set_units_drained`, `set_unit_ready_fn`. These hide ordering
@@ -698,3 +839,96 @@ The full refactor plan lives in
   (+2.0%), softmax_row -12 (-0.5%), embedding_gather -180 (-0.4%),
   layernorm_lite -201 (-2.3%). Inventory rows: 9. See
   `/project-plans/phase-10-memory-discipline.md`.
+
+### Phase 10 — issue/execute synchronous-pipeline discipline
+
+The memory plan (M1–M6 above) registered the memory-path edges; Phase 10
+applied the same discipline to the issue/execute path and reversed the
+evaluate sweep to back-to-front. The plan's phasing was amended during
+execution — 10B.1–10B.3 merged into one commit, 10D.0 added, the 10B.0
+interim result-buffer gate added then removed. The landed commits, in
+order, with their commit boundary and cycle delta:
+
+- **Phase 10A** — commit `752e10f` (boundary `ab5e349`). Branch resolution
+  moved from the inline `TimingModel::tick()` block into
+  `ALUUnit::evaluate()`; the latched `RedirectRequest` slot moved from
+  `OperandCollector` to `ALUUnit`; `RedirectRequest` hoisted to
+  `execution_unit.h`. The redirect stayed REGISTERED on the ALU — a
+  deliberate interim staging step. **Byte-identical**: zero cycle delta on
+  all six workloads. Inventory rows: 5, 12.
+- **Phase 10B.0** — commit `73c8a07` (boundary `752e10f`). The warp
+  scheduler's downstream availability polling replaced with scheduler-side
+  bookkeeping: the `unit_busy_[]` iteration-latency countdowns
+  (non-pipelined units only), the binding `writeback_bitmap_` /
+  `bitmap_head_`, the event-driven `ldst_issued_total_` LDST FIFO-occupancy
+  accounting, and the interim `opcoll_cooldown_cycles_`. New stat counters
+  `scheduler_unit_busy_stall_cycles[]`,
+  `scheduler_writeback_contention_stall_cycles[]`,
+  `scheduler_ldst_fifo_full_stall_cycles`. The plan's literal
+  `kUnitIterationLatency[LDST]=0` was overridden (human-approved): LDST has
+  a nonzero runtime addr-gen iteration latency, a structural hazard the
+  FIFO accounting does not guard. An interim writeback-result-buffer issue
+  gate was also added here — later removed in 10B.1–3.
+- **Phase 10B.0.5** — commit `6351335` (boundary `73c8a07`).
+  `OperandCollector` and the five execution units normalized to explicit
+  `seed_next()` / `commit()` double-buffering; `Stats` increments relocated
+  out of `evaluate()` into `commit()`. Established the category-2 and
+  category-3 distinctions of the signal taxonomy. **Byte-identical.**
+- **Phase 10B.1–10B.3** — commit `29dd299` (boundary `6351335`). The three
+  plan substeps merged into one atomic commit (human-approved — the
+  intermediate states cannot land green: the pull model deepens the
+  pipeline before the writeback stall exists to hold a load-preempted
+  result). The opcoll→unit and scheduler→opcoll forward edges became
+  REGISTERED via the pull model (consumers pull `current_output()`); the
+  tick-level dispatch glue was deleted; the unit→arbiter edge became
+  REGISTERED (`current_has_result()`, pure-read `consume_result()`); the
+  `WritebackArbiter` was restructured from round-robin to fixed-priority
+  (variable-latency loads win the port over fixed-latency units); and the
+  combinational-backward writeback stall (`next_writeback_stall()`) was
+  added — the five units + `OperandCollector` gate `commit()`, the
+  scheduler early-returns in `evaluate()` and gates `commit()`. The 10B.0
+  interim result-buffer gate was **removed** here (the stall subsumes it).
+  Stat `fixed_writeback_preempted_cycles` added, `writeback_conflicts`
+  removed. `kIssueToWritebackOffset[]` reached its end values (ALU=3,
+  MUL=`kMulPipelineStages`+2, DIV=`kDivideLatency`+2,
+  TLOOKUP=`kTlookupLatency`+2; `kWritebackBitmapLen`=35). Cycle delta vs
+  `6351335`: matmul +0.9%, gemv −3.3%, fused_linear_activation +4.9%,
+  softmax_row +5.0%, embedding_gather +0.3%, layernorm_lite +10.5%.
+  Inventory rows: 7, 16.
+- **Phase 10D.0** — commit `acf7e1f` (boundary `29dd299`). Frontend
+  double-buffering normalization (human-approved addition, not in the
+  original plan): `DecodeStage::pending_` made explicitly double-buffered
+  (`current_pending_` / `next_pending_` + `seed_next()`) so
+  `current_busy()` is genuinely committed state and the sweep reversal is
+  safe. **Byte-identical.**
+- **Phase 10D** — commit `de2e160` (boundary `acf7e1f`). Two parts. Part 1:
+  the `LoadGatherBufferFile` fill presentation was genuinely
+  double-buffered so `consume_result()` is a pure committed read — this
+  registers the cache→gather→wb_arbiter edge (completing memory-plan M4's
+  intent). Part 2: the `TimingModel::tick()` evaluate sweep reversed to
+  back-to-front, with the two amendments — `fetch.evaluate()` before
+  `scheduler.evaluate()` (ordering carve-out: fetch must read committed
+  `instr_buffer` occupancy, not the scheduler's same-cycle pop) and units
+  before the frontend (groundwork for 10E). The cache/mem_if/drain triple
+  kept as one ordering unit. Part 2 verified byte-identical; the sole delta
+  is Part 1's arbitration reshuffle. Cycle delta vs `acf7e1f`: matmul +40,
+  gemv +5.3%, fused_linear −15, softmax_row −31, embedding_gather 0,
+  layernorm_lite −3.0%.
+- **Phase 10E** — commit `c97b7ac` (boundary `de2e160`). The branch
+  redirect became a combinational-backward transient
+  (`ALUUnit::next_redirect()`); the latched redirect slot was deleted;
+  `fetch` and `decode` apply the redirect at the top of their own
+  `evaluate()` (the back-to-front sweep evaluates the ALU first). The
+  redirect assertion sits inside the `is_branch && !branch_resolved_`
+  side-effect block so it fires exactly once across a multi-cycle writeback
+  stall. Mispredict shadow is ~1 cycle shorter. Cycle delta vs `de2e160`:
+  matmul +409 (a second-order cache-rephasing artifact — functional
+  execution identical), gemv 0, fused_linear −1, softmax_row 0,
+  embedding_gather 0, layernorm_lite −68. Inventory rows: 5, 12, 16.
+- **Phase 10F** — this documentation sweep plus the tooling tightening
+  (the `lint_timing_naming.py` cross-module read pass; the diagram
+  extractor / `test_signal_diagram.py` reclassifications). No production
+  code change.
+
+See `/project-plans/phase-10-pipeline-discipline.md` for the full Phase 10
+plan and `/project-plans/phase-10-memory-discipline.md` for M1–M6.

@@ -86,11 +86,10 @@ The two models communicate through **`TraceEvent`** structs (see `include/gpu_si
 
 1. **FetchStage** — round-robin across warps, fills each warp's instruction buffer. Uses a static branch predictor (backward branches predicted taken, forward not taken).
 2. **DecodeStage** — decodes raw instruction words into `DecodedInstruction` structs.
-3. **WarpScheduler** — picks an eligible warp each cycle (buffer non-empty, scoreboard clear, operand collector free, target unit ready). Calls `FunctionalModel::execute()` here.
+3. **WarpScheduler** — picks an eligible warp each cycle (buffer non-empty, scoreboard clear, no issue hazard). Issue-hazard checks come from the scheduler's own *issue bookkeeping* — per-unit structural-hazard countdowns, a binding writeback-slot bitmap, LDST FIFO-occupancy accounting — not from polling downstream stages. Calls `FunctionalModel::execute()` here.
 4. **OperandCollector** — models the 1–2 cycle operand read delay (2 cycles for `VDOT8` which needs 3 source registers).
-5. **Dispatch** — routes the instruction to the appropriate execution unit.
-6. **Execution units** — ALU (1 cycle), MultiplyUnit (pipelined, configurable depth), DivideUnit (iterative), LdStUnit (cache + MSHR), TLookupUnit (64-cycle warp latency).
-7. **WritebackArbiter** — arbitrates between units completing in the same cycle and writes results back to the register file.
+5. **Execution units** — ALU (1 cycle; also the owner of branch resolution), MultiplyUnit (pipelined, configurable depth), DivideUnit (iterative), LdStUnit (cache + MSHR), TLookupUnit. Each unit pulls its input from the operand collector's committed output and self-selects by target unit (the "pull model" — there is no separate dispatch stage).
+6. **WritebackArbiter** — fixed-priority arbitration: a variable-latency load (via its gather buffer) wins the writeback port over a fixed-latency unit; the preempted unit is frozen for the cycle by a combinational-backward writeback stall.
 
 ### Scoreboard
 
@@ -98,7 +97,9 @@ The scoreboard (`include/gpu_sim/timing/scoreboard.h`) tracks in-flight destinat
 
 ### Cross-stage signaling discipline
 
-Every stage above implements the three-method `PipelineStage` contract — `evaluate` / `commit` / `reset` — and each per-cycle `tick()` runs them in two phases: a forward sweep of `evaluate()` (each stage reads upstream and downstream signals and writes its own `next_*`) and a `commit()` flip that latches `next_* → current_*`. READY/STALL signals are exposed as `const` accessors that read only the consumer's committed state, so any producer can query them inline from inside its own `evaluate()` regardless of where it sits in the sweep. The Scoreboard is the canonical reference for the REGISTERED pattern. Cross-stage signals are classified REGISTERED, COMBINATIONAL, or READY/STALL at every call site. Plain mutable members read by one stage and written by another mid-evaluate are forbidden — see [`/resources/timing_discipline.md`](timing_discipline.md) for the full per-boundary inventory and the rules.
+The timing model is a faithful **synchronous-pipeline** model — this is Principle 6 in `CLAUDE.md`, and the canonical rules live in [`/resources/timing_discipline.md`](timing_discipline.md). Every stage implements the `PipelineStage` contract (`seed_next` / `evaluate` / `commit` / `reset`), and each `tick()` runs three steps: `seed_next()` copies carry-forward state `current_* → next_*`; the `evaluate()` sweep runs back-to-front and writes each stage's `next_*`; `commit()` flips `next_* → current_*`. The discipline has exactly two kinds of cross-stage edge — a **REGISTERED forward** edge (the consumer reads the producer's committed `current_*` one cycle later; every forward data path) and a **COMBINATIONAL backward** control edge (a same-cycle back-pressure or redirect signal, `next_*`). There are no combinational-forward data edges. The Scoreboard is the canonical REGISTERED reference.
+
+**How does back-pressure work?** Two patterns. A *stall computed from committed state* is a REGISTERED `current_*()` accessor the upstream stage reads inline. A *transient stall* is a COMBINATIONAL `next_*()` signal the downstream stage asserts this cycle and the upstream stage reads the same cycle (the writeback stall, the cache stall, the branch redirect). And the **warp scheduler does not use back-pressure at all on the issue path** — instead of reading downstream `busy` signals it predicts unit and writeback-port availability from its own issue-history bookkeeping (the per-unit countdowns and the writeback bitmap; see the WarpScheduler stage above). That bookkeeping pattern is the answer when you wonder "how does the scheduler know not to over-issue?".
 
 ### Memory system
 

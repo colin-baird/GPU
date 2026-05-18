@@ -70,6 +70,7 @@ except ImportError as exc:
     ) from exc
 
 from diagram_types import Edge, ExtractionResult, Module
+from pipeline_order import MODULE_ORDER as _PIPELINE_ORDER
 
 # Cluster assignment for every module the extractor may discover. Mirrors
 # the markdown extractor's MODULES list so module sets can be diffed.
@@ -94,16 +95,10 @@ MODULE_CLUSTER: dict[str, str] = {
     "TimingModel":             "Control",
 }
 
-# Render order within each cluster (mirrors the markdown extractor).
-MODULE_ORDER: list[str] = [
-    "FetchStage", "DecodeStage", "WarpScheduler", "Scoreboard",
-    "BranchShadowTracker", "OperandCollector",
-    "ALUUnit", "MultiplyUnit", "DivideUnit", "TLookupUnit", "LdStUnit",
-    "CoalescingUnit", "LoadGatherBufferFile", "L1Cache",
-    "ExternalMemoryInterface",
-    "WritebackArbiter",
-    "PanicController", "TimingModel",
-]
+# Render order within each cluster. Sourced from the shared
+# `pipeline_order` module so the AST extractor, the markdown extractor,
+# the renderer, and `lint_timing_naming.py` all share one ordering.
+MODULE_ORDER: list[str] = list(_PIPELINE_ORDER)
 
 # Modules that don't inherit PipelineStage or ExecutionUnit. They still
 # appear as nodes in the diagram because cross-stage edges land on them.
@@ -836,25 +831,24 @@ def _walk_pass_c(modules: set[str],
 # model the cycle axis takes only REGISTERED or COMBINATIONAL; the
 # back-pressure direction overlay is a render-time concern.
 #
-# Cache same-cycle backpressure handshake: COMBINATIONAL because the
-# read happens mid-tick from CoalescingUnit::evaluate after cache.evaluate
-# has written the new stalled state (row 9 / row 10). LdStUnit's
-# address-gen FIFO is read same-cycle by CoalescingUnit::evaluate (row 7).
+# After Phase 10's REGISTERED conversions the only surviving carve-out
+# is the gather-buffer write-port arbitration:
+#
+#   cache → gather_file `try_write` — COMBINATIONAL same-tick port
+#   arbitration (row 11). `try_write` is a non-const mutating call, so
+#   Pass D's name heuristic would tag it REGISTERED; in fact it mutates
+#   `next_port_claimed_` and observes the live shared flag for
+#   first-writer-wins arbitration within a single tick.
+#
+# The pre-Phase-10 entries are gone because the edges they covered are
+# now genuinely REGISTERED and classify correctly without an override:
+#   - LdSt → coalescing addr-gen FIFO is REGISTERED (Phase M1).
+#   - mem_if → cache response poll reads `current_has_response()`
+#     (Phase M5 rename); a `current_*` accessor classifies REGISTERED.
+#   - cache → coalescing stall is now `next_cmd_ready()` (Phase M3); a
+#     `next_*` callee classifies COMBINATIONAL from the name alone.
 EDGE_CLASSIFICATION_OVERRIDES: dict[tuple[str, str, str], str] = {
-    ("L1Cache",   "CoalescingUnit", "is_stalled"):  "COMBINATIONAL",
-    ("L1Cache",   "CoalescingUnit", "next_stalled"): "COMBINATIONAL",
-    ("LdStUnit",  "CoalescingUnit", "fifo_empty"):   "COMBINATIONAL",
-    ("LdStUnit",  "CoalescingUnit", "fifo_front"):   "COMBINATIONAL",
-    ("LdStUnit",  "CoalescingUnit", "next_fifo_empty"): "COMBINATIONAL",
-    ("LdStUnit",  "CoalescingUnit", "next_fifo_front"): "COMBINATIONAL",
-    # cache → gather_file try_write: COMBINATIONAL same-tick port
-    # arbitration (row 11). The call mutates `next_port_claimed_` and
-    # observes the live shared flag for first-writer-wins arbitration.
     ("L1Cache",   "LoadGatherBufferFile", ""):       "COMBINATIONAL",
-    # mem_if → cache has_response / next_has_response: COMBINATIONAL
-    # mid-tick response poll inside cache.handle_responses (row 15).
-    ("ExternalMemoryInterface", "L1Cache", "has_response"):       "COMBINATIONAL",
-    ("ExternalMemoryInterface", "L1Cache", "next_has_response"):  "COMBINATIONAL",
 }
 
 # Hand-curated label overrides for edges where the auto-derived label
@@ -910,14 +904,12 @@ MANUAL_AST_EDGES: list[tuple[str, str, str, str]] = [
     ("L1Cache",     "TimingModel", "REGISTERED", "trace events"),
 
     ("LdStUnit", "WritebackArbiter", "REGISTERED", "result"),
-
-    # OperandCollector::resolve_branch writes into the tracker's next_
-    # via `note_resolved_correctly`, but it is invoked from
-    # TimingModel::tick() rather than from opcoll's evaluate()/commit(),
-    # so Pass C — which only walks the two lifecycle bodies — does not
-    # see it. Kept as a manual edge.
-    ("OperandCollector", "BranchShadowTracker", "REGISTERED", "branch resolved"),
 ]
+# Note: branch resolution moved into `ALUUnit::evaluate()` in Phase 10A
+# (`note_resolved_correctly`), so the `ALUUnit → BranchShadowTracker`
+# edge is now discovered by Pass C directly. The pre-10A manual
+# `OperandCollector → BranchShadowTracker` edge has been removed —
+# OperandCollector no longer writes the tracker.
 
 
 def _classify_edge(src: str, dst: str, callee: str, is_const: bool) -> str:

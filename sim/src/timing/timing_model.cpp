@@ -386,10 +386,10 @@ bool TimingModel::tick() {
     // Phase 5 REGISTERED branch-shadow tracker: seed next_ from current_ so
     // unmodified slots carry forward; scheduler.evaluate() reads current_
     // (via tracker.current_in_flight) and may write next_ (note_branch_issued on
-    // issue), opcoll.evaluate() may write next_ (note_resolved_correctly on
-    // correct-prediction resolve), fetch.commit() may write next_
-    // (note_redirect_applied on mispredict-redirect apply), and
-    // tracker.commit() flips at end-of-cycle alongside scoreboard_.commit().
+    // issue), alu.evaluate() may write next_ (note_resolved_correctly on
+    // correct-prediction resolve, since Phase 10A), fetch.evaluate() may write
+    // next_ (note_redirect_applied on mispredict-redirect apply, since Phase
+    // 10E), and tracker.commit() flips at end-of-cycle alongside scoreboard_.commit().
     branch_tracker_.seed_next();
 
     // Phase 10B.0.5: explicit double-buffering for the issue/execute stages.
@@ -586,9 +586,9 @@ bool TimingModel::tick() {
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage
     // that may have written into next_ (scheduler note_branch_issued on
-    // issue; opcoll note_resolved_correctly on correct-prediction resolve;
-    // fetch note_redirect_applied on mispredict-redirect apply), and after
-    // every reader's evaluate() has already observed current_ from this
+    // issue; alu note_resolved_correctly on correct-prediction resolve, since
+    // Phase 10A; fetch note_redirect_applied on mispredict-redirect apply), and
+    // after every reader's evaluate() has already observed current_ from this
     // same cycle.
     branch_tracker_.commit();
 

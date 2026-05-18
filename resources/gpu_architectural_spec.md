@@ -167,14 +167,15 @@ Fetch and decode are **two separate pipelined stages**. In steady state, the pip
 **EBREAK and decode backpressure:** When the decode stage has a pending instruction stalled on a full warp buffer, EBREAK detection is deferred until the pending instruction commits and frees the decode stage. The stalled instruction takes priority because it was fetched first and must not be lost. The EBREAK instruction remains in the fetch output register and will be decoded once the stall clears.
 
 **Branch handling:**
-- Branches, `JAL`, and `JALR` are resolved in the execute stage.
-- If the predicted next PC matches the actual next PC, execution continues with no frontend recovery penalty.
+- Branches, `JAL`, and `JALR` are resolved in the execute stage — specifically inside the **ALU unit's** `evaluate()`. The ALU owns branch resolution: it scores the prediction, updates the branch predictor, and drives the redirect. There is no privileged inline branch-resolution block in the timing-model `tick()`.
+- If the predicted next PC matches the actual next PC, execution continues with no frontend recovery penalty; the ALU clears the warp's branch-shadow bit.
 - On a misprediction:
-  1. The operand collector publishes a REGISTERED redirect-request signal (`RedirectRequest{valid, warp_id, target_pc}`) that latches at the cycle boundary.
-  2. The warp's `branch_in_flight` bit is held set through the cycle the redirect propagates from operand-collector to fetch/decode (one cycle), preventing the scheduler from issuing wrong-path shadow instructions during the recovery window.
-  3. On the next cycle, the fetch stage applies the redirect during its commit phase: the warp's instruction buffer is **flushed** (all entries invalidated), the warp's PC is updated to the **actual next PC** (branch target for taken control flow, `PC + 4` for fall-through), the in-flight fetch register is invalidated, and the `branch_in_flight` bit is cleared. The decode stage simultaneously drops any pending decode for the warp.
+  1. The ALU asserts a **combinational-backward** redirect signal (`RedirectRequest{valid, warp_id, target_pc}`) during the same `evaluate()` in which the branch resolves. The redirect is a transient backward control signal — it has no registered slot and no cycle of handoff latency. The execution units evaluate before the frontend, so fetch and decode read the redirect the **same cycle** it is asserted.
+  2. The warp's `branch_in_flight` bit stays set through the cycle the redirect is applied, preventing the scheduler from issuing wrong-path shadow instructions during the recovery window.
+  3. In that same cycle, the fetch stage applies the redirect in its `evaluate()`: the warp's instruction buffer is **flushed** (all entries invalidated), the warp's PC is updated to the **actual next PC** (branch target for taken control flow, `PC + 4` for fall-through), the in-flight fetch register is invalidated, and the `branch_in_flight` bit is cleared. The decode stage simultaneously drops any pending decode for the warp.
   4. Fetching for that warp resumes at the new PC on the next round-robin slot.
-- The mispredict-recovery penalty is **one cycle longer than the pre-Phase-5 design** because the redirect is propagated through a synchronous register at the operand-collector / fetch boundary instead of a same-cycle side-channel. Concretely: the warp has an empty buffer until fetch and decode deliver new instructions, taking a minimum of one extra cycle (for the redirect to register through `OperandCollector::commit()`) plus the refill latency (minimum 2 cycles for the first instruction, plus round-robin wait). Other warps continue executing during this time, hiding the penalty in workloads with sufficient warp parallelism. This matches real synchronous-logic mispredict recovery in mainstream CPU pipelines, where a "redirect register" sits between the execute (or branch resolution) stage and the front-end flush.
+- Because branch resolution is combinational (the resolution datapath is not clock-enabled), a branch held at the ALU's resolve stage by a multi-cycle writeback stall (§4.7) re-runs `evaluate()` each frozen cycle. A control bit (`branch_resolved_`) records that resolution side-effects — the predictor update, the shadow-bit clear, the misprediction-counter increments, and the redirect assertion — have already fired, so they fire **exactly once** per branch even across a stall. The frontend, which is not frozen by the writeback stall, applies the flush on the first (non-resolved) cycle.
+- The mispredict-recovery penalty: the warp has an empty buffer until fetch and decode deliver new instructions — the refill latency (minimum 2 cycles for the first instruction, plus round-robin wait). Other warps continue executing during this time, hiding the penalty in workloads with sufficient warp parallelism. This matches real synchronous-logic mispredict recovery in mainstream CPU pipelines, where the branch-resolution stage drives a combinational redirect into the front-end flush logic.
 
 **Steady-state timing (4 warps):**
 ```
@@ -188,12 +189,18 @@ Buffer:        W0←   W1←   W2←   W3←   W0←   W1←   W2←   W3←
 
 - **Policy:** Loose round-robin (scan-from-pointer).
 - A round-robin pointer increments by 1 each cycle. The scheduler scans from the pointer position through the warp vector to find the **first eligible** warp. The issued warp may differ from the pointer position — this is the "loose" aspect.
-- **Eligibility:** `buffer_not_empty AND no_branch_in_flight AND scoreboard_clear AND operand_collector_free AND target_unit_ready`
-- **Branch shadow stall:** When the scheduler issues a branch, JAL, or JALR instruction, it sets a per-warp `branch_in_flight` bit (Phase 5: maintained as REGISTERED state in `BranchShadowTracker`, written to `next_` at issue and read from `current_` at scheduler eligibility). While set, the warp is ineligible for scheduling — this prevents shadow instructions (fetched speculatively after an unresolved branch) from being issued and executing in the functional model. The bit is cleared by the operand collector when the branch resolves: immediately on a correctly-predicted branch (no shadow path to flush), or deferred by one cycle on a misprediction (cleared by `FetchStage::commit()` when it actually applies the redirect-flush, so the scheduler keeps observing `branch_in_flight=true` through the cycle the redirect propagates).
+- **Eligibility:** `buffer_not_empty AND no_branch_in_flight AND scoreboard_clear AND no_issue_hazard`, where `no_issue_hazard` is evaluated entirely from the scheduler's own issue bookkeeping (see below) — the scheduler does **not** poll the operand collector or execution units for ready signals.
+- **Issue bookkeeping (replaces availability polling).** The scheduler predicts unit and writeback-port availability from its own *issue history* rather than reading downstream `busy` signals. This makes the issue→execute path a clean set of REGISTERED forward edges (the scheduler never combinationally reads a downstream consumer). The bookkeeping has four parts:
+  - **Per-unit structural-hazard countdown** (`unit_busy_[]`). When an op is issued to a unit, the scheduler arms an iteration-latency countdown for that unit; issue to that unit is blocked while the countdown is non-zero. The countdown decrements once per non-frozen cycle. Only **non-pipelined units** carry a non-zero latency: `DIVIDE` (32) and `TLOOKUP` (17), whose single busy slot a second `accept()` would clobber. The fully-pipelined `ALU` and `MULTIPLY` have iteration latency 0 and have **no input-side structural gate** — they are limited only by the writeback bitmap. `LDST` also uses this countdown: its address-generation stage holds exactly one op and `LdStUnit::accept()` overwrites it unconditionally, so consecutive LDST issues are spaced by the runtime addr-gen latency `ceil(WARP_SIZE / num_ldst_units)`.
+  - **Binding writeback-slot bitmap** (`writeback_bitmap_`). A circular array modelling the fixed-latency writeback schedule. Each occupied entry marks a near-future cycle on which a fixed-latency writeback is already promised. When a fixed-latency op that writes back is issued, the scheduler reserves the bitmap entry at `bitmap_head_ + issue_to_writeback_offset`; the issue gate refuses any fixed-latency op whose predicted writeback cycle is already claimed. This is **binding** — it is enforced at issue and is the reason fixed-vs-fixed writeback contention cannot occur (§4.7). `bitmap_head_` advances one slot per non-frozen cycle. The bitmap holds **fixed-latency reservations only** (LDST loads retire variably via the gather buffer and reserve nothing); the writeback arbiter does not consult it. The bitmap is **frozen** on a writeback-stall cycle (see §4.7) — `bitmap_head_` does not advance.
+  - **LDST FIFO-occupancy accounting.** The scheduler tracks a monotonic count of ops ever issued to LDST (`ldst_issued_total_`); the count in transit but not yet in the LdSt addr-gen FIFO is the difference between that and the FIFO's committed push counter. Adding the current FIFO depth gives the exact future FIFO occupancy, and the scheduler blocks an LDST issue that would overflow the FIFO. This is event-driven scheduler-side accounting — it does not poll the FIFO for a "full" signal.
+  - **Interim operand-collector cooldown** (`opcoll_cooldown_cycles_`). A global single-resource gate: set to 2 on issue of a `VDOT8` (the operand collector takes 2 cycles to gather 3 operands) and 1 for every other op; decremented each non-frozen cycle. A cooldown of 1 clears by the next cycle and permits a fresh issue every cycle. This is an interim model that drops out when the operand collector becomes uniformly 1-cycle.
+- **Branch shadow stall:** When the scheduler issues a branch, JAL, or JALR instruction, it sets a per-warp `branch_in_flight` bit (maintained as REGISTERED state in `BranchShadowTracker`, written to `next_` at issue and read from `current_` at scheduler eligibility). While set, the warp is ineligible for scheduling — this prevents shadow instructions (fetched speculatively after an unresolved branch) from being issued and executing in the functional model. The bit is cleared when the branch resolves in the ALU (§4.2 Branch handling): immediately on a correctly-predicted branch (no shadow path to flush), or deferred by one cycle on a misprediction (cleared by `FetchStage::evaluate()` when it applies the redirect-flush, so the scheduler keeps observing `branch_in_flight=true` through the cycle the redirect propagates).
 - **Scoreboard check at issue includes all source operands.** For standard 2-operand instructions, rs1 and rs2 must not be pending. For 3-operand instructions like `VDOT8`, rs1, rs2, and rd must all not be pending.
 - If no warp is eligible, no instruction issues that cycle.
 - The RR pointer always advances to `(original_position + 1) % num_warps` regardless of which warp (if any) actually issued. This ensures fairness: the scan starting point rotates uniformly. Both fetch and scheduler use the same pointer-advance rule.
-- **Implementation:** Combinational priority scan over 4–8 eligible bits with rotating base. Trivial at this width.
+- **Writeback-stall freeze.** When the writeback arbiter asserts a writeback stall (§4.7), the scheduler's `evaluate()` early-returns: it issues nothing this cycle and advances no issue bookkeeping (the bitmap head, the unit countdowns, the cooldown, the LDST counters all hold). The already-issued instruction it holds in its output register is retained. This freezes the modelled issue stage in lockstep with the rest of the pipeline so the cycle re-evaluates identically once the stall clears.
+- **Implementation:** Combinational priority scan over 4–8 eligible bits with rotating base, plus the small issue-bookkeeping arrays above. Trivial at this width.
 
 ### 4.4 Operand Collection Stage
 
@@ -233,11 +240,24 @@ All units use a **valid-in / valid-out interface**. Warp tag and destination reg
 **Per-unit writeback buffer:** Each execution unit (ALU, multiply/VDOT8, divide, TLOOKUP, MSHR fill path) has a **single-entry buffer** that holds one complete warp result (32 values + warp tag + destination register ID). The dispatch controller collects results as threads exit the execution unit; once all 32 threads have completed, the buffer is marked valid.
 
 **Writeback arbiter:**
-- **Round-robin** among execution units with a valid writeback buffer.
-- Each cycle, the arbiter selects one unit. That unit's 32 results are written to all 32 register file banks simultaneously (1 cycle).
-- Units not selected hold their results in their buffer until the next arbitration cycle.
-- The round-robin pointer advances past the selected unit, ensuring fairness.
-- **Conflict frequency is low:** conflicts only occur when two or more units finish their last thread lane in the same cycle. With different pipeline depths (1-cycle ALU, multi-cycle multiply, ~32-cycle divide, variable MSHR fill), simultaneous completions are infrequent.
+- **Fixed-priority** arbitration, not round-robin. The writeback sources fall into two classes:
+  - **Variable-latency sources** — the load gather buffers (§5.2.1). A load is on the critical path of every dependent instruction, so it must retire as early as possible.
+  - **Fixed-latency units** — ALU, multiply/VDOT8, divide, TLOOKUP. Their writeback cycle is exactly predictable from issue.
+- Each cycle, **variable-latency sources win the writeback port over fixed-latency units.** If a load and a fixed-latency unit both present a result on the same cycle, the load is written back and the fixed-latency unit is **preempted**.
+- A unit not selected holds its result in its single-entry buffer until the next cycle.
+- **Fixed-vs-fixed contention cannot occur.** The scheduler's binding writeback bitmap (§4.3) reserves a fixed-latency writeback slot at issue and refuses any second fixed-latency op that would land on the same cycle. At most one fixed-latency unit can therefore present a result on any cycle; the arbiter asserts this as a hardware invariant. The only contention the arbiter ever resolves is variable-vs-fixed.
+- **Combinational-backward writeback stall.** When a load preempts a fixed-latency writeback, the arbiter asserts a combinational-backward **writeback stall** signal for that cycle. The stall freezes the entire issue/execute path — the five execution units, the operand collector, and the warp scheduler all hold their state for the cycle (the units and operand collector skip their register flip; the scheduler early-returns and skips its flip, including freezing the writeback bitmap). The preempted fixed-latency result is held in its unit's buffer by the frozen flip. The next cycle re-evaluates identically, and the fixed-latency unit — now uncontested, since the load has retired — wins the port. The arbiter is sequenced first in the cycle so the stall is visible same-cycle to every consumer. The stall is rare: it only fires when a load and a fixed-latency op happen to complete in the same cycle.
+
+**Issue-to-writeback latency.** The issue/execute path is fully synchronous: every forward edge on the `scheduler → operand collector → execution unit → writeback arbiter` path is a registered (one-cycle) edge. The number of cycles from a fixed-latency op's issue to the cycle the writeback arbiter consumes its result is:
+
+| Unit       | Issue → arbiter-consume offset (cycles) |
+|------------|-----------------------------------------|
+| ALU        | 3                                       |
+| Multiply   | `multiply_pipeline_stages` + 2 (default `STAGES`=3 → 5) |
+| Divide     | `DIVIDE_LATENCY` + 2 (= 34)              |
+| TLOOKUP    | `TLOOKUP_LATENCY` + 2 (= 19)             |
+
+The constant `+2`/`+3` term is the sum of the three registered forward edges on the issue/execute path (operand-collector latency contributes the rest). A `VDOT8` op spends one extra cycle in the operand collector, so its effective offset is the Multiply value + 1. These offsets are correctness-critical: they are the exact values the scheduler's writeback bitmap reserves against, and the writeback arbiter asserts at runtime that at most one fixed-latency unit presents a result per cycle. (LDST loads retire variably through the gather buffer and have no fixed offset.)
 
 **Scoreboard interaction:** The scoreboard uses **double-buffered state**. When the writeback arbiter selects a unit, the scoreboard's pending flag for the destination register is cleared in the "next" buffer. At the end of the cycle, the next buffer is committed to the current buffer. This means scoreboard clears are visible to the scheduler at the **next cycle boundary**, not in the same cycle as the writeback. The clear is triggered by the arbiter's selection, not by the unit's buffer becoming valid.
 
@@ -436,6 +456,15 @@ A FIFO buffer between the L1 cache and the external memory interface, absorbing 
 - The write buffer drains to external memory via the same memory interface (§5.6) as cache miss reads. Within a cycle, cache miss read submissions are processed before write buffer drain submissions. The external memory interface processes requests in FIFO order with no read/write priority distinction.
 - **No write coalescing:** each store generates its own buffer entry. Multiple stores to the same cache line are not merged. (Phase 2 optimization candidate.)
 - Write-buffer-full stalls also apply to secondary store drains; a stalled secondary drain keeps its line pinned.
+
+#### 5.3.3 Memory-Path Cross-Stage Discipline
+
+The two boundaries inside the memory path follow the same synchronous handshake shape as the issue/execute path: a **registered forward edge** for the request/data, and a **combinational-backward stall** for the back-pressure.
+
+- **Coalescing ↔ cache.** The coalescing unit submits a load/store command into a registered command slot; the cache consumes it the next cycle. The cache exposes a combinational-backward ready/stall signal that the coalescing unit reads the same cycle it would stage a command, so a command is never overwritten while one is still pending. The cache itself is a memoryless command consumer — it attempts the staged command and clears the slot regardless of outcome; producer-side retry lives entirely in the coalescing unit.
+- **Cache ↔ external memory interface.** The cache stages read and write requests into registered request slots on the memory interface; the interface admits them to its in-flight set one cycle later. The interface exposes a combinational-backward request-stall signal (driven by the backend's request-FIFO occupancy — always clear for the fixed-latency backend, asserted by DRAMSim3 when its write region is saturated); the cache checks it before staging a write-buffer drain. Responses travel back through a registered response queue, read by the cache one cycle after the interface produces them.
+
+These boundaries, together with the issue/execute path, mean every forward data edge in the timing model is registered and every backward edge is a combinational stall — the synchronous-pipeline discipline (§11, Principle 7).
 
 ### 5.4 Memory Ordering
 
@@ -685,6 +714,7 @@ The following features are explicitly deferred:
 4. **Hide latency via warp switching.** Multiple resident warps cover memory, multiply, and divide latency.
 5. **FPGA-friendly structures.** DSP slices for multiply, BRAMs for storage, avoid associative matching and multi-ported structures.
 6. **Fail loud.** EBREAK panics the entire SM with full diagnostic capture. No silent failure modes — software bugs produce actionable halt state rather than corrupt output.
+7. **Synchronous pipeline discipline.** Every cross-stage edge is either a *registered forward* edge (the consumer reads the producer's committed state one cycle later — every forward data path: fetch→decode, scheduler→operand-collector→unit→writeback-arbiter, coalescing→cache, cache→memory-interface) or a *combinational-backward control* edge (a same-cycle back-pressure or redirect signal, asserted by the downstream stage and read by the upstream one within the cycle — decode-busy back to fetch, the writeback stall, the branch redirect, the cache and memory-interface stalls). There are no combinational-forward data edges: no stage's output reaches another stage's input within the same cycle. This is what makes the timing model a faithful synchronous-logic model and what lets a back-pressure stall freeze a whole stage by gating its register flip. The discipline is specified in detail for the C++ timing model in `resources/timing_discipline.md` and `resources/cpp_coding_standard.md`.
 
 ---
 
@@ -702,7 +732,7 @@ All architectural questions have been resolved. This appendix records the resolu
 - ~~Interrupt and exception handling~~ → Resolved: no exceptions; ECALL marks warp inactive, EBREAK triggers whole-SM panic with diagnostic capture, host polls STATUS.DONE and STATUS.PANIC (§6.5).
 - ~~Coalescing granularity~~ → Resolved: all-or-nothing for Phase 1; proper cache-line grouping deferred to Phase 2 (§5.2).
 - ~~MSHR design details~~ → Resolved: parameterizable count (default 4), stall on exhaustion, no duplicate detection/merging, separate fill paths for load and store misses (§5.3.1).
-- ~~Writeback arbiter policy~~ → Resolved: round-robin among units with valid output; single-cycle parallel write to all 32 banks (§4.7).
+- ~~Writeback arbiter policy~~ → Resolved: fixed-priority — variable-latency load gather buffers win the port over fixed-latency units; fixed-vs-fixed contention is prevented at issue by the scheduler's binding writeback bitmap; single-cycle parallel write to all 32 banks (§4.7).
 - ~~Register file forwarding~~ → Resolved: no forwarding; scoreboard prevents reads of pending registers; 1-cycle gap after clear is acceptable (§4.7, §8).
 - ~~Lookup-table instruction~~ → Resolved: TLOOKUP custom instruction in custom-1 opcode space, I-type encoding, dedicated functional unit, pipelined dual-port BRAM with 17-cycle warp latency, host-loaded BRAM (§2.3).
 - ~~VDOT8 overflow behavior~~ → Resolved: wrapping (2's complement), consistent with RV32I convention; software manages range (§2.2).
@@ -728,7 +758,7 @@ The following are architecturally contracted and may be used as exact expectatio
 - execution-unit latency parameters
 - duplicate-miss behavior for same-line outstanding misses
 - write-through drain before completion
-- writeback arbitration conflicts delaying scoreboard clear
+- writeback preemption (load over fixed-latency) delaying scoreboard clear
 - DONE/PANIC waiting for full pipeline drain
 
 ### B.2 Contracted Validation Surfaces
@@ -740,7 +770,7 @@ The following simulator outputs are part of the validation surface:
 - `branch_flushes`
 - per-unit instruction counts
 - cache hit/miss and external-memory traffic counters
-- `writeback_conflicts`
+- `fixed_writeback_preempted_cycles`
 - per-warp stall counters when a scenario cites them
 - committed `CycleTraceSnapshot` state classifications
 - final architected register state
