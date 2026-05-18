@@ -1,8 +1,22 @@
 digraph signal_flow {
-  rankdir=TB;
-  graph [fontname="Helvetica", label=<<table border="0" cellborder="0" cellspacing="2"><tr><td align="center" colspan="3"><font point-size="14"><b>Timing-model signal flow</b></font><br/><font point-size="9">generated from sim/{include,src}/timing/ via libclang AST</font></td></tr><tr><td><font color="#1f2937">━━</font> REGISTERED (1-cycle)</td><td><font color="#d97706">┄┄</font> COMBINATIONAL (same-cycle)</td><td><font color="#2563eb">▷</font> back-pressure direction overlay</td></tr></table>>, labelloc=t, pad=0.3, ranksep=0.7, nodesep=0.6, splines=ortho, clusterrank=local, compound=true, esep="+12", forcelabels=true];
-  node  [fontname="Helvetica", fontsize=11, shape=box, style="filled,rounded", fillcolor="#ffffff", color="#374151", width=1.4, height=1.1];
+  layout="neato";
+  graph [fontname="Helvetica", label=<<table border="0" cellborder="0" cellspacing="2"><tr><td align="center" colspan="3"><font point-size="14"><b>Timing-model signal flow</b></font><br/><font point-size="9">generated from sim/{include,src}/timing/ via libclang AST</font></td></tr><tr><td><font color="#1f2937">━━</font> REGISTERED (1-cycle)</td><td><font color="#d97706">┄┄</font> COMBINATIONAL (same-cycle)</td><td><font color="#2563eb">▷</font> back-pressure direction overlay</td></tr></table>>, labelloc=t, pad=0.4, splines=polyline, outputorder=edgesfirst, sep="+18", esep="+13", forcelabels=true];
+  node  [fontname="Helvetica", fontsize=11, shape=box, style="filled,rounded", fillcolor="#ffffff", color="#374151", width=1.4, height=1.1, fixedsize=true];
   edge  [fontname="Helvetica", fontsize=10, color="#374151"];
+
+  subgraph cluster_Control {
+    label=<<table border="0" cellborder="0" cellpadding="3"><tr><td bgcolor="white"><b>Control</b></td></tr></table>>;
+    labelloc=b;
+    labeljust=c;
+    style="filled,rounded";
+    fillcolor="#ede9fe";
+    color="#9ca3af";
+    fontsize=13;
+    "PanicController" [label="Panic\nController", pos="7.600,14.700!"];
+    "TimingModel" [label="Timing\nModel", pos="19.000,14.700!"];
+    "__ext_Control_tl" [style=invis, width=0.01, height=0.01, label="", pos="-1.040,15.550!"];
+    "__ext_Control_br" [style=invis, width=0.01, height=0.01, label="", pos="20.040,13.530!"];
+  }
 
   subgraph cluster_Frontend_and_Issue {
     label=<<table border="0" cellborder="0" cellpadding="3"><tr><td bgcolor="white"><b>Frontend &amp; Issue</b></td></tr></table>>;
@@ -12,13 +26,14 @@ digraph signal_flow {
     fillcolor="#dbeafe";
     color="#9ca3af";
     fontsize=13;
-    margin=20;
-    "FetchStage" [label="Fetch\nStage"];
-    "DecodeStage" [label="Decode\nStage"];
-    "WarpScheduler" [label="Warp\nScheduler"];
-    "Scoreboard" [label="Scoreboard"];
-    "BranchShadowTracker" [label="Branch\nShadow\nTracker"];
-    "OperandCollector" [label="Operand\nCollector"];
+    "FetchStage" [label="Fetch\nStage", pos="0.000,9.800!"];
+    "DecodeStage" [label="Decode\nStage", pos="0.000,7.350!"];
+    "WarpScheduler" [label="Warp\nScheduler", pos="0.000,4.900!"];
+    "Scoreboard" [label="Scoreboard", pos="3.800,7.350!"];
+    "BranchShadowTracker" [label="Branch\nShadow\nTracker", pos="3.800,9.800!"];
+    "OperandCollector" [label="Operand\nCollector", pos="3.800,4.900!"];
+    "__ext_Frontend_and_Issue_tl" [style=invis, width=0.01, height=0.01, label="", pos="-1.040,10.650!"];
+    "__ext_Frontend_and_Issue_br" [style=invis, width=0.01, height=0.01, label="", pos="4.840,3.730!"];
   }
 
   subgraph cluster_Execute {
@@ -29,12 +44,13 @@ digraph signal_flow {
     fillcolor="#fef3c7";
     color="#9ca3af";
     fontsize=13;
-    margin=20;
-    "ALUUnit" [label="ALU\nUnit"];
-    "MultiplyUnit" [label="Multiply\nUnit"];
-    "DivideUnit" [label="Divide\nUnit"];
-    "TLookupUnit" [label="TLookup\nUnit"];
-    "LdStUnit" [label="LdSt\nUnit"];
+    "ALUUnit" [label="ALU\nUnit", pos="7.600,9.800!"];
+    "MultiplyUnit" [label="Multiply\nUnit", pos="7.600,7.350!"];
+    "DivideUnit" [label="Divide\nUnit", pos="7.600,4.900!"];
+    "TLookupUnit" [label="TLookup\nUnit", pos="7.600,2.450!"];
+    "LdStUnit" [label="LdSt\nUnit", pos="7.600,0.000!"];
+    "__ext_Execute_tl" [style=invis, width=0.01, height=0.01, label="", pos="6.560,10.650!"];
+    "__ext_Execute_br" [style=invis, width=0.01, height=0.01, label="", pos="8.640,-1.170!"];
   }
 
   subgraph cluster_Memory {
@@ -45,11 +61,12 @@ digraph signal_flow {
     fillcolor="#dcfce7";
     color="#9ca3af";
     fontsize=13;
-    margin=20;
-    "CoalescingUnit" [label="Coalescing\nUnit"];
-    "LoadGatherBufferFile" [label="LoadGather\nBufferFile"];
-    "L1Cache" [label="L1\nCache"];
-    "ExternalMemoryInterface" [label="External\nMemory\nInterface"];
+    "CoalescingUnit" [label="Coalescing\nUnit", pos="11.400,7.350!"];
+    "LoadGatherBufferFile" [label="LoadGather\nBufferFile", pos="15.200,4.900!"];
+    "L1Cache" [label="L1\nCache", pos="15.200,7.350!"];
+    "ExternalMemoryInterface" [label="External\nMemory\nInterface", pos="19.000,7.350!"];
+    "__ext_Memory_tl" [style=invis, width=0.01, height=0.01, label="", pos="10.360,8.200!"];
+    "__ext_Memory_br" [style=invis, width=0.01, height=0.01, label="", pos="20.040,3.730!"];
   }
 
   subgraph cluster_Writeback {
@@ -60,74 +77,62 @@ digraph signal_flow {
     fillcolor="#fee2e2";
     color="#9ca3af";
     fontsize=13;
-    margin=20;
-    "WritebackArbiter" [label="Writeback\nArbiter"];
+    "WritebackArbiter" [label="Writeback\nArbiter", pos="15.200,1.225!"];
+    "__ext_Writeback_tl" [style=invis, width=0.01, height=0.01, label="", pos="14.160,2.075!"];
+    "__ext_Writeback_br" [style=invis, width=0.01, height=0.01, label="", pos="16.240,0.055!"];
   }
 
-  subgraph cluster_Control {
-    label=<<table border="0" cellborder="0" cellpadding="3"><tr><td bgcolor="white"><b>Control</b></td></tr></table>>;
-    labelloc=b;
-    labeljust=c;
-    style="filled,rounded";
-    fillcolor="#ede9fe";
-    color="#9ca3af";
-    fontsize=13;
-    margin=20;
-    "PanicController" [label="Panic\nController"];
-    "TimingModel" [label="Timing\nModel"];
-  }
-
-  "ALUUnit" -> "BranchShadowTracker" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="resolved correctly", tooltip="resolved correctly"];
-  "ALUUnit" -> "DecodeStage" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="redirect", tooltip="redirect"];
-  "ALUUnit" -> "FetchStage" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="redirect", tooltip="redirect"];
-  "ALUUnit" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
+  "ALUUnit" -> "BranchShadowTracker" [color="#2563eb", style=solid, arrowhead=empty, xlabel="resolved correctly", tooltip="resolved correctly"];
+  "ALUUnit" -> "DecodeStage" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="redirect", tooltip="redirect"];
+  "ALUUnit" -> "FetchStage" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="redirect", tooltip="redirect"];
+  "ALUUnit" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
   "ALUUnit" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="result", tooltip="result"];
-  "BranchShadowTracker" -> "WarpScheduler" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="in flight", tooltip="in flight"];
+  "BranchShadowTracker" -> "WarpScheduler" [color="#2563eb", style=solid, arrowhead=empty, xlabel="in flight", tooltip="in flight"];
   "CoalescingUnit" -> "L1Cache" [color="#1f2937", style=solid, xlabel="next load cmd / next store cmd", tooltip="next load cmd / next store cmd"];
-  "CoalescingUnit" -> "LdStUnit" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="pop front", tooltip="pop front"];
+  "CoalescingUnit" -> "LdStUnit" [color="#2563eb", style=solid, arrowhead=empty, xlabel="pop front", tooltip="pop front"];
   "CoalescingUnit" -> "LoadGatherBufferFile" [color="#1f2937", style=solid, xlabel="claim", tooltip="claim"];
-  "DecodeStage" -> "FetchStage" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="busy / pending warp", tooltip="busy / pending warp"];
-  "DecodeStage" -> "TimingModel" [color="#1f2937", style=solid, constraint=false, xlabel="ebreak", tooltip="ebreak"];
-  "DivideUnit" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
+  "DecodeStage" -> "FetchStage" [color="#2563eb", style=solid, arrowhead=empty, xlabel="busy / pending warp", tooltip="busy / pending warp"];
+  "DecodeStage" -> "TimingModel" [color="#1f2937", style=solid, xlabel="ebreak", tooltip="ebreak"];
+  "DivideUnit" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
   "DivideUnit" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="result", tooltip="result"];
-  "ExternalMemoryInterface" -> "L1Cache" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="has response", tooltip="has response"];
+  "ExternalMemoryInterface" -> "L1Cache" [color="#2563eb", style=solid, arrowhead=empty, xlabel="has response", tooltip="has response"];
   "FetchStage" -> "BranchShadowTracker" [color="#1f2937", style=solid, xlabel="redirect applied", tooltip="redirect applied"];
   "FetchStage" -> "DecodeStage" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
-  "L1Cache" -> "CoalescingUnit" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="cmd ready", tooltip="cmd ready"];
+  "L1Cache" -> "CoalescingUnit" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="cmd ready", tooltip="cmd ready"];
   "L1Cache" -> "ExternalMemoryInterface" [color="#1f2937", style=solid, xlabel="response / next read request", tooltip="response / next read request"];
-  "L1Cache" -> "LoadGatherBufferFile" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="try write", tooltip="try write"];
-  "L1Cache" -> "TimingModel" [color="#1f2937", style=solid, constraint=false, xlabel="trace events", tooltip="trace events"];
+  "L1Cache" -> "LoadGatherBufferFile" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="try write", tooltip="try write"];
+  "L1Cache" -> "TimingModel" [color="#1f2937", style=solid, xlabel="trace events", tooltip="trace events"];
   "LdStUnit" -> "CoalescingUnit" [color="#1f2937", style=solid, xlabel="fifo empty / fifo front", tooltip="fifo empty / fifo front"];
-  "LdStUnit" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
-  "LdStUnit" -> "WarpScheduler" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="fifo size / fifo total pushes / fifo capacity", tooltip="fifo size / fifo total pushes / fifo capacity"];
+  "LdStUnit" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
+  "LdStUnit" -> "WarpScheduler" [color="#2563eb", style=solid, arrowhead=empty, xlabel="fifo size / fifo total pushes / fifo capacity", tooltip="fifo size / fifo total pushes / fifo capacity"];
   "LdStUnit" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="result", tooltip="result"];
-  "LoadGatherBufferFile" -> "CoalescingUnit" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="busy", tooltip="busy"];
+  "LoadGatherBufferFile" -> "CoalescingUnit" [color="#2563eb", style=solid, arrowhead=empty, xlabel="busy", tooltip="busy"];
   "LoadGatherBufferFile" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="result", tooltip="result"];
-  "MultiplyUnit" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
+  "MultiplyUnit" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
   "MultiplyUnit" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="result", tooltip="result"];
   "OperandCollector" -> "ALUUnit" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
   "OperandCollector" -> "DivideUnit" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
   "OperandCollector" -> "LdStUnit" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
   "OperandCollector" -> "MultiplyUnit" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
-  "OperandCollector" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
+  "OperandCollector" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
   "OperandCollector" -> "TLookupUnit" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
-  "PanicController" -> "LoadGatherBufferFile" [color="#1f2937", style=solid, constraint=false, xlabel="flush", tooltip="flush"];
-  "PanicController" -> "OperandCollector" [color="#1f2937", style=solid, constraint=false, xlabel="flush", tooltip="flush"];
-  "PanicController" -> "WarpScheduler" [color="#1f2937", style=solid, constraint=false, xlabel="flush", tooltip="flush"];
-  "PanicController" -> "WritebackArbiter" [color="#1f2937", style=solid, constraint=false, xlabel="flush", tooltip="flush"];
-  "Scoreboard" -> "WarpScheduler" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="scoreboard", tooltip="scoreboard"];
-  "TLookupUnit" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
+  "PanicController" -> "LoadGatherBufferFile" [color="#1f2937", style=solid, xlabel="flush", tooltip="flush"];
+  "PanicController" -> "OperandCollector" [color="#1f2937", style=solid, xlabel="flush", tooltip="flush"];
+  "PanicController" -> "WarpScheduler" [color="#1f2937", style=solid, xlabel="flush", tooltip="flush"];
+  "PanicController" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="flush", tooltip="flush"];
+  "Scoreboard" -> "WarpScheduler" [color="#2563eb", style=solid, arrowhead=empty, xlabel="scoreboard", tooltip="scoreboard"];
+  "TLookupUnit" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
   "TLookupUnit" -> "WritebackArbiter" [color="#1f2937", style=solid, xlabel="result", tooltip="result"];
   "WarpScheduler" -> "BranchShadowTracker" [color="#1f2937", style=solid, xlabel="branch issued", tooltip="branch issued"];
   "WarpScheduler" -> "OperandCollector" [color="#1f2937", style=solid, xlabel="output", tooltip="output"];
   "WarpScheduler" -> "Scoreboard" [color="#1f2937", style=solid, xlabel="scoreboard", tooltip="scoreboard"];
-  "WritebackArbiter" -> "ALUUnit" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
-  "WritebackArbiter" -> "DivideUnit" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
-  "WritebackArbiter" -> "LdStUnit" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
-  "WritebackArbiter" -> "MultiplyUnit" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
-  "WritebackArbiter" -> "OperandCollector" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
-  "WritebackArbiter" -> "PanicController" [color="#1f2937", style=solid, constraint=false, xlabel="drained", tooltip="drained"];
-  "WritebackArbiter" -> "Scoreboard" [color="#2563eb", style=solid, arrowhead=empty, constraint=false, xlabel="scoreboard", tooltip="scoreboard"];
-  "WritebackArbiter" -> "TLookupUnit" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
-  "WritebackArbiter" -> "WarpScheduler" [color="#2563eb", style=dashed, arrowhead=empty, constraint=false, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "ALUUnit" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "DivideUnit" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "LdStUnit" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "MultiplyUnit" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "OperandCollector" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "PanicController" [color="#1f2937", style=solid, xlabel="drained", tooltip="drained"];
+  "WritebackArbiter" -> "Scoreboard" [color="#2563eb", style=solid, arrowhead=empty, xlabel="scoreboard", tooltip="scoreboard"];
+  "WritebackArbiter" -> "TLookupUnit" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
+  "WritebackArbiter" -> "WarpScheduler" [color="#2563eb", style=dashed, arrowhead=empty, xlabel="writeback stall", tooltip="writeback stall"];
 }

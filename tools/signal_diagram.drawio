@@ -1,0 +1,238 @@
+<mxfile host="65bd71144e">
+    <diagram name="Timing-model signal flow" id="signal-flow">
+        <mxGraphModel dx="976" dy="516" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1624" pageHeight="1314" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="cluster_Control" value="Control" style="rounded=1;arcSize=4;fillColor=#ede9fe;strokeColor=#9ca3af;verticalAlign=bottom;align=center;fontSize=15;fontStyle=1;fontColor=#374151;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="20" width="1584" height="164" as="geometry"/>
+                </mxCell>
+                <mxCell id="cluster_Frontend_and_Issue" value="Frontend &amp; Issue" style="rounded=1;arcSize=4;fillColor=#dbeafe;strokeColor=#9ca3af;verticalAlign=bottom;align=center;fontSize=15;fontStyle=1;fontColor=#374151;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="390" width="464" height="534" as="geometry"/>
+                </mxCell>
+                <mxCell id="cluster_Execute" value="Execute" style="rounded=1;arcSize=4;fillColor=#fef3c7;strokeColor=#9ca3af;verticalAlign=bottom;align=center;fontSize=15;fontStyle=1;fontColor=#374151;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="390" width="184" height="904" as="geometry"/>
+                </mxCell>
+                <mxCell id="cluster_Memory" value="Memory" style="rounded=1;arcSize=4;fillColor=#dcfce7;strokeColor=#9ca3af;verticalAlign=bottom;align=center;fontSize=15;fontStyle=1;fontColor=#374151;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="860" y="575" width="744" height="349" as="geometry"/>
+                </mxCell>
+                <mxCell id="cluster_Writeback" value="Writeback" style="rounded=1;arcSize=4;fillColor=#fee2e2;strokeColor=#9ca3af;verticalAlign=bottom;align=center;fontSize=15;fontStyle=1;fontColor=#374151;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="1140" y="1038" width="184" height="164" as="geometry"/>
+                </mxCell>
+                <mxCell id="FetchStage" value="Fetch&lt;br&gt;Stage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="46" y="412" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="DecodeStage" value="Decode&lt;br&gt;Stage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="46" y="597" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="WarpScheduler" value="Warp&lt;br&gt;Scheduler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="46" y="782" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="Scoreboard" value="Scoreboard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="326" y="597" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="BranchShadowTracker" value="Branch&lt;br&gt;Shadow&lt;br&gt;Tracker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="326" y="412" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="OperandCollector" value="Operand&lt;br&gt;Collector" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="326" y="782" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="ALUUnit" value="ALU&lt;br&gt;Unit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="606" y="412" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="MultiplyUnit" value="Multiply&lt;br&gt;Unit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="606" y="597" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="DivideUnit" value="Divide&lt;br&gt;Unit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="606" y="782" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="TLookupUnit" value="TLookup&lt;br&gt;Unit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="606" y="967" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="LdStUnit" value="LdSt&lt;br&gt;Unit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="606" y="1152" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="CoalescingUnit" value="Coalescing&lt;br&gt;Unit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="886" y="597" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="LoadGatherBufferFile" value="LoadGather&lt;br&gt;BufferFile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="1166" y="782" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="L1Cache" value="L1&lt;br&gt;Cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="1166" y="597" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="ExternalMemoryInterface" value="External&lt;br&gt;Memory&lt;br&gt;Interface" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="1446" y="597" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="WritebackArbiter" value="Writeback&lt;br&gt;Arbiter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="1166" y="1060" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="PanicController" value="Panic&lt;br&gt;Controller" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="606" y="42" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="TimingModel" value="Timing&lt;br&gt;Model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#374151;fontSize=11;fontColor=#111827;" parent="1" vertex="1">
+                    <mxGeometry x="1446" y="42" width="132" height="94" as="geometry"/>
+                </mxCell>
+                <mxCell id="e0" value="resolved correctly" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="ALUUnit" target="BranchShadowTracker" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e1" value="redirect" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="ALUUnit" target="DecodeStage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e2" value="redirect" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="ALUUnit" target="FetchStage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e3" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="ALUUnit" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e4" value="result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="ALUUnit" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e5" value="in flight" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="BranchShadowTracker" target="WarpScheduler" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e6" value="next load cmd / next store cmd" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="CoalescingUnit" target="L1Cache" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e7" value="pop front" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="CoalescingUnit" target="LdStUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e8" value="claim" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="CoalescingUnit" target="LoadGatherBufferFile" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e9" value="busy / pending warp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="DecodeStage" target="FetchStage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e10" value="ebreak" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="DecodeStage" target="TimingModel" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e11" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="DivideUnit" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e12" value="result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="DivideUnit" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e13" value="has response" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="ExternalMemoryInterface" target="L1Cache" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e14" value="redirect applied" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="FetchStage" target="BranchShadowTracker" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e15" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="FetchStage" target="DecodeStage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e16" value="cmd ready" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="L1Cache" target="CoalescingUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e17" value="response / next read request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="L1Cache" target="ExternalMemoryInterface" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e18" value="try write" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="L1Cache" target="LoadGatherBufferFile" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e19" value="trace events" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="L1Cache" target="TimingModel" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e20" value="fifo empty / fifo front" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="LdStUnit" target="CoalescingUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e21" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="LdStUnit" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e22" value="fifo size / fifo total pushes / fifo capacity" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="LdStUnit" target="WarpScheduler" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e23" value="result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="LdStUnit" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e24" value="busy" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="LoadGatherBufferFile" target="CoalescingUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e25" value="result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="LoadGatherBufferFile" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e26" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="MultiplyUnit" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e27" value="result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="MultiplyUnit" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e28" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="OperandCollector" target="ALUUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e29" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="OperandCollector" target="DivideUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e30" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="OperandCollector" target="LdStUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e31" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="OperandCollector" target="MultiplyUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e32" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="OperandCollector" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e33" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="OperandCollector" target="TLookupUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e34" value="flush" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="PanicController" target="LoadGatherBufferFile" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e35" value="flush" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="PanicController" target="OperandCollector" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e36" value="flush" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="PanicController" target="WarpScheduler" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e37" value="flush" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="PanicController" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e38" value="scoreboard" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="Scoreboard" target="WarpScheduler" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e39" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="TLookupUnit" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e40" value="result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="TLookupUnit" target="WritebackArbiter" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e41" value="branch issued" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="WarpScheduler" target="BranchShadowTracker" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e42" value="output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="WarpScheduler" target="OperandCollector" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e43" value="scoreboard" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="WarpScheduler" target="Scoreboard" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e44" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="ALUUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e45" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="DivideUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e46" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="LdStUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e47" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="MultiplyUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e48" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="OperandCollector" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e49" value="drained" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#1f2937;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;" parent="1" source="WritebackArbiter" target="PanicController" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e50" value="scoreboard" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;endArrow=open;" parent="1" source="WritebackArbiter" target="Scoreboard" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e51" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="TLookupUnit" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e52" value="writeback stall" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563eb;fontSize=10;fontColor=#374151;labelBackgroundColor=#ffffff;jettySize=auto;dashed=1;endArrow=open;" parent="1" source="WritebackArbiter" target="WarpScheduler" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

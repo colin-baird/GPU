@@ -1,4 +1,8 @@
 flowchart LR
+  subgraph Control["Control"]
+    PanicController
+    TimingModel
+  end
   subgraph Frontend_and_Issue["Frontend & Issue"]
     FetchStage
     DecodeStage
@@ -22,10 +26,6 @@ flowchart LR
   end
   subgraph Writeback["Writeback"]
     WritebackArbiter
-  end
-  subgraph Control["Control"]
-    PanicController
-    TimingModel
   end
   ALUUnit -->|resolved correctly| BranchShadowTracker
   ALUUnit -.->|redirect| DecodeStage
