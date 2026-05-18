@@ -28,6 +28,19 @@ public:
         }
         return false;
     }
+    // Phase 10B.0 interim issue gate (DELIBERATE, HUMAN-APPROVED DEVIATION
+    // from the plan — to be REMOVED in Phase 10B.3). See the long rationale
+    // on ALUUnit::current_result_pending(). MultiplyUnit never *loses* a
+    // writeback (evaluate() holds a ready head entry in the pipeline when the
+    // result buffer is occupied rather than overwriting it), so it cannot
+    // deadlock on its own — but the old current_busy() poll still gated issue
+    // into it when the result buffer was occupied AND the pipeline head was
+    // ready. This accessor returns exactly that old condition so the interim
+    // gate mirrors pre-10B.0 behavior precisely: it neither over-gates (a
+    // result buffer occupied while the head still has cycles left does not
+    // block, as before) nor under-gates. Removed in 10B.3 with the others.
+    bool current_result_pending() const { return current_busy(); }
+
     void evaluate() override;
     void commit() override;
     void reset() override;

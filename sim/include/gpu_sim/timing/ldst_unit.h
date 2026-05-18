@@ -57,8 +57,34 @@ public:
     // state observed by coalescing during evaluate this cycle).
     const std::deque<AddrGenFIFOEntry>& current_fifo_entries() const { return addr_gen_fifo_; }
     // Size accessor for upstream issue-gate bookkeeping (consumed by the
-    // pipeline plan's Phase 10B.0 LDST FIFO accounting).
+    // pipeline plan's Phase 10B.0 LDST FIFO accounting). REGISTERED: reads the
+    // committed addr-gen FIFO, which only commit() mutates.
     uint32_t current_fifo_size() const { return static_cast<uint32_t>(addr_gen_fifo_.size()); }
+
+    // Phase 10B.0: the addr-gen FIFO's configured depth (SimConfig
+    // addr_gen_fifo_depth). Static after construction; the scheduler's LDST
+    // FIFO-occupancy gate uses it as the issue ceiling.
+    uint32_t current_fifo_capacity() const { return fifo_depth_; }
+
+    // Phase 10B.0: address-generation latency, ceil(WARP_SIZE / num_ldst_units)
+    // cycles. The addr-gen stage holds exactly one op at a time (a single
+    // next_busy_ flag — accept() unconditionally overwrites it), so it is an
+    // iterative structural hazard distinct from the addr-gen FIFO. The
+    // scheduler arms its unit_busy_[LDST] countdown with this value so two
+    // LDST ops are never issued closely enough for the second to clobber the
+    // first mid-address-generation. Static after construction.
+    uint32_t current_addr_gen_latency() const {
+        return (WARP_SIZE + num_ldst_units_ - 1) / num_ldst_units_;
+    }
+
+    // Phase 10B.0: REGISTERED monotonic count of ops ever pushed into the
+    // addr-gen FIFO, incremented at the commit-phase push (the same event
+    // current_fifo_size() reflects). The scheduler's LDST FIFO-occupancy gate
+    // computes the in-transit population as
+    // (ldst_issued_total_ - current_fifo_total_pushes()); see warp_scheduler.
+    // This is a REGISTERED, committed-state back-pressure read by the
+    // scheduler (upstream of LDST) — discipline-compliant.
+    uint32_t current_fifo_total_pushes() const { return fifo_total_pushes_; }
 
 private:
     uint32_t num_ldst_units_;
@@ -78,6 +104,11 @@ private:
     // evaluate see the start-of-cycle state.
     std::deque<AddrGenFIFOEntry> addr_gen_fifo_;
     std::optional<AddrGenFIFOEntry> next_push_;
+    // Phase 10B.0: REGISTERED monotonic push counter. Incremented in commit()
+    // on the cycle the staged next_push_ is applied — the same cycle the
+    // op becomes visible in addr_gen_fifo_. Never decremented; the scheduler's
+    // FIFO-occupancy gate uses it as a difference against ldst_issued_total_.
+    uint32_t fifo_total_pushes_ = 0;
 };
 
 } // namespace gpu_sim

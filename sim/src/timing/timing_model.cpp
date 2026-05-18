@@ -201,15 +201,21 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     // on each unit / opcoll / ldst / wb_arbiter.
     panic_->set_drained_query([this]() { return execution_units_drained(); });
 
-    // Phase 2 wiring: scheduler holds raw pointers to every cross-stage
-    // dependency (scoreboard, branch tracker, opcoll, units). evaluate()
-    // reads current_busy() / current_pending() / current_in_flight()
-    // through those pointers. Replaces the prior mixed reference/pointer
-    // shape and consolidates all post-construction wiring into a single
-    // setter call.
-    scheduler_->set_dependencies(&scoreboard_, &branch_tracker_,
-                                 opcoll_.get(), alu_.get(), mul_.get(), div_.get(),
-                                 tlookup_.get(), ldst_.get());
+    // Phase 10B.0 wiring: the scheduler holds raw pointers to the scoreboard,
+    // the branch tracker, the LdSt unit, and the four fixed-latency execution
+    // units. evaluate() reads current_pending() / current_in_flight() for
+    // issue hazards and the LdSt unit's REGISTERED FIFO-occupancy accessors
+    // for the LDST issue gate. The opcoll busy-poll pointer was removed: unit
+    // availability is now scheduler-side bookkeeping (unit_busy_ countdowns +
+    // the writeback bitmap). The ALU / MUL / DIV / TLOOKUP pointers are wired
+    // for ONE narrow purpose — the Phase 10B.0 interim writeback-result-buffer
+    // issue gate (human-approved deviation, removed in 10B.3): the scheduler
+    // reads each unit's current_result_pending() to avoid issuing into a unit
+    // whose committed result buffer is still occupied. This is NOT the removed
+    // busy-poll.
+    scheduler_->set_dependencies(&scoreboard_, &branch_tracker_, ldst_.get(),
+                                 alu_.get(), mul_.get(), div_.get(),
+                                 tlookup_.get());
 
     warp_trace_slices_.resize(config.num_warps);
     hardware_trace_slices_.resize(kHardwareTrackCount);

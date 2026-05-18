@@ -1224,12 +1224,11 @@ TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
 
     BranchShadowTracker branch_tracker;
     WarpScheduler scheduler(1, warps.data(), func_model, stats);
-    // Phase 2: scoreboard and branch_tracker now wired via
-    // set_dependencies(); opcoll/units null in this fixture so the
-    // scheduler defaults to "all ready".
-    scheduler.set_dependencies(&scoreboard, &branch_tracker,
-                               nullptr, nullptr, nullptr, nullptr,
-                               nullptr, nullptr);
+    // Phase 10B.0: scoreboard and branch_tracker wired via set_dependencies();
+    // the opcoll/unit busy-poll pointers were removed (the scheduler predicts
+    // unit availability from its own issue scoreboard). ldst null -> the LDST
+    // FIFO gate sees an empty FIFO.
+    scheduler.set_dependencies(&scoreboard, &branch_tracker, nullptr);
 
     // No fetch is running — buffer will not be refilled. Three evaluate()
     // cycles must each produce an ISSUED, and the fourth must report
@@ -1275,11 +1274,11 @@ TEST_CASE("Depth-1 buffer starves immediately after one issue under fetch stall"
 
     BranchShadowTracker branch_tracker;
     WarpScheduler scheduler(1, warps.data(), func_model, stats);
-    // Phase 2: scoreboard and branch_tracker now wired via
-    // set_dependencies(); opcoll/units null -> "all ready" default.
-    scheduler.set_dependencies(&scoreboard, &branch_tracker,
-                               nullptr, nullptr, nullptr, nullptr,
-                               nullptr, nullptr);
+    // Phase 10B.0: scoreboard and branch_tracker wired via
+    // set_dependencies(); the opcoll/unit busy-poll pointers were removed
+    // (the scheduler predicts unit availability from its own issue
+    // scoreboard). ldst null -> the LDST FIFO gate sees an empty FIFO.
+    scheduler.set_dependencies(&scoreboard, &branch_tracker, nullptr);
 
     scoreboard.seed_next();
     scheduler.evaluate();

@@ -22,10 +22,13 @@ public:
 
     // Back-pressure discipline (REGISTERED + back-pressure direction):
     // current_busy() is a const accessor reading only committed
-    // (current_busy_) state. WarpScheduler::evaluate() queries it during
-    // its own evaluate() this same tick; post-commit observers
-    // (pipeline_drained / execution_units_drained / trace_cycle / unit
-    // tests) call the same accessor.
+    // (current_busy_) state.
+    //
+    // Phase 10B.0: the WarpScheduler no longer reads this for issue gating —
+    // operand-collector availability is now predicted scheduler-side via the
+    // opcoll_cooldown_cycles_ countdown. current_busy() is retained for the
+    // panic-drain query (TimingModel::execution_units_drained) and post-commit
+    // observers (pipeline_drained / trace_cycle / unit tests).
     bool current_busy() const { return current_busy_; }
 
     void evaluate() override;

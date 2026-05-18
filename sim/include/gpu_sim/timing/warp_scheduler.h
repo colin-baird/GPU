@@ -12,15 +12,26 @@
 
 namespace gpu_sim {
 
-// Forward decls: scheduler holds non-owning pointers to the opcoll and the
-// five typed execution units so it can read each one's current_busy() directly,
-// replacing the Phase-3-era set_opcoll_free / set_unit_ready_fn setter pair.
-class OperandCollector;
+// Forward decls. The scheduler retains a non-owning pointer to LdStUnit so it
+// can read the REGISTERED FIFO-occupancy accessors (current_fifo_size /
+// current_fifo_total_pushes) for the LDST issue gate. Phase 10B.0 removed the
+// opcoll busy-poll pointer: unit availability is now predicted scheduler-side
+// from issue history (unit_busy_ countdowns + the writeback bitmap).
+//
+// The ALU / MUL / DIV / TLOOKUP pointers are retained for ONE narrow purpose
+// only — the Phase 10B.0 interim writeback-result-buffer issue gate (a
+// human-approved deviation, removed in 10B.3): the scheduler reads each unit's
+// current_result_pending() to avoid issuing into a unit whose committed
+// result buffer is still occupied by an unconsumed result. This is NOT the
+// removed busy-poll: it is the narrow current_result_buffer_.valid portion of
+// the old current_busy(), retained because 10B.0's bitmap+arbiter cannot yet
+// hold a load-preempted fixed-latency result. See current_result_pending()'s
+// rationale on each unit and the issue-gate comment in warp_scheduler.cpp.
+class LdStUnit;
 class ALUUnit;
 class MultiplyUnit;
 class DivideUnit;
 class TLookupUnit;
-class LdStUnit;
 
 struct IssueOutput {
     DecodedInstruction decoded;
@@ -60,47 +71,38 @@ public:
     // panic-cascade event rather than a state reset.
     void flush();
 
-    // Phase 2 wiring: TimingModel calls this once at construction with the
-    // scoreboard, branch tracker, opcoll, and the five typed execution
-    // units. Reference-typed dependencies (scoreboard_, branch_tracker_)
-    // were promoted to pointers in Phase 2 of the naming-and-access-
-    // discipline refactor so every cross-stage receiver field has a
-    // uniform raw-pointer shape (post-construction wiring, may be null
-    // in unit tests). evaluate() reads each consumer's current_busy()
-    // and the scoreboard/tracker via these wired pointers.
+    // Phase 10B.0 wiring: TimingModel calls this once at construction with the
+    // scoreboard, branch tracker, the LdSt unit, and the four fixed-latency
+    // execution units. The scoreboard and branch tracker drive issue hazards;
+    // the LdSt unit is read only through its REGISTERED FIFO-occupancy
+    // accessors for the LDST issue gate. The ALU / MUL / DIV / TLOOKUP units
+    // are read only through current_result_pending() for the interim
+    // writeback-result-buffer issue gate (human-approved deviation, removed in
+    // 10B.3 — see the forward-decl comment). All other unit-availability
+    // information is now scheduler-side bookkeeping (unit_busy_ /
+    // writeback_bitmap_), so the opcoll busy-poll pointer was removed.
+    // Pointers may be null in unit tests; null scoreboard/tracker => no
+    // hazard, null ldst => the LDST FIFO gate treats the FIFO as empty, null
+    // fixed-latency unit => the result-buffer gate treats it as not pending.
     void set_dependencies(Scoreboard* scoreboard,
                           BranchShadowTracker* branch_tracker,
-                          OperandCollector* opcoll, ALUUnit* alu,
-                          MultiplyUnit* mul, DivideUnit* div,
-                          TLookupUnit* tlookup, LdStUnit* ldst) {
-        scoreboard_ = scoreboard;
-        branch_tracker_ = branch_tracker;
-        opcoll_ = opcoll;
-        alu_ = alu;
-        mul_ = mul;
-        div_ = div;
-        tlookup_ = tlookup;
-        ldst_ = ldst;
-    }
+                          LdStUnit* ldst, ALUUnit* alu = nullptr,
+                          MultiplyUnit* mul = nullptr, DivideUnit* div = nullptr,
+                          TLookupUnit* tlookup = nullptr);
 
-    // Test hooks: explicit overrides for unit tests that exercise
-    // WarpScheduler without a real opcoll / execution-unit set. When set,
-    // they take precedence over the wired consumer's current_busy(). With
-    // neither override set and no consumers wired (default-constructed),
-    // the scheduler treats opcoll/unit as ready — matching the prior
-    // default behavior of test fixtures that never called the setters.
-    void set_opcoll_ready_override(std::optional<bool> ready) {
-        opcoll_ready_override_ = ready;
+    // Test hooks (Phase 10B.0). Unit tests exercise WarpScheduler without a
+    // real opcoll / execution-unit set, so they drive the issue scoreboard
+    // directly:
+    //  - test_set_unit_busy arms a unit's structural-hazard countdown; the
+    //    issue gate then blocks issue to that unit until it drains.
+    //  - test_reserve_writeback_slot claims a writeback-bitmap entry at
+    //    (bitmap_head_ + offset), so the gate refuses a fixed-latency op whose
+    //    predicted writeback cycle collides with the reservation.
+    void test_set_unit_busy(ExecUnit unit, uint32_t cycles) {
+        unit_busy_[exec_unit_index(unit)] = cycles;
     }
-    void set_unit_ready_override(ExecUnit unit, std::optional<bool> ready) {
-        switch (unit) {
-            case ExecUnit::ALU:      alu_ready_override_ = ready; break;
-            case ExecUnit::MULTIPLY: mul_ready_override_ = ready; break;
-            case ExecUnit::DIVIDE:   div_ready_override_ = ready; break;
-            case ExecUnit::TLOOKUP:  tlookup_ready_override_ = ready; break;
-            case ExecUnit::LDST:     ldst_ready_override_ = ready; break;
-            default: break;
-        }
+    void test_reserve_writeback_slot(ExecUnit unit, uint32_t offset) {
+        writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen] = unit;
     }
 
     std::optional<IssueOutput>& output() { return next_output_; }
@@ -112,8 +114,12 @@ public:
 private:
     bool is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const;
     static SchedulerIssueOutcome unit_busy_outcome(ExecUnit unit);
-    bool query_opcoll_ready() const;
-    bool query_unit_ready(ExecUnit unit) const;
+    // Phase 10B.0 interim writeback-result-buffer gate (human-approved
+    // deviation, removed in 10B.3). True when the target fixed-latency unit's
+    // committed result buffer still holds an unconsumed result; see the
+    // definition in warp_scheduler.cpp and current_result_pending() on each
+    // unit. Reads the wired alu_ / mul_ / div_ / tlookup_ pointers.
+    bool target_result_buffer_occupied(ExecUnit target) const;
 
     uint32_t num_warps_;
     WarpState* warps_;
@@ -122,25 +128,67 @@ private:
 
     uint32_t rr_pointer_ = 0;
 
-    // Wired by TimingModel via set_dependencies(). Tests that only
-    // construct a WarpScheduler may leave these null and rely on
-    // overrides (or the default "all ready" / "no scoreboard hazard"
-    // behavior).
+    // Wired by TimingModel via set_dependencies(). Tests that only construct a
+    // WarpScheduler may leave these null (no scoreboard/branch hazard; the
+    // LDST FIFO gate treats an absent ldst_ as an empty FIFO; the four
+    // fixed-latency unit pointers absent => the interim result-buffer gate
+    // treats them as not pending).
     Scoreboard* scoreboard_ = nullptr;
     BranchShadowTracker* branch_tracker_ = nullptr;
-    OperandCollector* opcoll_ = nullptr;
+    LdStUnit* ldst_ = nullptr;
+    // Phase 10B.0 interim writeback-result-buffer gate only (human-approved
+    // deviation, removed in 10B.3). Read exclusively via current_result_
+    // pending(); NOT the removed busy-poll. See the forward-decl comment.
     ALUUnit* alu_ = nullptr;
     MultiplyUnit* mul_ = nullptr;
     DivideUnit* div_ = nullptr;
     TLookupUnit* tlookup_ = nullptr;
-    LdStUnit* ldst_ = nullptr;
 
-    std::optional<bool> opcoll_ready_override_;
-    std::optional<bool> alu_ready_override_;
-    std::optional<bool> mul_ready_override_;
-    std::optional<bool> div_ready_override_;
-    std::optional<bool> tlookup_ready_override_;
-    std::optional<bool> ldst_ready_override_;
+    // ---- Phase 10B.0 issue scoreboard --------------------------------------
+    // Per-unit structural-hazard countdown. Set to the unit's iteration
+    // latency when an op is issued to it; decremented once per non-frozen
+    // cycle at the top of evaluate(); issue to that unit is blocked while > 0.
+    // DIVIDE and TLOOKUP use the compile-time kUnitIterationLatency table
+    // (fully-pipelined ALU / MULTIPLY have latency 0 and are never armed).
+    // LDST also uses this countdown: although LDST has no fixed compile-time
+    // latency (its addr-gen latency is the runtime ldst_iteration_latency_
+    // below), its address-generation stage holds exactly one op at a time —
+    // LdStUnit::accept() unconditionally overwrites next_pending_entry_, so
+    // issuing a second LDST op before the first leaves addr-gen would clobber
+    // an in-flight op. The countdown spaces consecutive LDST issues by the
+    // addr-gen latency to prevent that. (Pre-10B.0 this was enforced by the
+    // now-removed ldst->current_busy() poll; the FIFO-occupancy gate alone
+    // models FIFO capacity, not the single addr-gen slot.)
+    std::array<uint32_t, kExecUnitCount> unit_busy_{};
+
+    // LDST address-generation iteration latency, ceil(WARP_SIZE /
+    // num_ldst_units). Captured from the wired LdSt unit in set_dependencies()
+    // because it is a runtime-configured value (unlike DIVIDE / TLOOKUP whose
+    // latencies are compile-time constants in kUnitIterationLatency). 0 when no
+    // LdSt unit is wired (unit-test default) — LDST issue then has no addr-gen
+    // structural gate, matching the empty-FIFO default.
+    uint32_t ldst_iteration_latency_ = 0;
+
+    // Writeback-slot bitmap — the binding fixed-latency writeback schedule. A
+    // circular array; each occupied entry marks a near-future cycle on which a
+    // fixed-latency writeback is already promised. An issue reserves the entry
+    // at (bitmap_head_ + offset); the gate refuses any fixed-latency op whose
+    // predicted writeback cycle is already claimed. bitmap_head_ advances one
+    // slot per non-frozen cycle.
+    std::array<std::optional<ExecUnit>, kWritebackBitmapLen> writeback_bitmap_{};
+    uint32_t bitmap_head_ = 0;
+
+    // LDST FIFO-occupancy accounting: a scheduler-side monotonic count of ops
+    // ever issued to LDST. The in-transit population is the difference
+    // (ldst_issued_total_ - ldst_->current_fifo_total_pushes()).
+    uint32_t ldst_issued_total_ = 0;
+
+    // Interim operand-collector cooldown. The opcoll takes 2 cycles for VDOT8
+    // and 1 cycle for everything else; set on issue and decremented at the top
+    // of evaluate(). A cooldown of 1 (every non-VDOT8 op) clears by the next
+    // cycle and permits a fresh issue every cycle; a cooldown of 2 (VDOT8)
+    // blocks exactly one cycle. Drops out when opcoll becomes always-1-cycle.
+    uint32_t opcoll_cooldown_cycles_ = 0;
 
     std::optional<IssueOutput> current_output_;
     std::optional<IssueOutput> next_output_;

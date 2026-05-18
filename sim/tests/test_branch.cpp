@@ -251,13 +251,11 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     WarpScheduler scheduler(1, warps.data(), func_model, stats);
     // Phase 2: scoreboard and branch_tracker now arrive via
     // set_dependencies() (post-construction pointer wiring) instead of
-    // through the constructor. With opcoll/units left null, the scheduler
-    // defaults to "all ready" — matching the prior behavior of these
-    // explicit setters. Overrides remain available if a test wants to
-    // gate ALU/opcoll explicitly.
-    scheduler.set_dependencies(&scoreboard, &branch_tracker,
-                               nullptr, nullptr, nullptr, nullptr,
-                               nullptr, nullptr);
+    // through the constructor. Phase 10B.0: the opcoll / unit busy-poll
+    // pointers were removed; the scheduler now predicts unit availability
+    // from its own issue scoreboard. ldst is left null (the LDST FIFO gate
+    // treats an absent ldst as an empty FIFO).
+    scheduler.set_dependencies(&scoreboard, &branch_tracker, nullptr);
 
     scoreboard.seed_next();
     branch_tracker.seed_next();

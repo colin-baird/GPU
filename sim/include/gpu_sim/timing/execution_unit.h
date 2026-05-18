@@ -2,10 +2,96 @@
 
 #include "gpu_sim/types.h"
 #include "gpu_sim/trace_event.h"
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <deque>
 
 namespace gpu_sim {
+
+// ---------------------------------------------------------------------------
+// Phase 10B.0 — scheduler issue-scoreboard constants.
+//
+// `ExecUnit` (in types.h) has no COUNT sentinel; the tables below are indexed
+// by the enum value of the six real units (ALU..SYSTEM, excluding NONE), so
+// the count is fixed here. Enum order is ALU, MULTIPLY, DIVIDE, LDST, TLOOKUP,
+// SYSTEM, NONE — note LDST precedes TLOOKUP, so the table initializers below
+// must follow that order.
+constexpr uint32_t kExecUnitCount = 6;  // ALU..SYSTEM
+
+// Fixed iteration / pipeline latencies. DIVIDE and TLOOKUP are iterative units
+// (a single busy flag + countdown — see divide_unit.h / tlookup_unit.h); their
+// latencies are the single source of truth here and the units reference these
+// constants. MULTIPLY is a fully-pipelined unit whose depth is the SimConfig
+// field `multiply_pipeline_stages` (default 3). The compile-time
+// kMulPipelineStages constant is the canonical depth the scheduler's writeback
+// bitmap is sized against; the runtime MultiplyUnit still honors its config
+// field. A config that overrode multiply_pipeline_stages above this value
+// would need a wider bitmap — not exercised by any current config/test.
+constexpr uint32_t kDivideLatency = 32;
+constexpr uint32_t kTlookupLatency = 17;
+constexpr uint32_t kMulPipelineStages = 3;
+
+inline constexpr uint32_t exec_unit_index(ExecUnit u) {
+    return static_cast<uint32_t>(u);
+}
+
+// Per-unit structural-hazard iteration latency. 0 => fully pipelined (no
+// structural input gate — issue limited only by the writeback bitmap). >0 =>
+// iterative: the unit cannot accept a new op for this many cycles after an
+// issue to it. Confirmed against the unit sources at Phase 10B.0: ALUUnit and
+// MultiplyUnit accept() unconditionally (one op/cycle, fully pipelined);
+// DivideUnit and TLookupUnit carry a single busy flag the next accept() would
+// clobber, so they are iterative.
+constexpr std::array<uint32_t, kExecUnitCount> kUnitIterationLatency = [] {
+    std::array<uint32_t, kExecUnitCount> t{};
+    t[exec_unit_index(ExecUnit::ALU)]      = 0;                // fully pipelined
+    t[exec_unit_index(ExecUnit::MULTIPLY)] = 0;                // fully pipelined
+    t[exec_unit_index(ExecUnit::DIVIDE)]   = kDivideLatency;   // iterative
+    t[exec_unit_index(ExecUnit::LDST)]     = 0;                // FIFO accounting
+    t[exec_unit_index(ExecUnit::TLOOKUP)]  = kTlookupLatency;  // sequential
+    t[exec_unit_index(ExecUnit::SYSTEM)]   = 0;                // no fixed unit
+    return t;
+}();
+
+// Issue -> writeback distance per unit, in cycles. 10B.0 land state: the
+// forward path scheduler->opcoll->dispatch->unit->arbiter is still fully
+// combinational (all within one tick), so the offsets reflect only the unit's
+// own internal pipeline depth. Each of 10B.1/10B.2/10B.3 adds 1 to every
+// fixed-latency entry as that substep converts an edge to REGISTERED.
+constexpr std::array<uint32_t, kExecUnitCount> kIssueToWritebackOffset = [] {
+    std::array<uint32_t, kExecUnitCount> t{};
+    t[exec_unit_index(ExecUnit::ALU)]      = 0;                      // same tick today
+    t[exec_unit_index(ExecUnit::MULTIPLY)] = kMulPipelineStages - 1; // 2
+    t[exec_unit_index(ExecUnit::DIVIDE)]   = kDivideLatency - 1;     // 31
+    t[exec_unit_index(ExecUnit::LDST)]     = 0;                      // never reserves
+    t[exec_unit_index(ExecUnit::TLOOKUP)]  = kTlookupLatency - 1;    // 16
+    t[exec_unit_index(ExecUnit::SYSTEM)]   = 0;                      // no writeback
+    return t;
+}();
+
+// Length of the circular writeback-slot bitmap. Strictly greater than the
+// largest issue->writeback offset so a max-offset reservation never aliases
+// bitmap_head_ itself (the slot cleared this cycle). VDOT8 spends an extra
+// opcoll cycle, so MULTIPLY's effective offset is one larger — accounted here.
+constexpr uint32_t kWritebackBitmapLen =
+    1 + std::max({kIssueToWritebackOffset[exec_unit_index(ExecUnit::ALU)],
+                  kIssueToWritebackOffset[exec_unit_index(ExecUnit::MULTIPLY)] + 1,
+                  kIssueToWritebackOffset[exec_unit_index(ExecUnit::DIVIDE)],
+                  kIssueToWritebackOffset[exec_unit_index(ExecUnit::TLOOKUP)]});
+
+// Per-issue issue->writeback offset. VDOT8 targets MULTIPLY but spends 2 cycles
+// in the operand collector instead of 1, so its writeback lands one cycle
+// later than a plain MUL — add 1 to MULTIPLY's table value. is_vdot8 is
+// derived at the issue site from the decoded instruction (num_src_regs == 3).
+inline constexpr uint32_t compute_issue_to_writeback_offset(ExecUnit unit,
+                                                            bool is_vdot8) {
+    uint32_t offset = kIssueToWritebackOffset[exec_unit_index(unit)];
+    if (unit == ExecUnit::MULTIPLY && is_vdot8) {
+        offset += 1;
+    }
+    return offset;
+}
 
 struct WritebackEntry {
     bool valid = false;
@@ -40,10 +126,13 @@ public:
     // Back-pressure discipline (REGISTERED + back-pressure direction):
     // current_busy() is a const accessor that reads only the unit's own
     // committed (current_*) state and returns true when the unit cannot
-    // accept more work this cycle. The scheduler queries it during
-    // evaluate() to decide whether dispatch is permitted this cycle;
-    // post-commit drain checks (TimingModel::execution_units_drained) read
-    // the same accessor. ExecutionUnit is a separate hierarchy from
+    // accept more work this cycle.
+    //
+    // Phase 10B.0: the WarpScheduler no longer polls current_busy() for issue
+    // gating — it predicts unit availability scheduler-side (the unit_busy_
+    // countdowns + the writeback bitmap). current_busy() is retained for the
+    // panic-drain query (TimingModel::execution_units_drained) and unit tests.
+    // ExecutionUnit is a separate hierarchy from
     // PipelineStage (units produce results consumed by WritebackArbiter
     // rather than participating in the unified evaluate/commit fan-in),
     // but both hierarchies share the discipline. See

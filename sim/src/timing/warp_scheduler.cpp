@@ -1,11 +1,10 @@
 #include "gpu_sim/timing/warp_scheduler.h"
 
-#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/ldst_unit.h"
 #include "gpu_sim/timing/alu_unit.h"
 #include "gpu_sim/timing/multiply_unit.h"
 #include "gpu_sim/timing/divide_unit.h"
 #include "gpu_sim/timing/tlookup_unit.h"
-#include "gpu_sim/timing/ldst_unit.h"
 
 namespace gpu_sim {
 
@@ -25,6 +24,53 @@ WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
     : num_warps_(num_warps), warps_(warps),
       func_model_(func_model), stats_(stats) {}
 
+void WarpScheduler::set_dependencies(Scoreboard* scoreboard,
+                                     BranchShadowTracker* branch_tracker,
+                                     LdStUnit* ldst, ALUUnit* alu,
+                                     MultiplyUnit* mul, DivideUnit* div,
+                                     TLookupUnit* tlookup) {
+    scoreboard_ = scoreboard;
+    branch_tracker_ = branch_tracker;
+    ldst_ = ldst;
+    alu_ = alu;
+    mul_ = mul;
+    div_ = div;
+    tlookup_ = tlookup;
+    // Capture the LDST addr-gen iteration latency (runtime-configured value;
+    // see warp_scheduler.h). Defined here rather than inline in the header so
+    // LdStUnit stays an incomplete type at the header.
+    ldst_iteration_latency_ = ldst_ ? ldst_->current_addr_gen_latency() : 0;
+}
+
+// Phase 10B.0 interim writeback-result-buffer gate (human-approved deviation,
+// removed in 10B.3). Returns true when the target fixed-latency unit's
+// committed result buffer is still occupied by an unconsumed result — issuing
+// a new op into it would let the unit's next-cycle evaluate() overwrite that
+// result (ALU/DIV/TLOOKUP) or stall its pipeline (MUL). The narrow
+// current_result_buffer_.valid portion of the old current_busy(). LDST/SYSTEM
+// produce no fixed-latency writeback and are never gated here.
+//
+// A member function (not a free function) so each unit->scheduler
+// current_result_pending() read has a statically resolvable receiver field
+// (alu_ / mul_ / div_ / tlookup_) — the libclang AST extractor in
+// tools/diagram_extract_ast.py attributes the cross-stage edge correctly, the
+// same reason the 10A-era query_unit_ready() was inlined per-case rather than
+// hidden behind a pointer-parameter lambda.
+bool WarpScheduler::target_result_buffer_occupied(ExecUnit target) const {
+    switch (target) {
+        case ExecUnit::ALU:
+            return alu_ != nullptr && alu_->current_result_pending();
+        case ExecUnit::MULTIPLY:
+            return mul_ != nullptr && mul_->current_result_pending();
+        case ExecUnit::DIVIDE:
+            return div_ != nullptr && div_->current_result_pending();
+        case ExecUnit::TLOOKUP:
+            return tlookup_ != nullptr && tlookup_->current_result_pending();
+        default:
+            return false;
+    }
+}
+
 bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const {
     // No scoreboard wired (unit-test default): no register hazards.
     if (scoreboard_ == nullptr) return true;
@@ -35,49 +81,28 @@ bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d
     return true;
 }
 
-bool WarpScheduler::query_opcoll_ready() const {
-    // REGISTERED back-pressure: prefer test override, then wired opcoll's
-    // current_busy() (a const accessor over committed state) during
-    // scheduler.evaluate() in TimingModel::tick(). Fallback for tests that
-    // wire neither: free.
-    if (opcoll_ready_override_) return *opcoll_ready_override_;
-    if (opcoll_) return !opcoll_->current_busy();
-    return true;
-}
-
-bool WarpScheduler::query_unit_ready(ExecUnit unit) const {
-    // Phase 3 of the naming-and-access-discipline refactor: the
-    // override-fallback triple was previously hidden behind a lambda
-    // parameterized over `(override, ExecutionUnit*)`. Inlining each case
-    // makes the cross-stage current_busy() read statically resolvable to
-    // its receiver class, which the libclang AST extractor in
-    // tools/diagram_extract_ast.py can attribute correctly.
-    switch (unit) {
-        case ExecUnit::ALU:
-            if (alu_ready_override_) return *alu_ready_override_;
-            return alu_ ? !alu_->current_busy() : true;
-        case ExecUnit::MULTIPLY:
-            if (mul_ready_override_) return *mul_ready_override_;
-            return mul_ ? !mul_->current_busy() : true;
-        case ExecUnit::DIVIDE:
-            if (div_ready_override_) return *div_ready_override_;
-            return div_ ? !div_->current_busy() : true;
-        case ExecUnit::TLOOKUP:
-            if (tlookup_ready_override_) return *tlookup_ready_override_;
-            return tlookup_ ? !tlookup_->current_busy() : true;
-        case ExecUnit::LDST:
-            if (ldst_ready_override_) return *ldst_ready_override_;
-            return ldst_ ? !ldst_->current_busy() : true;
-        case ExecUnit::SYSTEM:
-            return true;
-        default:
-            return false;
-    }
-}
-
 void WarpScheduler::evaluate() {
     next_output_ = std::nullopt;
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+
+    // ---- Top-of-evaluate issue-scoreboard bookkeeping ----------------------
+    // Phase 10B.0: the scheduler predicts unit availability from issue history
+    // rather than polling its consumers. This bookkeeping runs once per cycle,
+    // before the issue gate reads any of it, so a value set on issue at cycle
+    // N is checked one lower at N+1 (the decrement-then-check ordering that
+    // makes the countdowns exact).
+    //
+    // 10B.3 will add a writeback-stall freeze guard here: on a stalled cycle
+    // the scheduler early-returns at the top so bitmap_head_ does not advance
+    // and no issue bookkeeping moves — the schedule simply pauses for a cycle.
+    writeback_bitmap_[bitmap_head_] = std::nullopt;   // reserved cycle elapsed
+    bitmap_head_ = (bitmap_head_ + 1) % kWritebackBitmapLen;
+    for (auto& b : unit_busy_) {
+        if (b > 0) --b;                                // DIVIDE / TLOOKUP only
+    }
+    if (opcoll_cooldown_cycles_ > 0) {
+        --opcoll_cooldown_cycles_;
+    }
 
     bool issued = false;
     bool any_buffer_empty = false;
@@ -85,11 +110,6 @@ void WarpScheduler::evaluate() {
     uint32_t selected_warp = 0;
     BufferEntry selected_entry{};
     bool has_selected_entry = false;
-
-    // Phase 4 READY/STALL: query opcoll once per evaluate. ready_out() reads
-    // only committed (current_busy_) state, so the value is stable for the
-    // entire cycle and does not require a separate pre-pass.
-    const bool opcoll_ready = query_opcoll_ready();
 
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
@@ -118,22 +138,110 @@ void WarpScheduler::evaluate() {
         }
 
         const auto& entry = warps_[w].instr_buffer.front();
+        const DecodedInstruction& decoded = entry.decoded;
 
-        if (!is_scoreboard_clear(w, entry.decoded)) {
+        if (!is_scoreboard_clear(w, decoded)) {
             stats_.warp_stall_scoreboard[w]++;
             next_diagnostics_[w] = SchedulerIssueOutcome::SCOREBOARD;
             continue;
         }
 
-        if (!opcoll_ready) {
-            stats_.warp_stall_unit_busy[w]++;
-            next_diagnostics_[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
-            continue;
+        // Phase 10B.0 combined issue gate ------------------------------------
+        const ExecUnit target = decoded.target_unit;
+        const bool is_vdot8   = (decoded.num_src_regs == 3);
+        const bool writes_back = decoded.has_rd && decoded.rd != 0;
+        // offset is read by both the bitmap conflict check and the reservation
+        // at issue. Harmless for LDST / SYSTEM (offset 0, never reserve).
+        const uint32_t offset = compute_issue_to_writeback_offset(target, is_vdot8);
+
+        if (target == ExecUnit::LDST) {
+            // (1) Addr-gen structural hazard. LdStUnit's address-generation
+            // stage holds one op at a time and accept() unconditionally
+            // overwrites it, so consecutive LDST issues must be spaced by the
+            // addr-gen latency or the second clobbers an in-flight op. The
+            // unit_busy_[LDST] countdown enforces that spacing.
+            if (unit_busy_[exec_unit_index(ExecUnit::LDST)] > 0) {
+                stats_.warp_stall_unit_busy[w]++;
+                stats_.scheduler_unit_busy_stall_cycles[
+                    exec_unit_index(ExecUnit::LDST)]++;
+                next_diagnostics_[w] = SchedulerIssueOutcome::UNIT_BUSY_LDST;
+                continue;
+            }
+            // (2) FIFO-occupancy accounting: the in-transit population is the
+            // difference of two monotonic counters. (issued - pushed) is the
+            // count issued to LDST but not yet in the addr-gen FIFO; adding
+            // the current FIFO depth gives the exact count of ops that will
+            // occupy a FIFO slot. ldst_ may be null in unit tests => treat the
+            // FIFO and the push counter as empty.
+            const uint32_t fifo_size =
+                ldst_ ? ldst_->current_fifo_size() : 0;
+            const uint32_t fifo_pushes =
+                ldst_ ? ldst_->current_fifo_total_pushes() : 0;
+            const uint32_t fifo_depth =
+                ldst_ ? ldst_->current_fifo_capacity() : 0;
+            const uint32_t in_flight = ldst_issued_total_ - fifo_pushes;
+            if (fifo_depth != 0 && fifo_size + in_flight + 1 > fifo_depth) {
+                stats_.warp_stall_unit_busy[w]++;
+                stats_.scheduler_ldst_fifo_full_stall_cycles++;
+                next_diagnostics_[w] = SchedulerIssueOutcome::UNIT_BUSY_LDST;
+                continue;
+            }
+        } else {
+            // Structural hazard: kUnitIterationLatency is 0 for the fully-
+            // pipelined ALU / MULTIPLY, so this never blocks them; armed only
+            // for the iterative DIVIDE / TLOOKUP.
+            if (unit_busy_[exec_unit_index(target)] > 0) {
+                stats_.warp_stall_unit_busy[w]++;
+                stats_.scheduler_unit_busy_stall_cycles[exec_unit_index(target)]++;
+                next_diagnostics_[w] = unit_busy_outcome(target);
+                continue;
+            }
+            // Phase 10B.0 INTERIM writeback-result-buffer gate (DELIBERATE,
+            // HUMAN-APPROVED DEVIATION from the plan — removed in 10B.3).
+            // The plan's 10B.0 drops the scheduler's current_busy() poll, but
+            // that poll was doing double duty: structural-input hazard (now
+            // the unit_busy_/bitmap bookkeeping) AND "committed result buffer
+            // still occupied". The bitmap only prevents fixed-vs-fixed
+            // collisions at issue; the 10B.0 arbiter is still round-robin and
+            // ignores the bitmap, so a load can preempt a fixed-latency
+            // writeback and leave an unconsumed result that the unit's next
+            // evaluate() would clobber (ALU/DIV/TLOOKUP overwrite next_result_
+            // buffer_) -> lost writeback -> scoreboard destination never
+            // cleared -> dependent warps deadlock. Until 10B.3's fixed-
+            // priority arbiter + combinational-backward writeback stall holds
+            // a preempted result, the scheduler must not issue into a unit
+            // whose committed result buffer is still occupied. This is the
+            // narrow current_result_buffer_.valid portion of the old
+            // current_busy() — a backward committed-state back-pressure read,
+            // discipline-compliant. It is unit-level (not gated on
+            // writes_back): even a non-writeback ALU op deposits a result-
+            // buffer entry the arbiter must drain. Removed in 10B.3; Phase
+            // 10F's doc sweep records the deviation.
+            if (target_result_buffer_occupied(target)) {
+                stats_.warp_stall_unit_busy[w]++;
+                stats_.scheduler_unit_busy_stall_cycles[exec_unit_index(target)]++;
+                next_diagnostics_[w] = unit_busy_outcome(target);
+                continue;
+            }
+            // Writeback-port hazard: only instructions that write back reserve
+            // a slot, so only they can collide.
+            if (writes_back &&
+                writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen]) {
+                stats_.warp_stall_unit_busy[w]++;
+                stats_.scheduler_writeback_contention_stall_cycles[
+                    exec_unit_index(target)]++;
+                next_diagnostics_[w] = unit_busy_outcome(target);
+                continue;
+            }
         }
 
-        if (!query_unit_ready(entry.decoded.target_unit)) {
+        // Interim operand-collector cooldown — a global single-resource gate
+        // (the opcoll is shared by every issue). Drops when opcoll becomes
+        // always-1-cycle. Checked after the per-target gates so the per-unit
+        // diagnostics above stay precise.
+        if (opcoll_cooldown_cycles_ > 0) {
             stats_.warp_stall_unit_busy[w]++;
-            next_diagnostics_[w] = unit_busy_outcome(entry.decoded.target_unit);
+            next_diagnostics_[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
             continue;
         }
 
@@ -163,9 +271,40 @@ void WarpScheduler::evaluate() {
         next_output_ = out;
 
         warps_[selected_warp].instr_buffer.pop();
-        if (scoreboard_ != nullptr &&
-            selected_entry.decoded.has_rd && selected_entry.decoded.rd != 0) {
-            scoreboard_->set_pending(selected_warp, selected_entry.decoded.rd);
+
+        // ---- Issue-side bookkeeping for the selected warp ------------------
+        const DecodedInstruction& d = selected_entry.decoded;
+        const ExecUnit target = d.target_unit;
+        const bool is_vdot8   = (d.num_src_regs == 3);
+        const bool writes_back = d.has_rd && d.rd != 0;
+        const uint32_t offset = compute_issue_to_writeback_offset(target, is_vdot8);
+
+        if (target == ExecUnit::LDST) {
+            // LDST reserves no writeback-bitmap slot (variable latency: loads
+            // retire via the gather buffer). Advance the issued-total for the
+            // FIFO-occupancy gate, and arm the addr-gen structural countdown
+            // so the next LDST issue cannot clobber this op mid-addr-gen.
+            ldst_issued_total_++;
+            if (ldst_iteration_latency_ > 0) {
+                unit_busy_[exec_unit_index(ExecUnit::LDST)] =
+                    ldst_iteration_latency_;
+            }
+        } else {
+            // Arm the structural-hazard countdown for iterative units.
+            if (kUnitIterationLatency[exec_unit_index(target)] > 0) {
+                unit_busy_[exec_unit_index(target)] =
+                    kUnitIterationLatency[exec_unit_index(target)];
+            }
+            // Reserve the writeback slot for fixed-latency ops that write back.
+            if (writes_back) {
+                writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen] =
+                    target;
+            }
+        }
+        opcoll_cooldown_cycles_ = is_vdot8 ? 2 : 1;
+
+        if (scoreboard_ != nullptr && writes_back) {
+            scoreboard_->set_pending(selected_warp, d.rd);
         }
 
         next_diagnostics_[selected_warp] = SchedulerIssueOutcome::ISSUED;
@@ -173,9 +312,9 @@ void WarpScheduler::evaluate() {
         stats_.warp_instructions[selected_warp]++;
 
         if (branch_tracker_ != nullptr &&
-            (selected_entry.decoded.type == InstructionType::BRANCH ||
-             selected_entry.decoded.type == InstructionType::JAL ||
-             selected_entry.decoded.type == InstructionType::JALR)) {
+            (d.type == InstructionType::BRANCH ||
+             d.type == InstructionType::JAL ||
+             d.type == InstructionType::JALR)) {
             // Phase 5 REGISTERED: write into next_; visible to scheduler via
             // current_ after commit() flips at end of cycle.
             branch_tracker_->note_branch_issued(selected_warp);
@@ -197,6 +336,14 @@ void WarpScheduler::reset() {
     next_output_ = std::nullopt;
     current_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+    // Phase 10B.0 issue scoreboard. ldst_issued_total_ is cleared in lockstep
+    // with LdStUnit::reset()'s fifo_total_pushes_ (both run in the panic-flush
+    // cascade) so the (issued - pushed) difference restarts at zero.
+    unit_busy_.fill(0);
+    writeback_bitmap_.fill(std::nullopt);
+    bitmap_head_ = 0;
+    ldst_issued_total_ = 0;
+    opcoll_cooldown_cycles_ = 0;
 }
 
 void WarpScheduler::flush() {

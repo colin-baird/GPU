@@ -28,6 +28,19 @@ struct Stats {
     uint64_t scheduler_idle_cycles = 0;
     uint64_t scheduler_frontend_stall_cycles = 0;  // idle: ≥1 active warp has empty buffer
     uint64_t scheduler_stall_backend_cycles = 0;   // idle: all active warps have instructions but can't issue
+
+    // Phase 10B.0 issue-scoreboard stall reasons. These give finer-grained
+    // breakdowns of the warp_stall_unit_busy[] family above. Indexed by the
+    // six real ExecUnit values (ALU..SYSTEM); the SYSTEM slot stays zero.
+    //   - unit_busy: issue blocked because a non-pipelined unit (DIVIDE /
+    //     TLOOKUP) is still occupied by an iterative op (unit_busy_[u] > 0).
+    //   - writeback_contention: issue blocked because the predicted writeback
+    //     cycle is already claimed in the writeback bitmap (the scheduler
+    //     proactively avoided a fixed-vs-fixed writeback collision).
+    //   - ldst_fifo_full: an LDST issue blocked by FIFO-occupancy accounting.
+    std::array<uint64_t, 6> scheduler_unit_busy_stall_cycles{};
+    std::array<uint64_t, 6> scheduler_writeback_contention_stall_cycles{};
+    uint64_t scheduler_ldst_fifo_full_stall_cycles = 0;
     uint64_t operand_collector_busy_cycles = 0;
     uint64_t branch_predictions = 0;
     uint64_t branch_mispredictions = 0;

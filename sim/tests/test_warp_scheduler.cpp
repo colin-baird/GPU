@@ -30,6 +30,19 @@ static uint32_t encode_vdot8(uint32_t rd, uint32_t rs1, uint32_t rs2) {
            (rd << 7) | isa::OP_VDOT8;
 }
 
+// R-type encoder (used for the M-extension ops below).
+static uint32_t r_type(uint32_t funct7, uint32_t rs2, uint32_t rs1,
+                       uint32_t funct3, uint32_t rd, uint32_t opcode) {
+    return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) |
+           (funct3 << 12) | (rd << 7) | opcode;
+}
+
+// DIV rd, rs1, rs2 — targets the iterative DivideUnit.
+static uint32_t encode_div(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+    return r_type(isa::FUNCT7_MULDIV, rs2, rs1, isa::FUNCT3_DIV, rd,
+                  isa::OP_ALU_R);
+}
+
 struct SchedulerFixture {
     SimConfig config;
     FunctionalModel func_model;
@@ -52,15 +65,15 @@ struct SchedulerFixture {
 
         scheduler = std::make_unique<WarpScheduler>(
             num_warps, warps.data(), func_model, stats);
-        // Phase 2: scoreboard and branch_tracker are now wired via
-        // set_dependencies() (post-construction pointer wiring) instead of
-        // through the constructor. opcoll/unit pointers stay null in this
-        // fixture; tests that need to gate opcoll or a specific unit busy
-        // use the override hooks (set_opcoll_ready_override /
-        // set_unit_ready_override) below.
-        scheduler->set_dependencies(&scoreboard, &branch_tracker,
-                                    nullptr, nullptr, nullptr, nullptr,
-                                    nullptr, nullptr);
+        // Phase 10B.0: scoreboard and branch_tracker wired via
+        // set_dependencies(). The opcoll / unit busy-poll pointers were
+        // removed — the scheduler predicts unit availability from its own
+        // issue scoreboard (unit_busy_ countdowns + the writeback bitmap).
+        // ldst stays null (the LDST FIFO gate sees an empty FIFO). Tests
+        // that need to gate a specific unit busy or a writeback slot drive
+        // the scoreboard directly via test_set_unit_busy() /
+        // test_reserve_writeback_slot().
+        scheduler->set_dependencies(&scoreboard, &branch_tracker, nullptr);
     }
 
     // Push a decoded instruction into a warp's buffer
@@ -138,29 +151,52 @@ TEST_CASE("WarpScheduler: VDOT8 checks rd as a source hazard", "[scheduler]") {
     REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
 }
 
-TEST_CASE("WarpScheduler: stalls when opcoll busy", "[scheduler]") {
+TEST_CASE("WarpScheduler: stalls on writeback-bitmap contention", "[scheduler]") {
+    // Phase 10B.0: the scheduler refuses to issue a fixed-latency op whose
+    // predicted writeback cycle is already claimed in the bitmap. Reserve the
+    // ALU writeback slot for this cycle's issue, then verify a writing ALU op
+    // cannot issue (its offset-0 reservation collides).
     SchedulerFixture f(1);
-    f.load_and_push(0, 0, encode_addi(5, 0, 42));
+    f.load_and_push(0, 0, encode_addi(5, 0, 42)); // ALU op, writes x5
 
-    f.scoreboard.seed_next();
-    f.scheduler->set_opcoll_ready_override(false); // OpColl is busy
-    f.scheduler->evaluate();
-
-    // Should not issue
-    REQUIRE_FALSE(f.scheduler->output().has_value());
-}
-
-TEST_CASE("WarpScheduler: stalls when target unit busy", "[scheduler]") {
-    SchedulerFixture f(1);
-    f.load_and_push(0, 0, encode_addi(5, 0, 42));
-
-    f.scheduler->set_unit_ready_override(ExecUnit::ALU, false); // ALU not ready
+    // test_reserve_writeback_slot stamps writeback_bitmap_[head + offset]
+    // pre-evaluate. evaluate() first clears the old head and advances
+    // bitmap_head_ by 1, then the gate checks writeback_bitmap_[head + 0]
+    // for an offset-0 ALU op. Reserving at offset 1 here lands exactly on
+    // the post-advance head, so the gate sees the collision.
+    f.scheduler->test_reserve_writeback_slot(ExecUnit::ALU, 1);
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
 
     REQUIRE_FALSE(f.scheduler->output().has_value());
     REQUIRE(f.stats.warp_stall_unit_busy[0] == 1);
+    REQUIRE(f.stats.scheduler_writeback_contention_stall_cycles[
+                static_cast<size_t>(ExecUnit::ALU)] == 1);
+}
+
+TEST_CASE("WarpScheduler: stalls when iterative target unit busy", "[scheduler]") {
+    // Phase 10B.0: an iterative unit (DIVIDE) occupied by an in-flight op
+    // cannot accept a new one. The structural-hazard countdown unit_busy_
+    // models this; arm it directly via the test hook.
+    SchedulerFixture f(1);
+    f.load_and_push(0, 0, encode_div(5, 1, 2)); // DIV -> DivideUnit
+
+    // Arm the DIVIDE countdown. evaluate() decrements it once at the top, so
+    // arm with 2 to leave it at 1 (still > 0) when the gate reads it.
+    f.scheduler->test_set_unit_busy(ExecUnit::DIVIDE, 2);
+
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+
+    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE(f.stats.warp_stall_unit_busy[0] == 1);
+    REQUIRE(f.stats.scheduler_unit_busy_stall_cycles[
+                static_cast<size_t>(ExecUnit::DIVIDE)] == 1);
+
+    f.scheduler->commit();
+    REQUIRE(f.scheduler->current_diagnostics()[0]
+            == SchedulerIssueOutcome::UNIT_BUSY_DIVIDE);
 }
 
 TEST_CASE("WarpScheduler: round-robin fairness across warps", "[scheduler]") {
@@ -275,4 +311,38 @@ TEST_CASE("WarpScheduler: scoreboard-stalled warp becomes eligible next cycle wh
     REQUIRE(f.scheduler->current_output()->warp_id == 0);
     REQUIRE(f.scheduler->current_diagnostics()[0] == SchedulerIssueOutcome::ISSUED);
     REQUIRE(f.stats.total_instructions_issued == 1);
+}
+
+TEST_CASE("WarpScheduler: fully-pipelined ALU issues one op per cycle",
+          "[scheduler][timing]") {
+    // Phase 10B.0 regression: ALU is a fully-pipelined unit
+    // (kUnitIterationLatency[ALU] == 0), so it has no structural input gate —
+    // its only issue limiter is the writeback bitmap, which advances one slot
+    // per cycle and therefore frees a fresh offset-0 entry every cycle. A
+    // bookkeeping bug that armed unit_busy_ for ALU, or that failed to clear
+    // the elapsed bitmap slot, would cap ALU throughput below 1/cycle. This
+    // pins the back-to-back-issue property that the removed busy poll
+    // (which never blocked the fully-pipelined ALU) used to guarantee.
+    SchedulerFixture f(1);
+    constexpr int kCount = 8;
+
+    // The fixture's instruction buffer is depth 2, so refill one entry per
+    // cycle (modeling a steady frontend) rather than front-loading all 8.
+    for (int i = 0; i < kCount; ++i) {
+        f.load_and_push(0, static_cast<uint32_t>(i * 4),
+                        encode_addi(static_cast<uint32_t>(5 + i), 0, i + 1));
+
+        f.scoreboard.seed_next();
+        f.scheduler->evaluate();
+        f.scheduler->commit();
+        // Writeback clears the destination next cycle in the real machine; in
+        // isolation, clear it here so the scoreboard never blocks the next op.
+        f.scoreboard.seed_next();
+        f.scoreboard.clear_pending(0, static_cast<RegIndex>(5 + i));
+        f.scoreboard.commit();
+        REQUIRE(f.scheduler->current_output().has_value());
+        REQUIRE(f.scheduler->current_diagnostics()[0]
+                == SchedulerIssueOutcome::ISSUED);
+    }
+    REQUIRE(f.stats.total_instructions_issued == kCount);
 }

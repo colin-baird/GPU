@@ -33,6 +33,17 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "Scheduler idle cycles:     " << scheduler_idle_cycles << "\n";
     out << "  Frontend stall:          " << scheduler_frontend_stall_cycles << "\n";
     out << "  Backend stall:           " << scheduler_stall_backend_cycles << "\n";
+    {
+        uint64_t unit_busy_total = 0;
+        uint64_t wb_contention_total = 0;
+        for (size_t u = 0; u < scheduler_unit_busy_stall_cycles.size(); ++u) {
+            unit_busy_total += scheduler_unit_busy_stall_cycles[u];
+            wb_contention_total += scheduler_writeback_contention_stall_cycles[u];
+        }
+        out << "  Unit-busy stall:         " << unit_busy_total << "\n";
+        out << "  Writeback-contention:    " << wb_contention_total << "\n";
+        out << "  LDST FIFO-full stall:    " << scheduler_ldst_fifo_full_stall_cycles << "\n";
+    }
     out << "Operand collector busy:    " << operand_collector_busy_cycles << "\n";
     out << "Branch predictions:        " << branch_predictions << "\n";
     out << "Branch mispredictions:     " << branch_mispredictions << "\n";
@@ -116,6 +127,23 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"branch_predictions\": " << branch_predictions << ",\n";
     out << "  \"branch_mispredictions\": " << branch_mispredictions << ",\n";
     out << "  \"branch_flushes\": " << branch_flushes << ",\n";
+    {
+        auto emit_unit_array = [&](const char* name,
+                                   const std::array<uint64_t, 6>& arr) {
+            out << "  \"" << name << "\": [";
+            for (size_t u = 0; u < arr.size(); ++u) {
+                if (u > 0) out << ", ";
+                out << arr[u];
+            }
+            out << "],\n";
+        };
+        emit_unit_array("scheduler_unit_busy_stall_cycles",
+                        scheduler_unit_busy_stall_cycles);
+        emit_unit_array("scheduler_writeback_contention_stall_cycles",
+                        scheduler_writeback_contention_stall_cycles);
+        out << "  \"scheduler_ldst_fifo_full_stall_cycles\": "
+            << scheduler_ldst_fifo_full_stall_cycles << ",\n";
+    }
 
     // Execution units
     auto emit_unit = [&](const char* prefix, const UnitStats& s) {

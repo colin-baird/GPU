@@ -57,6 +57,11 @@ void LdStUnit::commit() {
     if (next_push_) {
         addr_gen_fifo_.push_back(*next_push_);
         next_push_.reset();
+        // Phase 10B.0: monotonic push counter advances on the same cycle the
+        // op becomes visible in addr_gen_fifo_, so the scheduler's
+        // (issued - pushed) difference stays invariant across the FIFO-entry
+        // transition.
+        ++fifo_total_pushes_;
     }
 }
 
@@ -69,6 +74,10 @@ void LdStUnit::reset() {
     next_pending_entry_.valid = false;
     addr_gen_fifo_.clear();
     next_push_.reset();
+    // Phase 10B.0: cleared in lockstep with WarpScheduler::reset()'s
+    // ldst_issued_total_ (both run in the panic-flush cascade) so the
+    // (issued - pushed) difference restarts at zero.
+    fifo_total_pushes_ = 0;
 }
 
 bool LdStUnit::next_has_result() const {

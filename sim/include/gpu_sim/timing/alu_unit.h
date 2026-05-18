@@ -16,6 +16,27 @@ public:
     bool current_busy() const override {
         return current_result_buffer_.valid || current_has_pending_;
     }
+
+    // Phase 10B.0 interim issue gate (DELIBERATE, HUMAN-APPROVED DEVIATION
+    // from the plan — to be REMOVED in Phase 10B.3). The plan's 10B.0 removes
+    // the scheduler's current_busy() poll, replacing the structural-input
+    // hazard with scheduler-side countdowns + the writeback bitmap. But the
+    // old current_busy() was doing double duty: it also reported "result
+    // buffer still occupied (not yet consumed by the arbiter)". 10B.0's
+    // bitmap only prevents fixed-vs-fixed writeback collisions at issue; the
+    // arbiter is still round-robin and does not honor the bitmap until
+    // 10B.3. A load preempting this unit's fixed-latency writeback leaves an
+    // unconsumed result in next_result_buffer_ that this unit's next-cycle
+    // evaluate() would overwrite -> lost writeback -> scoreboard destination
+    // never cleared -> dependent warps deadlock. current_result_pending() is
+    // the narrow current_result_buffer_.valid portion of the old
+    // current_busy(); the scheduler reads it as a backward committed-state
+    // back-pressure read and skips issuing into a unit whose result buffer is
+    // still occupied. Phase 10B.3's fixed-priority arbiter + combinational-
+    // backward writeback stall subsume this gate, at which point it is
+    // removed. (Phase 10F's doc sweep records the deviation.)
+    bool current_result_pending() const { return current_result_buffer_.valid; }
+
     void evaluate() override;
     void commit() override;
     void reset() override;

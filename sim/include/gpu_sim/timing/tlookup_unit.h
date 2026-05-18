@@ -13,6 +13,17 @@ public:
     bool current_busy() const override {
         return current_busy_ || current_result_buffer_.valid;
     }
+
+    // Phase 10B.0 interim issue gate (DELIBERATE, HUMAN-APPROVED DEVIATION
+    // from the plan — to be REMOVED in Phase 10B.3). See the long rationale
+    // on ALUUnit::current_result_pending(). TLookupUnit's evaluate()
+    // unconditionally writes next_result_buffer_ when the iteration count
+    // reaches zero, so an unconsumed result preempted by a load is lost. The
+    // unit_busy_[TLOOKUP] countdown gate only covers the structural-input
+    // hazard (current_busy_); this accessor is the current_result_buffer_
+    // .valid portion of the old current_busy(). Removed in 10B.3.
+    bool current_result_pending() const { return current_result_buffer_.valid; }
+
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -37,8 +48,10 @@ public:
     }
 
 private:
-    // Pipelined dual-port BRAM: 2 lanes/cycle, ceil(32/2) + 1 drain = 17 cycles
-    static constexpr uint32_t TLOOKUP_LATENCY = 17;
+    // Pipelined dual-port BRAM: 2 lanes/cycle, ceil(32/2) + 1 drain = 17 cycles.
+    // Phase 10B.0: the value lives in execution_unit.h as kTlookupLatency
+    // (single source of truth, also consumed by the scheduler issue gate).
+    static constexpr uint32_t TLOOKUP_LATENCY = kTlookupLatency;
 
     Stats& stats_;
     // Phase 1 discipline: every cross-cycle field is double-buffered.
