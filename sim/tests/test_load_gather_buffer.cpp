@@ -66,9 +66,10 @@ TEST_CASE("LoadGatherBuffer: coalesced write fills all 32 slots in one cycle",
     REQUIRE(file.try_write(0, FULL_MASK, values,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
 
-    REQUIRE(file.buffer(0).filled_count == WARP_SIZE);
-    // Phase M4: latch staged has_result via commit before observing.
+    // Phase 10D: the fill lands in next_buffers_; commit() flips it into the
+    // committed buffer state that buffer() and current_has_result() expose.
     file.commit();
+    REQUIRE(file.buffer(0).filled_count == WARP_SIZE);
     REQUIRE(file.current_has_result());
 
     WritebackEntry wb = file.consume_result();
@@ -95,6 +96,8 @@ TEST_CASE("LoadGatherBuffer: partial write populates only selected slots",
     REQUIRE(file.try_write(0, mask, values,
                            LoadGatherBufferFile::GatherWriteSource::FILL));
 
+    // Phase 10D: commit() flips the partial fill into the committed buffer.
+    file.commit();
     const auto& buf = file.buffer(0);
     REQUIRE(buf.filled_count == 8);
     for (uint32_t i = 0; i < WARP_SIZE; ++i) {
@@ -133,8 +136,14 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     mem_if.commit();
     for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
     cache.handle_responses();
+    // Phase 10D: the FILL landed in next_buffers_; commit() flips it into the
+    // committed buffer so consume_result() (a pure committed read) sees the
+    // full buffer and stages its release.
+    gather_file.commit();
     (void)gather_file.consume_result();
     cache.commit();
+    // Apply the staged release so warp 1's buffer is free for the rest of
+    // the test.
     gather_file.commit();
 
     // Now issue a serialized load on warp 0: lane 0 hits line 0, lanes 1..31
@@ -147,9 +156,10 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
 
     // Lane 0 — hit.
     REQUIRE(cache.process_load(/*addr=*/0, 0, /*mask=*/1u, values, 1, 0, 0));
+    // Phase 10D: the HIT fill lands in next_buffers_; commit() to observe it.
+    gather_file.commit();
     REQUIRE(gather_file.buffer(0).filled_count == 1);
     REQUIRE_FALSE(gather_file.current_has_result());
-    gather_file.commit();
 
     // Lanes 1..31 — each a miss on a distinct line. Phase M5: each
     // miss stages a request in mem_if's next_read_request_; commit +
@@ -251,6 +261,9 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
     WritebackEntry wb = file.consume_result();
     REQUIRE(wb.valid);
 
+    // Phase 10D: consume_result() is a pure read — it stages the buffer
+    // release into next_release_; commit() applies it.
+    file.commit();
     const auto& buf = file.buffer(2);
     REQUIRE_FALSE(buf.busy);
     REQUIRE(buf.filled_count == 0);
@@ -331,6 +344,11 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
 
     WritebackEntry third = file.consume_result();
     REQUIRE(third.warp_id == 0);
+    // Phase 10D: consume_result() stages the release (and the round-robin
+    // pointer advance) for commit(). commit() between the two consumes
+    // applies warp 0's release and advances rr_pointer_ so the next scan
+    // selects warp 2.
+    file.commit();
     WritebackEntry fourth = file.consume_result();
     REQUIRE(fourth.warp_id == 2);
 }
@@ -361,7 +379,9 @@ TEST_CASE("LoadGatherBuffer: FILL wins port over same-cycle HIT", "[gather_buffe
     REQUIRE(stats.gather_buffer_port_conflict_cycles == 1);
 
     // FILL's write should be the one that landed; HIT's must not have
-    // overwritten or added to slot 1.
+    // overwritten or added to slot 1. Phase 10D: the fill landed in
+    // next_buffers_; commit() flips it into the committed buffer.
+    file.commit();
     const auto& buf = file.buffer(0);
     REQUIRE(buf.slot_valid[0]);
     REQUIRE(buf.values[0] == 10);
@@ -369,9 +389,10 @@ TEST_CASE("LoadGatherBuffer: FILL wins port over same-cycle HIT", "[gather_buffe
     REQUIRE(buf.filled_count == 1);
 
     // Next cycle the HIT should succeed.
-    file.commit();
     REQUIRE(file.try_write(0, 0x2u, hit_vals,
                            LoadGatherBufferFile::GatherWriteSource::HIT));
+    // Phase 10D: commit() to observe the HIT fill.
+    file.commit();
     REQUIRE(buf.slot_valid[1]);
     REQUIRE(buf.values[1] == 1000);
     REQUIRE(buf.filled_count == 2);

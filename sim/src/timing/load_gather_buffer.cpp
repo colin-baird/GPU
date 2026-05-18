@@ -4,10 +4,15 @@
 namespace gpu_sim {
 
 LoadGatherBufferFile::LoadGatherBufferFile(uint32_t num_warps, Stats& stats)
-    : num_warps_(num_warps), stats_(stats), buffers_(num_warps) {}
+    : num_warps_(num_warps), stats_(stats),
+      current_buffers_(num_warps), next_buffers_(num_warps) {}
 
 bool LoadGatherBufferFile::current_busy(uint32_t warp_id) const {
-    return buffers_[warp_id].busy;
+    // Coalescing's per-warp claim gate (memory plan M2). evaluate() writes the
+    // freshly-applied claim's busy flag into current_buffers_ as well as
+    // next_buffers_, so a claim applied earlier in this same tick is visible
+    // here even though the commit-phase flip has not run yet.
+    return current_buffers_[warp_id].busy;
 }
 
 void LoadGatherBufferFile::claim(uint32_t warp_id, uint8_t dest_reg, uint32_t pc,
@@ -55,45 +60,58 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
         return false;
     }
 
-    auto& buf = buffers_[warp_id];
-    uint32_t newly_valid = 0;
+    // Phase 10D: the fill lands in next_buffers_. seed_next() at the top of
+    // the tick copied current_buffers_ -> next_buffers_, so the accumulation
+    // below extends committed state; commit() flips next_ -> current_.
+    auto& buf = next_buffers_[warp_id];
     for (uint32_t i = 0; i < WARP_SIZE; ++i) {
         if ((lane_mask >> i) & 1u) {
             if (!buf.slot_valid[i]) {
-                newly_valid++;
+                buf.filled_count++;
             }
             buf.values[i] = values[i];
             buf.slot_valid[i] = true;
         }
     }
-    buf.filled_count += newly_valid;
     next_port_claimed_ = true;
-    // Phase M4: stage the REGISTERED has-result flag. If this write
-    // completed a buffer (busy && filled_count == WARP_SIZE), the buffer
-    // is ready for writeback; the arbiter will see it via
-    // current_has_result() at the next cycle (commit flips next_ → current_).
-    if (buf.busy && buf.filled_count == WARP_SIZE) {
-        next_has_result_ = true;
-    }
     return true;
+}
+
+void LoadGatherBufferFile::seed_next() {
+    // Phase 10D: copy committed state forward so try_write() accumulates onto
+    // it and unwritten buffers carry through unchanged. The gather buffer is
+    // NOT frozen by the writeback stall, so this runs unconditionally every
+    // cycle.
+    next_buffers_ = current_buffers_;
 }
 
 void LoadGatherBufferFile::evaluate() {
     // Phase M2: apply a deferred claim if one is pending. The claim mutation
-    // sets only metadata + busy; consume_result() handles cleanup of
-    // slot_valid/filled_count between consecutive uses, so values[] from a
-    // prior use are correctly masked by slot_valid=false until try_write
-    // overwrites them. Same-cycle write ordering: this evaluate runs before
-    // cache.evaluate() in tick(), so any FILL/secondary write deposited
-    // this cycle observes the freshly-applied claim metadata.
+    // sets only metadata + busy. Same-cycle write ordering: this evaluate
+    // runs before cache.evaluate() in tick(), so any FILL/secondary write
+    // deposited this cycle observes the freshly-applied claim metadata.
+    //
+    // Phase 10D: the claim is written into BOTH current_buffers_ and
+    // next_buffers_. The current_buffers_ write makes the busy flag visible
+    // to coalescing's same-cycle current_busy() gate (memory plan M2); the
+    // next_buffers_ write carries the claim across the commit-phase flip.
+    // seed_next() ran earlier this tick (next_ == old current_), so both
+    // copies start consistent; writing both keeps them consistent through
+    // commit(). A fresh claim lands on an idle buffer, so the per-lane fill
+    // fields are already cleared (the prior consume_result/release reset
+    // them) and need no touch here.
     if (current_claim_request_.valid) {
-        auto& buf = buffers_[current_claim_request_.warp_id];
-        assert(!buf.busy && "deferred claim landing on a busy gather buffer");
-        buf.busy = true;
-        buf.dest_reg = current_claim_request_.dest_reg;
-        buf.pc = current_claim_request_.pc;
-        buf.issue_cycle = current_claim_request_.issue_cycle;
-        buf.raw_instruction = current_claim_request_.raw_instruction;
+        const auto& req = current_claim_request_;
+        assert(!current_buffers_[req.warp_id].busy &&
+               "deferred claim landing on a busy gather buffer");
+        for (auto* buffers : {&current_buffers_, &next_buffers_}) {
+            auto& buf = (*buffers)[req.warp_id];
+            buf.busy = true;
+            buf.dest_reg = req.dest_reg;
+            buf.pc = req.pc;
+            buf.issue_cycle = req.issue_cycle;
+            buf.raw_instruction = req.raw_instruction;
+        }
         current_claim_request_.valid = false;
     }
 }
@@ -105,33 +123,48 @@ void LoadGatherBufferFile::commit() {
     // top of the next tick consumes current_claim_request_.
     current_claim_request_ = next_claim_request_;
     next_claim_request_ = GatherClaimRequest{};
-    // Phase M4: flip the REGISTERED has-result flag. Recompute next_ from
-    // the current buffer state — try_write may have just produced a fresh
-    // full-buffer this cycle (next_has_result_ already true), or
-    // consume_result may have just released a buffer (next_has_result_
-    // could still be true if another buffer is full). Scanning is O(num_warps),
-    // bounded.
+    // Phase 10D: apply the REGISTERED buffer release staged by
+    // consume_result() this cycle. This is the commit-phase effect that
+    // replaces consume_result()'s former in-place mutation — busy/slot_valid/
+    // filled_count are reset in next_buffers_ (the about-to-be-committed
+    // copy), and the round-robin pointer advances past the retired buffer.
+    if (next_release_.valid) {
+        auto& buf = next_buffers_[next_release_.warp_id];
+        buf.busy = false;
+        buf.slot_valid.fill(false);
+        buf.filled_count = 0;
+        rr_pointer_ = (next_release_.warp_id + 1) % num_warps_;
+        next_release_ = GatherReleaseRequest{};
+    }
+    // Phase 10D: flip the double-buffered fill presentation. After this flip
+    // current_buffers_ reflects all of this cycle's try_write() fills, the
+    // freshly-applied claim, and any release.
+    current_buffers_ = next_buffers_;
+    // Phase M4: recompute the REGISTERED has-result flag from the committed
+    // buffer state. Scanning is O(num_warps), bounded.
     bool any_full = false;
-    for (const auto& buf : buffers_) {
+    for (const auto& buf : current_buffers_) {
         if (buf.busy && buf.filled_count == WARP_SIZE) {
             any_full = true;
             break;
         }
     }
     current_has_result_ = any_full;
-    next_has_result_ = any_full;
 }
 
 void LoadGatherBufferFile::reset() {
-    for (auto& buf : buffers_) {
+    for (auto& buf : current_buffers_) {
+        buf = LoadGatherBuffer{};
+    }
+    for (auto& buf : next_buffers_) {
         buf = LoadGatherBuffer{};
     }
     rr_pointer_ = 0;
     next_port_claimed_ = false;
     current_claim_request_ = GatherClaimRequest{};
     next_claim_request_ = GatherClaimRequest{};
+    next_release_ = GatherReleaseRequest{};
     current_has_result_ = false;
-    next_has_result_ = false;
 }
 
 void LoadGatherBufferFile::flush() {
@@ -139,9 +172,15 @@ void LoadGatherBufferFile::flush() {
 }
 
 WritebackEntry LoadGatherBufferFile::consume_result() {
+    // Phase 10D: pure read of committed buffer state. The round-robin scan
+    // observes only current_buffers_ as committed at the end of the previous
+    // cycle — try_write() this cycle lands in next_buffers_ — so the result
+    // is independent of where wb_arbiter sits in the evaluate sweep relative
+    // to the cache. The buffer is not released here; that committed-state
+    // mutation is staged into next_release_ and applied by commit().
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t idx = (rr_pointer_ + i) % num_warps_;
-        auto& buf = buffers_[idx];
+        const auto& buf = current_buffers_[idx];
         if (buf.busy && buf.filled_count == WARP_SIZE) {
             WritebackEntry wb;
             wb.valid = true;
@@ -153,16 +192,13 @@ WritebackEntry LoadGatherBufferFile::consume_result() {
             wb.raw_instruction = buf.raw_instruction;
             wb.issue_cycle = buf.issue_cycle;
 
-            // Release buffer.
-            buf.busy = false;
-            buf.slot_valid.fill(false);
-            buf.filled_count = 0;
-
-            rr_pointer_ = (idx + 1) % num_warps_;
+            // Stage the buffer release as a commit-phase effect.
+            next_release_.valid = true;
+            next_release_.warp_id = idx;
             return wb;
         }
     }
-    // Caller must check next_has_result() first.
+    // Caller must check current_has_result() first.
     return WritebackEntry{};
 }
 

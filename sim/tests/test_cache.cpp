@@ -143,6 +143,10 @@ TEST_CASE("Cache: store hit pushes line into write buffer", "[cache]") {
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -244,6 +248,10 @@ TEST_CASE("Cache: direct-mapped conflict eviction", "[cache]") {
     REQUIRE(f.cache.process_load(addr_a, 0, FULL_MASK, results, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -251,6 +259,10 @@ TEST_CASE("Cache: direct-mapped conflict eviction", "[cache]") {
     f.claim(0);
     REQUIRE(f.cache.process_load(addr_a, 0, FULL_MASK, results, 2, 0, 0));
     REQUIRE(f.stats.load_hits == 1);
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -259,6 +271,10 @@ TEST_CASE("Cache: direct-mapped conflict eviction", "[cache]") {
     REQUIRE(f.cache.process_load(addr_b, 0, FULL_MASK, results, 3, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -278,6 +294,10 @@ TEST_CASE("Cache: write buffer full stalls store hits", "[cache]") {
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -301,6 +321,10 @@ TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") 
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -337,6 +361,10 @@ TEST_CASE("Cache: reset clears all state", "[cache]") {
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
@@ -345,6 +373,10 @@ TEST_CASE("Cache: reset clears all state", "[cache]") {
     auto before = f.stats.load_hits;
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 2, 0, 0));
     REQUIRE(f.stats.load_hits == before + 1);
+    // Phase 10D: commit() latches the fill into committed buffer state so
+    // consume_result() (a pure committed read) sees it and stages the
+    // release; end_cycle() then applies the staged release.
+    f.gather_file.commit();
     (void)f.gather_file.consume_result();
     f.end_cycle();
 

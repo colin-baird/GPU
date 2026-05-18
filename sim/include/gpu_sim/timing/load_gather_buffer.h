@@ -35,9 +35,30 @@ struct GatherClaimRequest {
     uint32_t raw_instruction = 0;
 };
 
+// Phase 10D: REGISTERED buffer-release slot. consume_result() is a pure read
+// of committed buffer state; instead of mutating the consumed buffer in place
+// it stages the release here. commit() applies the release (busy=false,
+// slot_valid cleared, filled_count=0) and advances the round-robin pointer.
+// Cost: a gather result re-claim by the same warp is visible one cycle later
+// (the release lands at commit, not mid-evaluate). This is the sole intended
+// cycle delta of Phase 10D.
+struct GatherReleaseRequest {
+    bool valid = false;
+    uint32_t warp_id = 0;
+};
+
 // One gather buffer per resident warp, registered with the writeback arbiter
 // as an ExecutionUnit source so its full-32-lane writebacks arbitrate alongside
 // ALU/MUL/DIV/TLOOKUP results.
+//
+// Phase 10D: the fill presentation is genuinely double-buffered. The cache's
+// FILL/secondary/HIT writes land in next_buffers_; commit() flips next_ ->
+// current_; consume_result() reads current_buffers_ and is a pure read of
+// committed state. This makes the cache -> gather -> wb_arbiter forward edge a
+// REGISTERED edge whose result is independent of where wb_arbiter sits in the
+// evaluate sweep relative to the cache. The claim's busy/metadata mutation
+// (evaluate()) is written into BOTH copies so that coalescing's same-cycle
+// current_busy() gate (memory plan M2) still observes a freshly-applied claim.
 class LoadGatherBufferFile : public ExecutionUnit {
 public:
     enum class GatherWriteSource { HIT, FILL };
@@ -58,25 +79,21 @@ public:
     // Attempts to write `values` for the lanes selected by `lane_mask` into the
     // gather buffer for `warp_id`. Returns false iff another source already
     // used this buffer's port this cycle (HIT path can collide with FILL).
+    // Phase 10D: the write lands in next_buffers_; it becomes visible via
+    // buffer() / current_has_result() after the next commit().
     bool try_write(uint32_t warp_id, uint32_t lane_mask,
                    const std::array<uint32_t, WARP_SIZE>& values,
                    GatherWriteSource source);
 
     // ExecutionUnit interface
-    // Phase M2: evaluate() now applies a deferred claim from
-    // current_claim_request_ if valid. Tick scheduling places this evaluate
-    // before cache.evaluate() so that any same-cycle FILL or HIT write
-    // observes the freshly-applied claim metadata (busy, dest_reg, etc.).
-    // Phase 10B.0.5: empty body. LoadGatherBufferFile is the variable-latency
-    // load-writeback path, not one of the issue/execute stages the 10B.0.5
-    // double-buffering normalization targets — it is out of scope for that
-    // phase. Its cross-cycle state (the REGISTERED claim-request and
-    // has-result slots) is written by event-shaped methods and flipped at
-    // commit(), not carried via a seeded next_*; the buffers_ vector is
-    // mutated directly. TimingModel::tick() does not call this seed_next();
-    // it exists only to satisfy the ExecutionUnit interface, and the empty
-    // body leaves behavior byte-identical.
-    void seed_next() override {}
+    // Phase 10D: seed_next() copies current_buffers_ -> next_buffers_ so the
+    // per-cycle accumulating try_write() calls extend committed state and any
+    // buffer not written this cycle carries forward. TimingModel::tick() calls
+    // this every cycle (the gather buffer is NOT frozen by the writeback
+    // stall). evaluate() applies a deferred claim from current_claim_request_;
+    // the tick sweep places this evaluate before cache.evaluate() so any
+    // same-cycle FILL/HIT write observes the freshly-applied claim metadata.
+    void seed_next() override;
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -87,11 +104,10 @@ public:
     // Phase M4 / 10B.3: REGISTERED has-result. Returns the committed
     // current_has_result_ flag (latched at commit when filled_count reaches
     // WARP_SIZE for any buffer); the writeback arbiter and timing-model drain
-    // checks see committed state for this source. As of 10B.3 the
-    // ExecutionUnit base interface uses the canonical `current_has_result()`
-    // name (the gather buffer was already REGISTERED at M4; ALU/MUL/DIV/
-    // TLOOKUP were converted to REGISTERED in 10B.3 and now match).
+    // checks see committed state for this source.
     bool current_has_result() const override { return current_has_result_; }
+    // Phase 10D: pure read of committed current_buffers_; stages a release
+    // into next_release_ which commit() applies.
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
     // LoadGatherBufferFile is a writeback source (consumed by the writeback
@@ -101,12 +117,21 @@ public:
     bool current_busy() const override { return false; }
 
     uint32_t num_buffers() const { return num_warps_; }
-    const LoadGatherBuffer& buffer(uint32_t warp_id) const { return buffers_[warp_id]; }
+    // Phase 10D: returns the committed buffer state (current_buffers_). A
+    // try_write() this cycle is visible only after the next commit().
+    const LoadGatherBuffer& buffer(uint32_t warp_id) const {
+        return current_buffers_[warp_id];
+    }
 
 private:
     uint32_t num_warps_;
     Stats& stats_;
-    std::vector<LoadGatherBuffer> buffers_;
+    // Phase 10D: double-buffered fill presentation. current_buffers_ is the
+    // committed state read by consume_result() / buffer() / current_busy();
+    // next_buffers_ accumulates this cycle's try_write() fills and the staged
+    // claim/release. commit() flips next_ -> current_.
+    std::vector<LoadGatherBuffer> current_buffers_;
+    std::vector<LoadGatherBuffer> next_buffers_;
     uint32_t rr_pointer_ = 0;
     // Single-port arbitration flag for the cache's line-to-gather-buffer
     // extraction port (§5.3 Port model: FILL > secondary > HIT). Writers
@@ -122,15 +147,17 @@ private:
     GatherClaimRequest current_claim_request_;
     GatherClaimRequest next_claim_request_;
 
-    // Phase M4: REGISTERED has-result flag. try_write recomputes the staged
-    // value (true iff any buffer has busy && filled_count==WARP_SIZE);
-    // commit() flips next_has_result_ → current_has_result_; the writeback
-    // arbiter reads current_has_result_ via the current_has_result() override
-    // (the ExecutionUnit base interface canonical name as of Phase 10B.3).
-    // consume_result() releases the buffer directly; the next try_write or
-    // commit recomputes the flag.
+    // Phase 10D: REGISTERED buffer-release slot. consume_result() reads the
+    // committed buffer (a pure read) and stages a release here; commit()
+    // applies it. At most one buffer retires per cycle (single writeback
+    // arbiter port), so a single-slot request is sufficient.
+    GatherReleaseRequest next_release_;
+
+    // Phase M4: REGISTERED has-result flag. commit() recomputes it from the
+    // post-flip committed buffer state (true iff any buffer has busy &&
+    // filled_count==WARP_SIZE); the writeback arbiter reads it via the
+    // current_has_result() override.
     bool current_has_result_ = false;
-    bool next_has_result_ = false;
 };
 
 } // namespace gpu_sim

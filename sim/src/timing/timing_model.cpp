@@ -336,6 +336,10 @@ bool TimingModel::tick() {
     }
 
     if (panic_->is_active()) {
+        // Phase 10D: seed the gather buffer's double-buffered fill
+        // presentation (next_buffers_ = current_buffers_) before evaluate()
+        // applies a claim or cache.evaluate() deposits a FILL.
+        gather_file_->seed_next();
         // Phase M2: apply any deferred claim before cache evaluates so that
         // FILL/secondary writes deposited this cycle observe the freshly-
         // applied claim metadata. In the panic path this is a no-op when
@@ -413,6 +417,16 @@ bool TimingModel::tick() {
     // so they need no seed_next() of their own.
     decode_->seed_next();
 
+    // Phase 10D: seed the gather buffer's double-buffered fill presentation.
+    // seed_next() copies current_buffers_ -> next_buffers_ so the cache's
+    // per-cycle FILL/secondary/HIT try_write() calls accumulate onto committed
+    // state and consume_result() is a pure read of current_buffers_. This
+    // makes the cache -> gather -> wb_arbiter forward edge a REGISTERED edge
+    // whose result is independent of wb_arbiter's sweep position. Unlike the
+    // issue/execute stages above, the gather buffer is NOT frozen by the
+    // writeback stall — it seed_next()s and commit()s every cycle.
+    gather_file_->seed_next();
+
     // Phase 6 REGISTERED ebreak observation. decode.commit() at end of the
     // previous cycle latched current_ebreak_request_. Trigger the panic
     // controller at the *top* of this tick (one cycle later than the
@@ -428,34 +442,45 @@ bool TimingModel::tick() {
         panic_triggered_this_tick = true;
     }
 
-    // Phase M2: apply deferred claim from prior cycle before cache evaluates.
-    // gather_file.evaluate() consumes current_claim_request_ (latched at
-    // last cycle's commit), setting buf.busy and metadata so that any
-    // same-cycle FILL/secondary write into this buffer sees correct state.
-    gather_file_->evaluate();
-
-    cache_->evaluate();
-
     // -------------------------------------------------------------------
     // Tick discipline. See resources/timing_discipline.md for the full
     // contract.
     //
     // Each non-panic tick has two phases:
     //
-    // 1. evaluate phase (forward sweep, dataflow order). Each stage reads
-    //    its inputs — committed state for REGISTERED edges, the const
-    //    current_busy() accessor of a downstream consumer for READY/STALL
-    //    edges, the WritebackArbiter's next_writeback_stall() for the
-    //    combinational-backward stall — and writes its own next_* slot.
-    //    Phase 10B.1/10B.2 made the scheduler->opcoll and opcoll->unit
-    //    forward edges REGISTERED pull edges: each consumer reads the
-    //    producer's committed current_output() inside its own evaluate(),
-    //    so there is no tick-level dispatch/accept glue. Phase 10B.3 moved
-    //    wb_arbiter to the FRONT of the sweep so next_writeback_stall() is
-    //    readable same-cycle by every issue/execute consumer. Order:
-    //      wb_arbiter -> gather -> cache -> fetch -> decode -> scheduler ->
-    //      opcoll -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if ->
-    //      cache.drain_write_buffer.
+    // 1. evaluate phase. Phase 10D reverses the sweep to BACK-TO-FRONT
+    //    pipeline order: every combinational-backward producer is placed
+    //    ahead of its consumer, and every REGISTERED forward edge reads
+    //    committed (current_*) state, so the sweep is byte-identical to the
+    //    pre-10D forward sweep (the sole 10D cycle delta is Part 1's
+    //    gather-fill registration). Order:
+    //      wb_arbiter
+    //      gather_file
+    //      {cache.evaluate -> mem_if.evaluate -> cache.drain_write_buffer}
+    //      coalescing
+    //      alu / mul / div / tlookup / ldst
+    //      opcoll
+    //      fetch
+    //      decode
+    //      scheduler
+    //    Two amendments to the plan's literal back-to-front tail:
+    //      * fetch.evaluate() runs BEFORE scheduler.evaluate() (a documented
+    //        ordering carve-out). The scheduler's evaluate() does an
+    //        instr_buffer.pop() — a committed-state mutation that fetch
+    //        observes via instr_buffer occupancy. fetch's will_be_full check
+    //        deliberately reads COMMITTED occupancy and does NOT credit a
+    //        same-cycle pop (Phase 10B.3). Running scheduler first would
+    //        create a combinational-forward edge into fetch, which is
+    //        discipline-wrong; running fetch first preserves the conservative
+    //        committed read. Analogous to the cache/mem_if/drain triple
+    //        carve-out.
+    //      * the execution units evaluate BEFORE fetch/decode/scheduler.
+    //        Required so Phase 10E's combinational ALU->fetch/decode redirect
+    //        works (ALU resolves before the frontend reads the redirect). At
+    //        10D the redirect is still REGISTERED, so units write only
+    //        next_*; fetch/decode read committed ALU state — byte-identical.
+    //    The cache/mem_if/drain_write_buffer triple stays one ordering unit
+    //    (memory plan M5 carve-out): its internal order is preserved.
     //
     // 2. commit phase. Every stage flips its next_* into current_*, except
     //    the issue/execute stages (the five units, opcoll, scheduler) which
@@ -464,40 +489,52 @@ bool TimingModel::tick() {
     //    commit time, so order is for traceability only.
     // -------------------------------------------------------------------
 
-    // Phase 10B.3: wb_arbiter first — it asserts the combinational-backward
-    // writeback stall that every downstream issue/execute consumer reads
-    // this same cycle. It reads each source's committed current_has_result()
-    // and consume_result() is a pure read, so capture is sweep-order-
-    // independent.
+    // Phase 10B.3 / 10D: wb_arbiter first — it asserts the
+    // combinational-backward writeback stall that every downstream
+    // issue/execute consumer reads this same cycle. It reads each source's
+    // committed current_has_result() and (Phase 10D) consume_result() is now
+    // a genuine pure read of committed state — the gather buffer's release is
+    // staged into next_release_ and applied at gather_file.commit() — so the
+    // arbiter's position relative to cache/gather_file is byte-identical-
+    // irrelevant.
     wb_arbiter_->evaluate();
 
-    fetch_->evaluate();
-    decode_->evaluate();
+    // Phase M2: apply deferred claim from prior cycle before cache evaluates.
+    // gather_file.evaluate() consumes current_claim_request_ (latched at
+    // last cycle's commit), setting buf.busy and metadata so that any
+    // same-cycle FILL/secondary write into this buffer sees correct state.
+    gather_file_->evaluate();
 
-    // Phase 6: EBREAK detection no longer short-circuits the tick. Decode
-    // writes next_ebreak_request_ in its own evaluate(); commit() flips
-    // it; the *next* tick's top-of-tick observation (above) calls
-    // panic_->trigger() and arms pending_panic_flush_, which the
-    // commit-phase block at the end of this tick honors via
-    // scheduler/opcoll/gather_file/wb_arbiter -> flush().
+    // Memory ordering unit (memory plan M5 carve-out): cache.evaluate ->
+    // mem_if.evaluate -> cache.drain_write_buffer kept contiguous in their
+    // pre-10D relative order. cache.evaluate asserts the combinational-
+    // backward next_cmd_ready / next_stalled signals that coalescing reads
+    // below, so the triple runs ahead of coalescing.
+    cache_->evaluate();
+    mem_if_->evaluate();
+    cache_->drain_write_buffer();
 
-    // Phase 10B.2/10B.3: scheduler reads next_writeback_stall() at the top of
-    // evaluate() (early-return on a stalled cycle) and produces next_output_.
-    scheduler_->evaluate();
-
-    // Phase 10B.2: REGISTERED scheduler->opcoll edge — opcoll's evaluate()
-    // pulls scheduler_->current_output() itself; no tick-level accept glue.
-    opcoll_->evaluate();
+    // Coalescing reads cache's combinational next_cmd_ready / next_stalled
+    // (asserted by cache.evaluate above) and committed LDST FIFO occupancy.
+    // cache.evaluate() already deposited any FILL into the gather buffer
+    // (FILL has port priority); HIT writes staged here stall one cycle if
+    // FILL won the port this cycle.
+    coalescing_->evaluate();
 
     // Phase 10B.1: REGISTERED opcoll->unit edge — each unit's evaluate()
     // pulls opcoll_->current_output() and self-selects by target_unit; no
     // tick-level dispatch glue. Branch resolution stays inside ALUUnit::
-    // evaluate() (Phase 10A).
+    // evaluate() (Phase 10A). Phase 10D: units evaluate before the frontend
+    // (groundwork for 10E's combinational ALU->frontend redirect).
     alu_->evaluate();
     mul_->evaluate();
     div_->evaluate();
     tlookup_->evaluate();
     ldst_->evaluate();
+
+    // Phase 10B.2: REGISTERED scheduler->opcoll edge — opcoll's evaluate()
+    // pulls scheduler_->current_output() itself; no tick-level accept glue.
+    opcoll_->evaluate();
 
     // Phase 10B.1: SYSTEM (ECALL) retirement. SYSTEM has no execution unit,
     // so the warp-deactivation that dispatch_to_unit's SYSTEM case used to
@@ -511,15 +548,23 @@ bool TimingModel::tick() {
         }
     }
 
-    // Coalescing drives HIT writes into the gather buffer. cache_->evaluate()
-    // at the top of tick already deposited any FILL into the gather buffer
-    // (FILL has port priority); HIT writes here stall one cycle if FILL won
-    // the port this cycle.
-    coalescing_->evaluate();
+    // Phase 10D: frontend last, in fetch -> decode -> scheduler order.
+    // fetch precedes scheduler (the ordering carve-out above): fetch reads
+    // committed instr_buffer occupancy and must not see scheduler's
+    // same-cycle pop.
+    fetch_->evaluate();
+    decode_->evaluate();
 
-    mem_if_->evaluate();
+    // Phase 6: EBREAK detection no longer short-circuits the tick. Decode
+    // writes next_ebreak_request_ in its own evaluate(); commit() flips
+    // it; the *next* tick's top-of-tick observation (above) calls
+    // panic_->trigger() and arms pending_panic_flush_, which the
+    // commit-phase block at the end of this tick honors via
+    // scheduler/opcoll/gather_file/wb_arbiter -> flush().
 
-    cache_->drain_write_buffer();
+    // Phase 10B.2/10B.3: scheduler reads next_writeback_stall() at the top of
+    // evaluate() (early-return on a stalled cycle) and produces next_output_.
+    scheduler_->evaluate();
 
     fetch_->commit();
     decode_->commit();
