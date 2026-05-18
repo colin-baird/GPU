@@ -28,3 +28,10 @@ Changes that passed regression but have not yet received targeted test coverage.
 - **What changed:** The architectural spec §2.3 / §4.5 describes the TLOOKUP unit as a pipelined dual-port BRAM reading 2 lanes/cycle (16 issue + 1 drain = 17 cycles). The timing model collapses the 32 lanes into a single 17-cycle countdown with no per-lane state exposed at the unit interface.
 - **Why untested:** structural gap — intra-warp per-lane progress is not observable without either instrumentation exposing per-lane state or a lower-level structural model. Only the 17-cycle aggregate warp latency is bound.
 - **Test priority:** low
+
+### Writeback-stall freeze: multi-cycle re-evaluation idempotence and branch-resolution coincidence
+- **Date:** 2026-05-18
+- **Commit:** `29dd299` (writeback stall), `c97b7ac` (`branch_resolved_` reuse)
+- **What changed:** The combinational-backward writeback stall (Phase 10B.3) freezes the five execution units, the operand collector, and the warp scheduler by gating `commit()` when a load preempts a fixed-latency writeback; a frozen stage's `evaluate()` re-runs and must produce byte-identical `next_*` state, which the `seed_next()`/`commit()` discipline guarantees by construction. Phase 10E reuses the ALU `branch_resolved_` bit so a branch held at the resolve stage across a multi-cycle stall asserts the redirect (and the predictor/tracker side-effects) exactly once.
+- **Why untested:** deferred — the stall has arbiter-level targeted tests (fixed-priority scan, load-preempts-fixed assertion) plus the offset-table interleave regression, and is exercised end-to-end by every workload benchmark (`fixed_writeback_preempted_cycles` is non-zero). But no targeted Catch2 case directly pins (a) byte-identical re-evaluation of a stage frozen for ≥2 consecutive cycles, or (b) once-only redirect/predictor/tracker side-effects when a branch resolves on a writeback-stalled cycle. These corners are argued by construction and covered statistically, not asserted by a dedicated test.
+- **Test priority:** medium

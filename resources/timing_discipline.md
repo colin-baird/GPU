@@ -925,10 +925,36 @@ order, with their commit boundary and cycle delta:
   matmul +409 (a second-order cache-rephasing artifact — functional
   execution identical), gemv 0, fused_linear −1, softmax_row 0,
   embedding_gather 0, layernorm_lite −68. Inventory rows: 5, 12, 16.
-- **Phase 10F** — this documentation sweep plus the tooling tightening
-  (the `lint_timing_naming.py` cross-module read pass; the diagram
-  extractor / `test_signal_diagram.py` reclassifications). No production
-  code change.
+- **Phase 10F** — commit `c964a40` (boundary `c97b7ac`). This documentation
+  sweep plus the tooling tightening (the `lint_timing_naming.py`
+  cross-module read pass; the diagram extractor / `test_signal_diagram.py`
+  reclassifications) and two stale `timing_model.cpp` branch-tracker
+  comments corrected. No production behavior change. `render_signal_diagram.py
+  --validate` returns green and `lint_timing_naming.py` passes strictly.
+
+### Cumulative cycle delta (end-of-Phase-9 → end-of-Phase-10)
+
+Captured by `tools/bench_compare.py --baseline b2692a3` (the pre-memory,
+pre-Phase-10 baseline) against end-of-Phase-10 `c964a40`. This span covers
+**both** the memory plan (M1–M6) and this pipeline plan (10A–10F):
+
+| Benchmark | Pre-Phase-10 | End-of-Phase-10 | Δ cycles | Δ % |
+|-----------|-------------:|----------------:|---------:|----:|
+| matmul                  | 141323 | 101630 | −39693 | −28.1% |
+| gemv                    |   5978 |   6729 |   +751 | +12.6% |
+| fused_linear_activation |   2552 |   2647 |    +95 |  +3.7% |
+| softmax_row             |   2333 |   2499 |   +166 |  +7.1% |
+| embedding_gather        |  47206 |  47332 |   +126 |  +0.3% |
+| layernorm_lite          |   8863 |   9870 |  +1007 | +11.4% |
+
+The large matmul speedup is the memory plan's doing (registering the memory
+subsystem on a memory-bound kernel); the pipeline plan (10A–10F) contributed
+only ≈+1–2% to matmul. The modest regressions elsewhere are the deliberate
+fidelity gain: REGISTERED forward edges each add a cycle of pipeline depth,
+and IPC falls accordingly (a latency-hiding machine absorbs most of it).
+Functional execution is unchanged throughout — `total_instructions_issued`
+is identical at every phase boundary, and the RV32IM ISA compliance suite
+(46/46) and synthetic edge tests stay green.
 
 See `/project-plans/phase-10-pipeline-discipline.md` for the full Phase 10
 plan and `/project-plans/phase-10-memory-discipline.md` for M1–M6.
