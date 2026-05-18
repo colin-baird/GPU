@@ -46,10 +46,19 @@ void WarpScheduler::set_dependencies(Scoreboard* scoreboard,
 bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const {
     // No scoreboard wired (unit-test default): no register hazards.
     if (scoreboard_ == nullptr) return true;
+    // RAW: every source operand must have no in-flight write.
     if (d.num_src_regs >= 1 && scoreboard_->current_pending(warp, d.rs1)) return false;
     if (d.num_src_regs >= 2 && scoreboard_->current_pending(warp, d.rs2)) return false;
-    // Check rd as source (VDOT8: 3-operand)
+    // RAW on the rd operand of 3-operand instructions (VDOT8 accumulator).
     if (d.reads_rd && scoreboard_->current_pending(warp, d.rd)) return false;
+    // WAW: a write to rd must not race an earlier in-flight write to the same
+    // register. Execution-unit latencies are asymmetric (ALU 3, MUL 5, DIV 34,
+    // TLOOKUP 19, LDST variable), so a later instruction can reach the
+    // writeback arbiter before an earlier one — two pending writes to one rd
+    // could otherwise retire out of program order. Stalling issue until the
+    // prior write commits keeps per-(warp, register) writeback in program
+    // order. (For VDOT8 the rd-as-source check above already covers this.)
+    if (d.has_rd && d.rd != 0 && scoreboard_->current_pending(warp, d.rd)) return false;
     return true;
 }
 

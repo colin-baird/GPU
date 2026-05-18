@@ -371,7 +371,7 @@ uses the same field names; the text report groups them under labeled headings.
 |-------|---------|
 | `warp_instructions[w]` | Count of instructions issued by warp `w`. |
 | `warp_cycles_active[w]` | Cycles during which warp `w` was active (incremented each tick while `warps_[w].active`). |
-| `warp_stall_scoreboard[w]` | Scheduler scans in which warp `w` was blocked by scoreboard. |
+| `warp_stall_scoreboard[w]` | Scheduler scans in which warp `w` was blocked by a scoreboard hazard — a source operand has an in-flight write (RAW) or the destination register `rd` has an in-flight write (WAW). |
 | `warp_stall_buffer_empty[w]` | (Reserved) warp stalled because its instruction buffer was empty. |
 | `warp_stall_branch_shadow[w]` | Scheduler scans in which warp `w` was blocked by an in-flight branch/JAL/JALR. |
 | `warp_stall_unit_busy[w]` | Scheduler scans in which warp `w` was blocked at the Phase-10B.0 issue gate — a unit-busy structural hazard, a writeback-bitmap conflict, an LDST FIFO-full condition, or the operand-collector cooldown. Kept as a per-warp **roll-up**; the finer per-reason breakdown lives in the `scheduler_*_stall_cycles` counters below. |
