@@ -28,6 +28,15 @@ class DecodeStage : public PipelineStage {
 public:
     DecodeStage(WarpState* warps, FetchStage& fetch);
 
+    // Phase 10D.0: explicit double-buffering for the pending decode result.
+    // seed_next() copies current_pending_ -> next_pending_ at the top of the
+    // tick, making the "next_pending_ == current_pending_ on entry to
+    // evaluate()" precondition explicit and sweep-order-independent. While the
+    // current evaluate sweep order is preserved this is a redundant copy (the
+    // prior commit() already left next_pending_ == current_pending_), so it is
+    // byte-identical. Called at the top of TimingModel::tick() alongside the
+    // other stages' seed_next().
+    void seed_next();
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -41,19 +50,20 @@ public:
         return current_ebreak_request_;
     }
     std::optional<uint32_t> current_pending_warp() const {
-        if (!pending_.valid) return std::nullopt;
-        return pending_.target_warp;
+        if (!current_pending_.valid) return std::nullopt;
+        return current_pending_.target_warp;
     }
     const BufferEntry* pending_entry() const {
-        return pending_.valid ? &pending_.entry : nullptr;
+        return current_pending_.valid ? &current_pending_.entry : nullptr;
     }
 
     // Back-pressure (REGISTERED + back-pressure direction): true when
-    // decode cannot accept a new fetch output this cycle. Reads only
-    // committed state (pending_, mutated only by commit()): decode.evaluate()
-    // consumes a new fetch output only when its pending slot is empty at
-    // evaluate time, which equals committed state.
-    bool current_busy() const { return pending_.valid; }
+    // decode cannot accept a new fetch output this cycle. Phase 10D.0: reads
+    // committed state (current_pending_, flipped only by commit()). evaluate()
+    // mutates next_pending_, so this accessor returns genuinely committed
+    // state regardless of evaluate-sweep order — the prerequisite for Phase
+    // 10D's back-to-front sweep reversal.
+    bool current_busy() const { return current_pending_.valid; }
 
     // Phase 10A: wire the ALU so decode.commit() can read its REGISTERED
     // current_redirect_request() and invalidate any matching pending entry.
@@ -90,18 +100,24 @@ private:
     EBreakRequest current_ebreak_request_{};
     EBreakRequest next_ebreak_request_{};
 
-    // Pending decode result (staged for commit). pending_ is committed state
-    // at evaluate time: it was last mutated by the previous cycle's commit()
-    // (push attempt) or evaluate() (pull). The READY/STALL contract requires
-    // FetchStage::evaluate() to read current_busy() (computed from
-    // pending_) before this cycle's decode.evaluate() mutates it — this is
-    // ensured by tick order: fetch.evaluate() runs before decode.evaluate().
+    // Pending decode result. Phase 10D.0: explicitly double-buffered.
+    // evaluate() consumes its prior-cycle committed value (the `if
+    // (next_pending_.valid) return;` guard reads last cycle's state to decide
+    // whether to pull a new fetch output) — by the 10B.0.5 per-field
+    // criterion this is genuine carry-forward, so it IS seed_next'd.
+    // evaluate() mutates next_pending_; commit() flips next_pending_ ->
+    // current_pending_ and then applies the redirect-invalidate and the
+    // pending->buffer push to current_pending_ (committed-state mutations
+    // belong in commit()). Cross-stage accessors (current_busy /
+    // current_pending_warp / pending_entry) read current_pending_, so they
+    // return committed state independent of evaluate-sweep order.
     struct PendingDecode {
         BufferEntry entry;
         uint32_t target_warp;
         bool valid = false;
     };
-    PendingDecode pending_;
+    PendingDecode current_pending_;
+    PendingDecode next_pending_;
 
     // Phase 5 test hook field.
     std::optional<RedirectRequest> redirect_override_;

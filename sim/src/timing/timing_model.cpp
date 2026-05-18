@@ -402,6 +402,17 @@ bool TimingModel::tick() {
     tlookup_->seed_next();
     ldst_->seed_next();
 
+    // Phase 10D.0: explicit double-buffering for the DecodeStage pending slot.
+    // seed_next() copies current_pending_ -> next_pending_ so the cross-stage
+    // accessors (current_busy / current_pending_warp / pending_entry) return
+    // genuinely committed state, making the fetch->decode READY/STALL edge
+    // sweep-order-independent. Byte-identical under the current (unchanged)
+    // evaluate sweep order; the prerequisite for Phase 10D's reversal.
+    // FetchStage and WarpScheduler already expose only committed state via
+    // their current_output_ / current_diagnostics_ double-buffered registers,
+    // so they need no seed_next() of their own.
+    decode_->seed_next();
+
     // Phase 6 REGISTERED ebreak observation. decode.commit() at end of the
     // previous cycle latched current_ebreak_request_. Trigger the panic
     // controller at the *top* of this tick (one cycle later than the
