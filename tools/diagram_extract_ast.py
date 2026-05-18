@@ -6,11 +6,27 @@ this extractor populates `Module` and `Edge` records that the renderer
 consumes. The markdown extractor under `diagram_extract_md.py` remains
 available for `--source=markdown` and `--validate` cross-checks.
 
+Each TU is parsed once and indexed in a single project-scoped pass
+(`_build_index`): the walk descends only into top-level cursors located
+under `sim/`, skipping the STL/system-header subtrees entirely, and
+records three maps consulted by every later pass —
+
+  - `decl_map`     — class name -> class-definition cursor
+  - `method_index` — class name -> {method name -> definition cursor}
+  - `timing_ctor`  — the `TimingModel` constructor definition
+
+Passes B/C then look up the index instead of re-walking every TU. This
+keeps the cost bounded by the project's own AST rather than the full
+preprocessed TU; module classes, their methods, and the `TimingModel`
+constructor all live under `sim/`, so nothing the extractor needs is
+pruned away and the output is unchanged.
+
 Pass overview (numbered to match `project-plans/snazzy-sprouting-charm.md`):
 
-  - **Pass A — Module discovery.** Walks every CXXRecordDecl. A class is
-    a module if it transitively inherits `PipelineStage` or
-    `ExecutionUnit`, or appears in `STANDALONE_MODULES`.
+  - **Pass A — Module discovery.** Classifies every indexed
+    CXXRecordDecl. A class is a module if it transitively inherits
+    `PipelineStage` or `ExecutionUnit`, or appears in
+    `STANDALONE_MODULES`.
   - **Pass B — Wiring discovery.** Walks `TimingModel`'s constructor
     body for `add_source` and `set_*` calls plus the lambda-wired
     `panic_->set_drained_query(...)` case. Builds a map from each
@@ -171,15 +187,6 @@ def _split_command(entry: dict) -> list[str]:
     return [a for a in argv if a not in ("-c",)]
 
 
-def _walk_record_decls(cursor: cindex.Cursor) -> Iterable[cindex.Cursor]:
-    """Yield every C++ class/struct definition under `cursor`."""
-    Kind = cindex.CursorKind
-    record_kinds = {Kind.CLASS_DECL, Kind.STRUCT_DECL, Kind.CLASS_TEMPLATE}
-    for child in cursor.walk_preorder():
-        if child.kind in record_kinds and child.is_definition():
-            yield child
-
-
 def _direct_bases(cursor: cindex.Cursor) -> list[str]:
     """Return the spelling of every direct base class of a record decl."""
     bases: list[str] = []
@@ -257,29 +264,112 @@ def _unwrap_type_name(t: cindex.Type) -> str | None:
 
 
 # ----------------------------------------------------------------------------
+# Single-pass project-scoped indexing
+# ----------------------------------------------------------------------------
+
+def _build_index(translation_units: list[cindex.TranslationUnit],
+                 sim_root: Path
+                 ) -> tuple[set[str], dict[str, list[str]],
+                            dict[str, cindex.Cursor],
+                            dict[str, dict[str, cindex.Cursor]],
+                            cindex.Cursor | None]:
+    """Walk every TU once, descending only into project (`sim/`) cursors.
+
+    Returns `(seen_classes, base_map, decl_map, method_index,
+    timing_ctor)`:
+
+      - `seen_classes`  — every project class/struct spelling defined.
+      - `base_map`      — class spelling -> list of direct base spellings
+        (accumulated across all definitions seen; `_transitive_bases`
+        dedups, so duplicates are harmless).
+      - `decl_map`      — class spelling -> first class-definition cursor.
+      - `method_index`  — class spelling -> {method spelling -> definition
+        cursor}. Covers both in-class inline definitions and out-of-line
+        definitions (both carry `semantic_parent == class`).
+      - `timing_ctor`   — the first `TimingModel` constructor definition.
+
+    The traversal cost is bounded by the project's own AST: each TU's
+    top-level cursors are filtered by source location, so the STL and
+    other system-header subtrees are never descended into. Module
+    classes, their methods, and the `TimingModel` constructor all live
+    under `sim/`, so nothing the extractor needs is pruned away.
+    """
+    sim_root_str = str(sim_root.resolve())
+    sim_prefix = sim_root_str + os.sep
+
+    Kind = cindex.CursorKind
+    record_kinds = {Kind.CLASS_DECL, Kind.STRUCT_DECL, Kind.CLASS_TEMPLATE}
+
+    seen_classes: set[str] = set()
+    base_map: dict[str, list[str]] = {}
+    decl_map: dict[str, cindex.Cursor] = {}
+    method_index: dict[str, dict[str, cindex.Cursor]] = defaultdict(dict)
+    timing_ctor: cindex.Cursor | None = None
+
+    # Cache the under-sim/ verdict per source-file path string. A TU has
+    # one top-level cursor per declaration from every included header, so
+    # the same header path recurs thousands of times across 20 TUs.
+    under_cache: dict[str, bool] = {}
+
+    def _under_sim(file_obj: object) -> bool:
+        if file_obj is None:
+            return False
+        name = file_obj.name
+        verdict = under_cache.get(name)
+        if verdict is None:
+            verdict = os.path.abspath(name).startswith(sim_prefix)
+            under_cache[name] = verdict
+        return verdict
+
+    for tu in translation_units:
+        # The TU cursor's direct children are the flattened top-level
+        # declarations from the main file and every included header. A
+        # system-header `namespace std { ... }` block is a single such
+        # child whose entire subtree we skip by not descending into it.
+        for top in tu.cursor.get_children():
+            if not _under_sim(top.location.file):
+                continue
+            for cursor in top.walk_preorder():
+                kind = cursor.kind
+                if kind in record_kinds:
+                    if not cursor.is_definition():
+                        continue
+                    spelling = cursor.spelling
+                    if not spelling:
+                        continue
+                    seen_classes.add(spelling)
+                    base_map.setdefault(spelling, []).extend(
+                        _direct_bases(cursor))
+                    decl_map.setdefault(spelling, cursor)
+                elif kind == Kind.CXX_METHOD:
+                    if not cursor.is_definition():
+                        continue
+                    parent = cursor.semantic_parent
+                    if parent is not None and parent.spelling:
+                        method_index[parent.spelling][cursor.spelling] = cursor
+                elif kind == Kind.CONSTRUCTOR:
+                    if timing_ctor is not None or not cursor.is_definition():
+                        continue
+                    parent = cursor.semantic_parent
+                    if parent is not None and parent.spelling == "TimingModel":
+                        timing_ctor = cursor
+
+    return seen_classes, base_map, decl_map, dict(method_index), timing_ctor
+
+
+# ----------------------------------------------------------------------------
 # Pass A — module discovery
 # ----------------------------------------------------------------------------
 
-def _discover_modules(translation_units: list[cindex.TranslationUnit]
-                      ) -> tuple[list[Module], dict[str, cindex.Cursor], list[str]]:
+def _discover_modules(seen_classes: set[str],
+                      base_map: dict[str, list[str]]
+                      ) -> tuple[list[Module], list[str]]:
     """Pass A — module discovery.
 
-    Returns (ordered_modules, decl_map, warnings) where `decl_map` maps
-    each discovered module name to its preferred class-definition cursor
-    (any TU that defines it).
+    Classifies the indexed classes. A class is a module if it
+    transitively inherits a `HIERARCHY_BASE`, or is a `STANDALONE_MODULE`
+    that was seen. Returns `(ordered_modules, warnings)`.
     """
-    base_map: dict[str, list[str]] = {}
-    decl_map: dict[str, cindex.Cursor] = {}
-    seen_classes: set[str] = set()
-    for tu in translation_units:
-        for cursor in _walk_record_decls(tu.cursor):
-            spelling = cursor.spelling
-            if not spelling:
-                continue
-            seen_classes.add(spelling)
-            base_map.setdefault(spelling, []).extend(_direct_bases(cursor))
-            decl_map.setdefault(spelling, cursor)
-
     discovered: set[str] = set()
     for name in seen_classes:
         if name in EXCLUDED_FROM_HIERARCHY:
@@ -313,7 +403,7 @@ def _discover_modules(translation_units: list[cindex.TranslationUnit]
             ordered.append(Module(name=name, cluster=MODULE_CLUSTER[name]))
     for name in sorted(discovered - set(MODULE_ORDER)):
         ordered.append(Module(name=name, cluster="Other"))
-    return ordered, decl_map, warnings
+    return ordered, warnings
 
 
 # ----------------------------------------------------------------------------
@@ -347,33 +437,6 @@ def _build_field_type_map(decl_map: dict[str, cindex.Cursor],
 # Pass B — wiring discovery
 # ----------------------------------------------------------------------------
 
-def _find_method_def(decl_map: dict[str, cindex.Cursor], class_name: str,
-                     method_name: str,
-                     translation_units: list[cindex.TranslationUnit]
-                     ) -> cindex.Cursor | None:
-    """Find a method definition by (class, method) name.
-
-    Searches the class's in-class member function definitions first,
-    then every TU for an out-of-line definition.
-    """
-    cursor = decl_map.get(class_name)
-    if cursor is not None:
-        for child in cursor.get_children():
-            if (child.kind == cindex.CursorKind.CXX_METHOD
-                    and child.spelling == method_name
-                    and child.is_definition()):
-                return child
-    for tu in translation_units:
-        for child in tu.cursor.walk_preorder():
-            if (child.kind == cindex.CursorKind.CXX_METHOD
-                    and child.spelling == method_name
-                    and child.is_definition()
-                    and child.semantic_parent is not None
-                    and child.semantic_parent.spelling == class_name):
-                return child
-    return None
-
-
 def _resolve_arg_module(arg: cindex.Cursor, ctor_field_map: dict[str, str],
                         modules: set[str]) -> str | None:
     """Return the module name that an argument expression resolves to.
@@ -396,11 +459,10 @@ def _resolve_arg_module(arg: cindex.Cursor, ctor_field_map: dict[str, str],
     return None
 
 
-def _walk_pass_b(timing_model_cursor: cindex.Cursor,
+def _walk_pass_b(timing_ctor: cindex.Cursor,
                  timing_field_map: dict[str, str],
-                 decl_map: dict[str, cindex.Cursor],
-                 modules: set[str],
-                 translation_units: list[cindex.TranslationUnit]
+                 method_index: dict[str, dict[str, cindex.Cursor]],
+                 modules: set[str]
                  ) -> tuple[list[Edge], list[str]]:
     """Pass B — wiring discovery.
 
@@ -423,31 +485,7 @@ def _walk_pass_b(timing_model_cursor: cindex.Cursor,
     warnings: list[str] = []
     Kind = cindex.CursorKind
 
-    ctor: cindex.Cursor | None = None
-    for child in timing_model_cursor.get_children():
-        if (child.kind == Kind.CONSTRUCTOR
-                and child.is_definition()):
-            ctor = child
-            break
-    if ctor is None:
-        # The constructor's definition is out-of-line in
-        # timing_model.cpp, so walk every TU for a constructor whose
-        # semantic_parent is TimingModel.
-        for tu in translation_units:
-            for cursor in tu.cursor.walk_preorder():
-                if (cursor.kind == Kind.CONSTRUCTOR
-                        and cursor.is_definition()
-                        and cursor.semantic_parent is not None
-                        and cursor.semantic_parent.spelling == "TimingModel"):
-                    ctor = cursor
-                    break
-            if ctor is not None:
-                break
-    if ctor is None:
-        warnings.append("Pass B: TimingModel constructor definition not found")
-        return edges, warnings
-
-    for call in ctor.walk_preorder():
+    for call in timing_ctor.walk_preorder():
         if call.kind != Kind.CALL_EXPR:
             continue
         spelling = call.spelling
@@ -489,7 +527,7 @@ def _walk_pass_b(timing_model_cursor: cindex.Cursor,
         # invokes committed-state accessors only.
         if spelling == "set_drained_query":
             helper_targets = _walk_drained_lambda(
-                call, decl_map, translation_units,
+                call, method_index,
                 timing_field_map=timing_field_map,
                 modules=modules,
             )
@@ -506,8 +544,7 @@ def _walk_pass_b(timing_model_cursor: cindex.Cursor,
 
 
 def _walk_drained_lambda(call: cindex.Cursor,
-                         decl_map: dict[str, cindex.Cursor],
-                         translation_units: list[cindex.TranslationUnit],
+                         method_index: dict[str, dict[str, cindex.Cursor]],
                          timing_field_map: dict[str, str],
                          modules: set[str]) -> set[str]:
     """For `panic_->set_drained_query([this]() { return helper(); })`:
@@ -516,6 +553,7 @@ def _walk_drained_lambda(call: cindex.Cursor,
     names referenced.
     """
     Kind = cindex.CursorKind
+    timing_methods = method_index.get("TimingModel", {})
     targets: set[str] = set()
     for cursor in call.walk_preorder():
         if cursor.kind != Kind.CALL_EXPR:
@@ -524,13 +562,10 @@ def _walk_drained_lambda(call: cindex.Cursor,
         if not callee_name:
             continue
         # Helper calls are member calls on `this` (no explicit
-        # receiver), so the call's first child is a MEMBER_REF_EXPR with
-        # an implicit-this base.
-        helper_def = _find_method_def(decl_map, "TimingModel",
-                                      callee_name, translation_units)
+        # receiver). Only TimingModel's own private helper qualifies.
+        helper_def = timing_methods.get(callee_name)
         if helper_def is None:
             continue
-        # Only TimingModel's own private helper qualifies.
         for sub_call in helper_def.walk_preorder():
             if sub_call.kind != Kind.CALL_EXPR:
                 continue
@@ -743,43 +778,23 @@ def _walk_method_body_for_edges(method_cursor: cindex.Cursor,
 
 
 def _walk_pass_c(modules: set[str],
-                 decl_map: dict[str, cindex.Cursor],
-                 field_type_maps: dict[str, dict[str, str]],
-                 translation_units: list[cindex.TranslationUnit]
+                 method_index: dict[str, dict[str, cindex.Cursor]],
+                 field_type_maps: dict[str, dict[str, str]]
                  ) -> tuple[list[Edge], list[str]]:
     """Pass C — edge discovery.
 
     For every module, walk its `evaluate()` and `commit()` bodies and
     collect cross-module member calls and `current_*`/`next_*` reads.
+    Same-class private helpers come straight from `method_index` (which
+    already covers in-class and out-of-line definitions); no per-class
+    TU re-walk is needed.
     """
     edges: list[Edge] = []
     warnings: list[str] = []
 
-    # Pre-build a map of self-class private helpers (any non-virtual
-    # CXX_METHOD definition on the class itself) so Pass C can inline
-    # them.
-    helper_maps: dict[str, dict[str, cindex.Cursor]] = {}
-    for class_name, cursor in decl_map.items():
-        if class_name not in modules:
-            continue
-        helpers: dict[str, cindex.Cursor] = {}
-        for child in cursor.get_children():
-            if (child.kind == cindex.CursorKind.CXX_METHOD
-                    and child.is_definition()):
-                helpers[child.spelling] = child
-        # Out-of-line definitions in TUs.
-        for tu in translation_units:
-            for sub in tu.cursor.walk_preorder():
-                if (sub.kind == cindex.CursorKind.CXX_METHOD
-                        and sub.is_definition()
-                        and sub.semantic_parent is not None
-                        and sub.semantic_parent.spelling == class_name):
-                    helpers[sub.spelling] = sub
-        helper_maps[class_name] = helpers
-
     raw: list[tuple[str, str, str, str, bool]] = []
     for class_name in modules:
-        helpers = helper_maps.get(class_name, {})
+        helpers = method_index.get(class_name, {})
         field_map = field_type_maps.get(class_name, {})
         for entry_name in ("evaluate", "commit"):
             method = helpers.get(entry_name)
@@ -1015,7 +1030,11 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
             ],
         )
 
-    modules, decl_map, discovery_warnings = _discover_modules(tus)
+    seen_classes, base_map, decl_map, method_index, timing_ctor = _build_index(
+        tus, sim_root,
+    )
+
+    modules, discovery_warnings = _discover_modules(seen_classes, base_map)
     module_names = {m.name for m in modules}
 
     field_type_maps = _build_field_type_map(decl_map, module_names)
@@ -1023,14 +1042,15 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
     timing_field_map = field_type_maps.get("TimingModel", {})
     pass_b_edges: list[Edge] = []
     pass_b_warnings: list[str] = []
-    timing_decl = decl_map.get("TimingModel")
-    if timing_decl is not None:
+    if timing_ctor is not None:
         pass_b_edges, pass_b_warnings = _walk_pass_b(
-            timing_decl, timing_field_map, decl_map, module_names, tus,
+            timing_ctor, timing_field_map, method_index, module_names,
         )
+    else:
+        pass_b_warnings = ["Pass B: TimingModel constructor definition not found"]
 
     pass_c_edges, pass_c_warnings = _walk_pass_c(
-        module_names, decl_map, field_type_maps, tus,
+        module_names, method_index, field_type_maps,
     )
 
     # Manual augmentations for edges the AST can't infer (lambda
