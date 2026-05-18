@@ -81,8 +81,12 @@ struct Stats {
     uint64_t line_pin_stall_cycles = 0;
     uint64_t secondary_drain_cycles = 0;
 
-    // Writeback
-    uint64_t writeback_conflicts = 0;
+    // Writeback. Phase 10B.3: fixed_writeback_preempted_cycles counts cycles a
+    // fixed-latency writeback was held off because a variable-latency load
+    // took the port (equivalently, writeback-stall cycles). It is the semantic
+    // successor of the removed writeback_conflicts counter — under fixed-
+    // priority arbitration there is no round-robin conflict to count.
+    uint64_t fixed_writeback_preempted_cycles = 0;
 
     void report(std::ostream& out, uint32_t num_warps) const;
     void report_json(std::ostream& out, uint32_t num_warps) const;

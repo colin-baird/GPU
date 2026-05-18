@@ -98,9 +98,12 @@ TEST_CASE("WarpScheduler: issues from non-empty buffer", "[scheduler]") {
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE(f.scheduler->output().has_value());
-    REQUIRE(f.scheduler->output()->warp_id == 0);
+    // Phase 10B.2: scheduler->opcoll output is REGISTERED — current_output()
+    // exposes the committed slot, so the test commits before observing it.
+    REQUIRE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_output()->warp_id == 0);
     REQUIRE(f.stats.total_instructions_issued == 1);
 }
 
@@ -111,9 +114,10 @@ TEST_CASE("WarpScheduler: skips warp with empty buffer", "[scheduler]") {
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE(f.scheduler->output().has_value());
-    REQUIRE(f.scheduler->output()->warp_id == 1);
+    REQUIRE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_output()->warp_id == 1);
     REQUIRE(f.stats.warp_stall_buffer_empty[0] == 1);
 }
 
@@ -130,8 +134,9 @@ TEST_CASE("WarpScheduler: stalls on scoreboard hazard", "[scheduler]") {
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
     REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
 }
 
@@ -146,8 +151,9 @@ TEST_CASE("WarpScheduler: VDOT8 checks rd as a source hazard", "[scheduler]") {
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
     REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
 }
 
@@ -161,15 +167,17 @@ TEST_CASE("WarpScheduler: stalls on writeback-bitmap contention", "[scheduler]")
 
     // test_reserve_writeback_slot stamps writeback_bitmap_[head + offset]
     // pre-evaluate. evaluate() first clears the old head and advances
-    // bitmap_head_ by 1, then the gate checks writeback_bitmap_[head + 0]
-    // for an offset-0 ALU op. Reserving at offset 1 here lands exactly on
-    // the post-advance head, so the gate sees the collision.
-    f.scheduler->test_reserve_writeback_slot(ExecUnit::ALU, 1);
+    // bitmap_head_ by 1, then the gate checks writeback_bitmap_[head + 3] for
+    // an ALU op (Phase 10B end-of-phase ALU issue->writeback offset is 3 —
+    // three REGISTERED forward edges). Reserving at offset 4 here lands
+    // exactly on (post-advance head) + 3, so the gate sees the collision.
+    f.scheduler->test_reserve_writeback_slot(ExecUnit::ALU, 4);
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
     REQUIRE(f.stats.warp_stall_unit_busy[0] == 1);
     REQUIRE(f.stats.scheduler_writeback_contention_stall_cycles[
                 static_cast<size_t>(ExecUnit::ALU)] == 1);
@@ -188,13 +196,13 @@ TEST_CASE("WarpScheduler: stalls when iterative target unit busy", "[scheduler]"
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
     REQUIRE(f.stats.warp_stall_unit_busy[0] == 1);
     REQUIRE(f.stats.scheduler_unit_busy_stall_cycles[
                 static_cast<size_t>(ExecUnit::DIVIDE)] == 1);
 
-    f.scheduler->commit();
     REQUIRE(f.scheduler->current_diagnostics()[0]
             == SchedulerIssueOutcome::UNIT_BUSY_DIVIDE);
 }
@@ -212,9 +220,9 @@ TEST_CASE("WarpScheduler: round-robin fairness across warps", "[scheduler]") {
     for (int i = 0; i < 4; ++i) {
         f.scoreboard.seed_next();
         f.scheduler->evaluate();
-        REQUIRE(f.scheduler->output().has_value());
-        issued_warps[i] = f.scheduler->output()->warp_id;
         f.scheduler->commit();
+        REQUIRE(f.scheduler->current_output().has_value());
+        issued_warps[i] = f.scheduler->current_output()->warp_id;
     }
 
     // All 4 warps should have been issued (RR order starting from 0)
@@ -260,19 +268,20 @@ TEST_CASE("WarpScheduler: RR pointer advances even when idle", "[scheduler]") {
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE_FALSE(f.scheduler->output().has_value());
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
     REQUIRE(f.stats.scheduler_idle_cycles == 1);
 
     // Now put instruction in warp 1 only -- should be found after RR wraps
-    f.scheduler->commit();
     f.load_and_push(1, 0, encode_addi(5, 0, 42));
 
     f.scoreboard.seed_next();
     f.scheduler->evaluate();
+    f.scheduler->commit();
 
-    REQUIRE(f.scheduler->output().has_value());
-    REQUIRE(f.scheduler->output()->warp_id == 1);
+    REQUIRE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_output()->warp_id == 1);
 }
 
 TEST_CASE("WarpScheduler: scoreboard-stalled warp becomes eligible next cycle when hazard clears",

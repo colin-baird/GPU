@@ -59,7 +59,6 @@ private:
         TraceArgs args;
     };
 
-    void dispatch_to_unit(const DispatchInput& input);
     bool pipeline_drained() const;
     bool execution_units_drained() const;
     void discard_writeback_results();

@@ -54,18 +54,20 @@ constexpr std::array<uint32_t, kExecUnitCount> kUnitIterationLatency = [] {
     return t;
 }();
 
-// Issue -> writeback distance per unit, in cycles. 10B.0 land state: the
-// forward path scheduler->opcoll->dispatch->unit->arbiter is still fully
-// combinational (all within one tick), so the offsets reflect only the unit's
-// own internal pipeline depth. Each of 10B.1/10B.2/10B.3 adds 1 to every
-// fixed-latency entry as that substep converts an edge to REGISTERED.
+// Issue -> writeback distance per unit, in cycles. END-OF-10B state: every
+// forward edge on the scheduler->opcoll->unit->arbiter path is now REGISTERED.
+// 10B.1 (opcoll->unit), 10B.2 (scheduler->opcoll), and 10B.3 (unit->arbiter)
+// each added one cycle of pipeline depth, so every fixed-latency entry is the
+// 10B.0 land value plus 3. The arbiter-side count_fixed_with_result() <= 1
+// assert (writeback_arbiter.cpp) is the live check that these offsets are
+// exact — a trip means an entry is wrong.
 constexpr std::array<uint32_t, kExecUnitCount> kIssueToWritebackOffset = [] {
     std::array<uint32_t, kExecUnitCount> t{};
-    t[exec_unit_index(ExecUnit::ALU)]      = 0;                      // same tick today
-    t[exec_unit_index(ExecUnit::MULTIPLY)] = kMulPipelineStages - 1; // 2
-    t[exec_unit_index(ExecUnit::DIVIDE)]   = kDivideLatency - 1;     // 31
+    t[exec_unit_index(ExecUnit::ALU)]      = 3;                      // 0 + 3 REGISTERED edges
+    t[exec_unit_index(ExecUnit::MULTIPLY)] = kMulPipelineStages + 2; // (stages-1) + 3
+    t[exec_unit_index(ExecUnit::DIVIDE)]   = kDivideLatency + 2;     // (LATENCY-1) + 3
     t[exec_unit_index(ExecUnit::LDST)]     = 0;                      // never reserves
-    t[exec_unit_index(ExecUnit::TLOOKUP)]  = kTlookupLatency - 1;    // 16
+    t[exec_unit_index(ExecUnit::TLOOKUP)]  = kTlookupLatency + 2;    // (LATENCY-1) + 3
     t[exec_unit_index(ExecUnit::SYSTEM)]   = 0;                      // no writeback
     return t;
 }();
@@ -151,7 +153,15 @@ public:
     virtual void evaluate() = 0;
     virtual void commit() = 0;
     virtual void reset() = 0;
-    virtual bool next_has_result() const = 0;
+    // Phase 10B.3: REGISTERED unit->arbiter edge. current_has_result() reads
+    // the unit's committed result-buffer state (current_result_buffer_.valid);
+    // the writeback arbiter reads it one cycle after the unit produced the
+    // result. consume_result() is a PURE READ — it returns the committed
+    // WritebackEntry and mutates nothing. A preempted (unconsumed) result is
+    // held across a writeback stall by the stalled unit's gated commit(); the
+    // unit's evaluate() overwrites next_result_buffer_ fresh each non-stalled
+    // cycle, so a consumed result naturally clears with no invalidation.
+    virtual bool current_has_result() const = 0;
     virtual WritebackEntry consume_result() = 0;
     virtual ExecUnit get_type() const = 0;
 };
@@ -176,8 +186,12 @@ public:
     // QueuedWritebackSource has no dispatch input; it is never "busy" from
     // the scheduler's perspective (the scheduler never targets it).
     bool current_busy() const override { return false; }
-    bool next_has_result() const override { return !queue_.empty(); }
+    bool current_has_result() const override { return !queue_.empty(); }
 
+    // consume_result() pops the queue front. QueuedWritebackSource is a
+    // variable-latency source (not a fixed-latency unit on the writeback
+    // bitmap) and is not subject to the writeback stall, so the pop here is
+    // not a stalled-cycle re-evaluation hazard.
     WritebackEntry consume_result() override {
         WritebackEntry entry = queue_.front();
         queue_.pop_front();

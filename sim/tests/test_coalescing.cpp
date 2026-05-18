@@ -116,10 +116,10 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     REQUIRE(f.gather_file.current_busy(0));
 
     // Pump until the fill arrives and lands in the gather buffer.
-    for (uint32_t i = 0; i < MEM_LATENCY + 4 && !f.gather_file.next_has_result(); ++i) {
+    for (uint32_t i = 0; i < MEM_LATENCY + 4 && !f.gather_file.current_has_result(); ++i) {
         f.tick();
     }
-    REQUIRE(f.gather_file.next_has_result());
+    REQUIRE(f.gather_file.current_has_result());
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
 
     WritebackEntry wb = f.gather_file.consume_result();
@@ -165,7 +165,7 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
         if (f.gather_file.buffer(0).filled_count == WARP_SIZE) break;
     }
     REQUIRE(f.gather_file.buffer(0).filled_count == WARP_SIZE);
-    REQUIRE(f.gather_file.next_has_result());
+    REQUIRE(f.gather_file.current_has_result());
 
     WritebackEntry wb = f.gather_file.consume_result();
     REQUIRE(wb.dest_reg == 6);
@@ -228,7 +228,7 @@ TEST_CASE("Coalescing: store serialization walks 32 lanes without gather buffer 
 
     // Stores never claim the gather buffer.
     REQUIRE_FALSE(f.gather_file.current_busy(0));
-    REQUIRE_FALSE(f.gather_file.next_has_result());
+    REQUIRE_FALSE(f.gather_file.current_has_result());
     REQUIRE(f.stats.store_misses == WARP_SIZE);
     REQUIRE(f.stats.coalesced_requests == 0);
     REQUIRE(f.stats.serialized_requests == 1);

@@ -102,7 +102,7 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "\n";
 
     out << "--- Writeback ---\n";
-    out << "Writeback conflicts:       " << writeback_conflicts << "\n";
+    out << "Fixed WB preempted cycles: " << fixed_writeback_preempted_cycles << "\n";
 }
 
 void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
@@ -181,7 +181,8 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"secondary_drain_cycles\": " << secondary_drain_cycles << ",\n";
 
     // Writeback
-    out << "  \"writeback_conflicts\": " << writeback_conflicts << ",\n";
+    out << "  \"fixed_writeback_preempted_cycles\": "
+        << fixed_writeback_preempted_cycles << ",\n";
 
     // Per-warp arrays
     auto emit_warp_array = [&](const char* name,

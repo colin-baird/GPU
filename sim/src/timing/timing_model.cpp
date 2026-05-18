@@ -193,6 +193,32 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     wb_arbiter_->add_source(tlookup_.get());
     wb_arbiter_->add_source(gather_file_.get());
 
+    // Phase 10B.1/10B.2/10B.3 pull-model + writeback-stall wiring. The
+    // opcoll->unit and scheduler->opcoll forward edges are REGISTERED: each
+    // consumer pulls the producer's committed current_output() inside its own
+    // evaluate(), so the tick-level dispatch/accept glue is gone. Every
+    // issue/execute stage also reads the WritebackArbiter's combinational-
+    // backward writeback stall. All back-pointers are nullptr-tolerant for
+    // unit tests that exercise a stage in isolation.
+    alu_->set_operand_collector(opcoll_.get());
+    alu_->set_writeback_arbiter(wb_arbiter_.get());
+    alu_->set_sim_cycle(&cycle_);
+    mul_->set_operand_collector(opcoll_.get());
+    mul_->set_writeback_arbiter(wb_arbiter_.get());
+    mul_->set_sim_cycle(&cycle_);
+    div_->set_operand_collector(opcoll_.get());
+    div_->set_writeback_arbiter(wb_arbiter_.get());
+    div_->set_sim_cycle(&cycle_);
+    tlookup_->set_operand_collector(opcoll_.get());
+    tlookup_->set_writeback_arbiter(wb_arbiter_.get());
+    tlookup_->set_sim_cycle(&cycle_);
+    ldst_->set_operand_collector(opcoll_.get());
+    ldst_->set_writeback_arbiter(wb_arbiter_.get());
+    ldst_->set_sim_cycle(&cycle_);
+    opcoll_->set_scheduler(scheduler_.get());
+    opcoll_->set_writeback_arbiter(wb_arbiter_.get());
+    scheduler_->set_writeback_arbiter(wb_arbiter_.get());
+
     panic_ = std::make_unique<PanicController>(config.num_warps, warps_.data(), func_model);
     // Phase 6: wire the drained-query callable into the panic controller.
     // Replaces the prior pre-evaluate set_units_drained() setter that
@@ -201,21 +227,15 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     // on each unit / opcoll / ldst / wb_arbiter.
     panic_->set_drained_query([this]() { return execution_units_drained(); });
 
-    // Phase 10B.0 wiring: the scheduler holds raw pointers to the scoreboard,
-    // the branch tracker, the LdSt unit, and the four fixed-latency execution
-    // units. evaluate() reads current_pending() / current_in_flight() for
-    // issue hazards and the LdSt unit's REGISTERED FIFO-occupancy accessors
-    // for the LDST issue gate. The opcoll busy-poll pointer was removed: unit
-    // availability is now scheduler-side bookkeeping (unit_busy_ countdowns +
-    // the writeback bitmap). The ALU / MUL / DIV / TLOOKUP pointers are wired
-    // for ONE narrow purpose — the Phase 10B.0 interim writeback-result-buffer
-    // issue gate (human-approved deviation, removed in 10B.3): the scheduler
-    // reads each unit's current_result_pending() to avoid issuing into a unit
-    // whose committed result buffer is still occupied. This is NOT the removed
-    // busy-poll.
-    scheduler_->set_dependencies(&scoreboard_, &branch_tracker_, ldst_.get(),
-                                 alu_.get(), mul_.get(), div_.get(),
-                                 tlookup_.get());
+    // Phase 10B.0/10B.3 wiring: the scheduler holds raw pointers to the
+    // scoreboard, the branch tracker, and the LdSt unit. evaluate() reads
+    // current_pending() / current_in_flight() for issue hazards and the LdSt
+    // unit's REGISTERED FIFO-occupancy accessors for the LDST issue gate. Unit
+    // availability is scheduler-side bookkeeping (unit_busy_ countdowns + the
+    // writeback bitmap). Phase 10B.3 removed the interim writeback-result-
+    // buffer gate — the writeback stall now holds a load-preempted result — so
+    // no execution-unit pointers are wired here any more.
+    scheduler_->set_dependencies(&scoreboard_, &branch_tracker_, ldst_.get());
 
     warp_trace_slices_.resize(config.num_warps);
     hardware_trace_slices_.resize(kHardwareTrackCount);
@@ -256,39 +276,12 @@ void TimingModel::initialize_trace_writer() {
     trace_metadata_written_ = true;
 }
 
-void TimingModel::dispatch_to_unit(const DispatchInput& input) {
-    switch (input.decoded.target_unit) {
-        case ExecUnit::ALU:
-            alu_->accept(input, cycle_);
-            break;
-        case ExecUnit::MULTIPLY:
-            mul_->accept(input, cycle_);
-            break;
-        case ExecUnit::DIVIDE:
-            div_->accept(input, cycle_);
-            break;
-        case ExecUnit::TLOOKUP:
-            tlookup_->accept(input, cycle_);
-            break;
-        case ExecUnit::LDST:
-            ldst_->accept(input, cycle_);
-            break;
-        case ExecUnit::SYSTEM:
-            if (input.trace.is_ecall) {
-                warps_[input.warp_id].active = false;
-            }
-            break;
-        default:
-            break;
-    }
-}
-
 bool TimingModel::pipeline_drained() const {
     return !opcoll_->current_busy() &&
-           !alu_->current_busy() && !alu_->next_has_result() &&
-           !mul_->current_busy() && !mul_->next_has_result() &&
-           !div_->current_busy() && !div_->next_has_result() &&
-           !tlookup_->current_busy() && !tlookup_->next_has_result() &&
+           !alu_->current_busy() && !alu_->current_has_result() &&
+           !mul_->current_busy() && !mul_->current_has_result() &&
+           !div_->current_busy() && !div_->current_has_result() &&
+           !tlookup_->current_busy() && !tlookup_->current_has_result() &&
            !ldst_->current_busy() && ldst_->current_fifo_empty() &&
            coalescing_->is_idle() &&
            cache_->is_idle() &&
@@ -298,26 +291,29 @@ bool TimingModel::pipeline_drained() const {
 
 bool TimingModel::execution_units_drained() const {
     return !opcoll_->current_busy() &&
-           !alu_->current_busy() && !alu_->next_has_result() &&
-           !mul_->current_busy() && !mul_->next_has_result() &&
-           !div_->current_busy() && !div_->next_has_result() &&
-           !tlookup_->current_busy() && !tlookup_->next_has_result() &&
+           !alu_->current_busy() && !alu_->current_has_result() &&
+           !mul_->current_busy() && !mul_->current_has_result() &&
+           !div_->current_busy() && !div_->current_has_result() &&
+           !tlookup_->current_busy() && !tlookup_->current_has_result() &&
            !ldst_->current_busy() && ldst_->current_fifo_empty() &&
            !wb_arbiter_->current_busy();
 }
 
 void TimingModel::discard_writeback_results() {
-    auto discard = [](ExecutionUnit& unit) {
-        if (unit.next_has_result()) {
-            unit.consume_result();
-        }
-    };
-
-    discard(*alu_);
-    discard(*mul_);
-    discard(*div_);
-    discard(*tlookup_);
-    discard(*gather_file_);
+    // Phase 10B.3: consume_result() on the fixed-latency units (ALU/MUL/DIV/
+    // TLOOKUP) is a pure read — the result buffer is a plain double-buffered
+    // pipeline register that self-clears: the panic-path evaluate() assigns
+    // next_result_buffer_ fresh ({valid:false} when idle) and commit() flips
+    // it, so a stale result drains in at most two panic cycles with no
+    // explicit discard. The gather buffer's consume_result() DOES release its
+    // buffer directly, so it still must be drained here. Calling consume on
+    // the fixed units is harmless (pure read) but pointless, so only the
+    // gather source is drained. current_has_result() is committed state
+    // (updated at gather.commit()), so one buffer drains per panic cycle —
+    // identical to the pre-10B.3 single-consume discard.
+    if (gather_file_->current_has_result()) {
+        gather_file_->consume_result();
+    }
 }
 
 bool TimingModel::all_warps_done() const {
@@ -436,24 +432,33 @@ bool TimingModel::tick() {
     // Each non-panic tick has two phases:
     //
     // 1. evaluate phase (forward sweep, dataflow order). Each stage reads
-    //    its inputs — committed state for REGISTERED edges, the live next_*
-    //    of upstream for COMBINATIONAL edges, the const current_busy() accessor
-    //    of a downstream consumer for READY/STALL edges — and writes its
-    //    own next_* slot. current_busy() reads only the consumer's own
-    //    committed state, so the value is stable through the cycle
-    //    regardless of where in the evaluate sweep it is queried. Order in
-    //    this tick:
-    //      cache -> fetch -> decode -> scheduler -> opcoll.accept -> opcoll
-    //      -> dispatch -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if
-    //      -> cache.drain_write_buffer -> wb_arbiter.
+    //    its inputs — committed state for REGISTERED edges, the const
+    //    current_busy() accessor of a downstream consumer for READY/STALL
+    //    edges, the WritebackArbiter's next_writeback_stall() for the
+    //    combinational-backward stall — and writes its own next_* slot.
+    //    Phase 10B.1/10B.2 made the scheduler->opcoll and opcoll->unit
+    //    forward edges REGISTERED pull edges: each consumer reads the
+    //    producer's committed current_output() inside its own evaluate(),
+    //    so there is no tick-level dispatch/accept glue. Phase 10B.3 moved
+    //    wb_arbiter to the FRONT of the sweep so next_writeback_stall() is
+    //    readable same-cycle by every issue/execute consumer. Order:
+    //      wb_arbiter -> gather -> cache -> fetch -> decode -> scheduler ->
+    //      opcoll -> alu/mul/div/tlookup/ldst -> coalescing -> mem_if ->
+    //      cache.drain_write_buffer.
     //
-    // 2. commit phase. Every stage flips its next_* into current_*. The
-    //    stages are independent at commit time (no commit() reads another
-    //    stage's state), so order is for traceability only. The current
-    //    order is fetch, decode, scheduler, opcoll, units, coalescing,
-    //    cache, mem_if, wb_arbiter, gather_file, scoreboard, branch_tracker,
-    //    followed by the optional panic-flush cascade armed at top-of-tick.
+    // 2. commit phase. Every stage flips its next_* into current_*, except
+    //    the issue/execute stages (the five units, opcoll, scheduler) which
+    //    self-gate their commit() on next_writeback_stall() — a stalled
+    //    stage skips the flip and holds. The stages are independent at
+    //    commit time, so order is for traceability only.
     // -------------------------------------------------------------------
+
+    // Phase 10B.3: wb_arbiter first — it asserts the combinational-backward
+    // writeback stall that every downstream issue/execute consumer reads
+    // this same cycle. It reads each source's committed current_has_result()
+    // and consume_result() is a pure read, so capture is sweep-order-
+    // independent.
+    wb_arbiter_->evaluate();
 
     fetch_->evaluate();
     decode_->evaluate();
@@ -465,31 +470,35 @@ bool TimingModel::tick() {
     // commit-phase block at the end of this tick honors via
     // scheduler/opcoll/gather_file/wb_arbiter -> flush().
 
-    // Phase 4: scheduler reads opcoll_->current_busy() and each unit's current_busy()
-    // directly inside evaluate(); the prior pre-evaluate set_opcoll_free
-    // setter is gone.
+    // Phase 10B.2/10B.3: scheduler reads next_writeback_stall() at the top of
+    // evaluate() (early-return on a stalled cycle) and produces next_output_.
     scheduler_->evaluate();
 
-    if (scheduler_->output()) {
-        opcoll_->accept(*scheduler_->output());
-    }
+    // Phase 10B.2: REGISTERED scheduler->opcoll edge — opcoll's evaluate()
+    // pulls scheduler_->current_output() itself; no tick-level accept glue.
     opcoll_->evaluate();
 
-    if (opcoll_->output()) {
-        dispatch_to_unit(*opcoll_->output());
-    }
-
-    // Phase 10A: branch resolution moved into ALUUnit::evaluate(). The ALU
-    // received this cycle's dispatched branch via alu_->accept() inside
-    // dispatch_to_unit() above; its evaluate() now updates the branch
-    // predictor and publishes the REGISTERED redirect-request. fetch.commit()
-    // and decode.commit() read alu.current_redirect_request_ at cycle N+1
-    // (after this cycle's alu.commit() flips next_ -> current_).
+    // Phase 10B.1: REGISTERED opcoll->unit edge — each unit's evaluate()
+    // pulls opcoll_->current_output() and self-selects by target_unit; no
+    // tick-level dispatch glue. Branch resolution stays inside ALUUnit::
+    // evaluate() (Phase 10A).
     alu_->evaluate();
     mul_->evaluate();
     div_->evaluate();
     tlookup_->evaluate();
     ldst_->evaluate();
+
+    // Phase 10B.1: SYSTEM (ECALL) retirement. SYSTEM has no execution unit,
+    // so the warp-deactivation that dispatch_to_unit's SYSTEM case used to
+    // perform is done here off opcoll's committed output. The opcoll is
+    // frozen during a writeback stall, so re-running this on a stalled cycle
+    // is idempotent (deactivating an already-inactive warp is a no-op).
+    if (const auto& dispatched = opcoll_->current_output()) {
+        if (dispatched->decoded.target_unit == ExecUnit::SYSTEM &&
+            dispatched->trace.is_ecall) {
+            warps_[dispatched->warp_id].active = false;
+        }
+    }
 
     // Coalescing drives HIT writes into the gather buffer. cache_->evaluate()
     // at the top of tick already deposited any FILL into the gather buffer
@@ -500,8 +509,6 @@ bool TimingModel::tick() {
     mem_if_->evaluate();
 
     cache_->drain_write_buffer();
-
-    wb_arbiter_->evaluate();
 
     fetch_->commit();
     decode_->commit();
@@ -517,7 +524,7 @@ bool TimingModel::tick() {
     mem_if_->commit();
     wb_arbiter_->commit();
     // The gather buffer's write-port scratch must be cleared after the
-    // arbiter observes next_has_result() for this cycle.
+    // arbiter observes current_has_result() for this cycle.
     gather_file_->commit();
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage

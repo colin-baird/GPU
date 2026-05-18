@@ -266,7 +266,7 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
 
     // Gate must block issue even though buffer is non-empty, scoreboard is
     // clear, opcoll is free, and the target unit is ready.
-    REQUIRE_FALSE(scheduler.output().has_value());
+    REQUIRE_FALSE(scheduler.current_output().has_value());
     REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::BRANCH_SHADOW);
     REQUIRE(stats.warp_stall_branch_shadow[0] == 1);
     REQUIRE(stats.total_instructions_issued == 0);
@@ -288,7 +288,7 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     branch_tracker.commit();
 
     // Now the follow-up ADDI must issue.
-    REQUIRE(scheduler.output().has_value());
+    REQUIRE(scheduler.current_output().has_value());
     REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::ISSUED);
     REQUIRE(stats.warp_stall_branch_shadow[0] == 1);  // unchanged
     REQUIRE(stats.total_instructions_issued == 1);

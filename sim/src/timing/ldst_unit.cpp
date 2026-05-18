@@ -1,4 +1,5 @@
 #include "gpu_sim/timing/ldst_unit.h"
+#include "gpu_sim/timing/writeback_arbiter.h"
 
 namespace gpu_sim {
 
@@ -33,6 +34,15 @@ void LdStUnit::seed_next() {
 }
 
 void LdStUnit::evaluate() {
+    // Phase 10B.1: REGISTERED opcoll->unit edge via the pull model. Read
+    // opcoll's committed output and self-select by target_unit.
+    if (opcoll_ != nullptr) {
+        const auto& dispatched = opcoll_->current_output();
+        if (dispatched && dispatched->decoded.target_unit == ExecUnit::LDST) {
+            accept(*dispatched, sim_cycle_ != nullptr ? *sim_cycle_ : 0);
+        }
+    }
+
     // Operates on next_* (seeded equal to current_* by seed_next() at the top
     // of the tick, possibly updated by accept() earlier this tick).
     // Phase 10B.0.5: next_push_ is a fresh per-cycle staging slot — reset it
@@ -65,6 +75,17 @@ void LdStUnit::evaluate() {
 }
 
 void LdStUnit::commit() {
+    // Phase 10B.3: writeback-stall self-gate. LdStUnit is one of the five
+    // issue/execute units that freeze on a writeback-stall cycle: no
+    // next_->current_ flip and no FIFO push, so seed_next()+evaluate() re-run
+    // identically next tick (re-staging next_push_, re-pushing once). The
+    // addr-gen FIFO push is gated with the rest — coalescing (ungated) may
+    // still pop from the FIFO this cycle, which simply shrinks it; the
+    // LdStUnit re-pushes its held entry on the resumed cycle.
+    if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
+        return;
+    }
+
     // Phase 10B.0.5: Stats increments relocated here from evaluate()/accept().
     // Both per-cycle flags are consumed and cleared at commit() so a commit()
     // not preceded by an evaluate() never re-counts a stale flag.
@@ -114,9 +135,11 @@ void LdStUnit::reset() {
     accepted_this_cycle_ = false;
 }
 
-bool LdStUnit::next_has_result() const {
+bool LdStUnit::current_has_result() const {
     // LD/ST unit doesn't produce results through writeback buffer directly.
-    // Load results come from cache/MSHR fill path.
+    // Load results come from cache/MSHR fill path (the LoadGatherBufferFile,
+    // which is the separate writeback arbiter source). LdStUnit is not
+    // registered with the arbiter.
     return false;
 }
 

@@ -1,10 +1,7 @@
 #include "gpu_sim/timing/warp_scheduler.h"
 
 #include "gpu_sim/timing/ldst_unit.h"
-#include "gpu_sim/timing/alu_unit.h"
-#include "gpu_sim/timing/multiply_unit.h"
-#include "gpu_sim/timing/divide_unit.h"
-#include "gpu_sim/timing/tlookup_unit.h"
+#include "gpu_sim/timing/writeback_arbiter.h"
 
 namespace gpu_sim {
 
@@ -26,49 +23,14 @@ WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
 
 void WarpScheduler::set_dependencies(Scoreboard* scoreboard,
                                      BranchShadowTracker* branch_tracker,
-                                     LdStUnit* ldst, ALUUnit* alu,
-                                     MultiplyUnit* mul, DivideUnit* div,
-                                     TLookupUnit* tlookup) {
+                                     LdStUnit* ldst) {
     scoreboard_ = scoreboard;
     branch_tracker_ = branch_tracker;
     ldst_ = ldst;
-    alu_ = alu;
-    mul_ = mul;
-    div_ = div;
-    tlookup_ = tlookup;
     // Capture the LDST addr-gen iteration latency (runtime-configured value;
     // see warp_scheduler.h). Defined here rather than inline in the header so
     // LdStUnit stays an incomplete type at the header.
     ldst_iteration_latency_ = ldst_ ? ldst_->current_addr_gen_latency() : 0;
-}
-
-// Phase 10B.0 interim writeback-result-buffer gate (human-approved deviation,
-// removed in 10B.3). Returns true when the target fixed-latency unit's
-// committed result buffer is still occupied by an unconsumed result — issuing
-// a new op into it would let the unit's next-cycle evaluate() overwrite that
-// result (ALU/DIV/TLOOKUP) or stall its pipeline (MUL). The narrow
-// current_result_buffer_.valid portion of the old current_busy(). LDST/SYSTEM
-// produce no fixed-latency writeback and are never gated here.
-//
-// A member function (not a free function) so each unit->scheduler
-// current_result_pending() read has a statically resolvable receiver field
-// (alu_ / mul_ / div_ / tlookup_) — the libclang AST extractor in
-// tools/diagram_extract_ast.py attributes the cross-stage edge correctly, the
-// same reason the 10A-era query_unit_ready() was inlined per-case rather than
-// hidden behind a pointer-parameter lambda.
-bool WarpScheduler::target_result_buffer_occupied(ExecUnit target) const {
-    switch (target) {
-        case ExecUnit::ALU:
-            return alu_ != nullptr && alu_->current_result_pending();
-        case ExecUnit::MULTIPLY:
-            return mul_ != nullptr && mul_->current_result_pending();
-        case ExecUnit::DIVIDE:
-            return div_ != nullptr && div_->current_result_pending();
-        case ExecUnit::TLOOKUP:
-            return tlookup_ != nullptr && tlookup_->current_result_pending();
-        default:
-            return false;
-    }
 }
 
 bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const {
@@ -82,6 +44,20 @@ bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d
 }
 
 void WarpScheduler::evaluate() {
+    // Phase 10B.3: writeback-stall freeze guard. The arbiter (sequenced first
+    // in the evaluate sweep) asserts next_writeback_stall() when a load
+    // preempted a fixed-latency writeback. On a stalled cycle the scheduler
+    // early-returns: it issues nothing, advances no issue bookkeeping
+    // (bitmap_head_, reservations, unit_busy_, opcoll_cooldown_, the LDST
+    // counters), and its commit() is gated — so the writeback schedule freezes
+    // in lockstep with the pipeline it models. No instruction is lost: the
+    // already-issued instruction is held in current_output_ by the gated
+    // commit(). The body below never runs on a stalled cycle, so the
+    // scheduler's Stats increments stay safely in evaluate().
+    if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
+        return;
+    }
+
     next_output_ = std::nullopt;
     next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
 
@@ -91,10 +67,6 @@ void WarpScheduler::evaluate() {
     // before the issue gate reads any of it, so a value set on issue at cycle
     // N is checked one lower at N+1 (the decrement-then-check ordering that
     // makes the countdowns exact).
-    //
-    // 10B.3 will add a writeback-stall freeze guard here: on a stalled cycle
-    // the scheduler early-returns at the top so bitmap_head_ does not advance
-    // and no issue bookkeeping moves — the schedule simply pauses for a cycle.
     writeback_bitmap_[bitmap_head_] = std::nullopt;   // reserved cycle elapsed
     bitmap_head_ = (bitmap_head_ + 1) % kWritebackBitmapLen;
     for (auto& b : unit_busy_) {
@@ -196,33 +168,11 @@ void WarpScheduler::evaluate() {
                 next_diagnostics_[w] = unit_busy_outcome(target);
                 continue;
             }
-            // Phase 10B.0 INTERIM writeback-result-buffer gate (DELIBERATE,
-            // HUMAN-APPROVED DEVIATION from the plan — removed in 10B.3).
-            // The plan's 10B.0 drops the scheduler's current_busy() poll, but
-            // that poll was doing double duty: structural-input hazard (now
-            // the unit_busy_/bitmap bookkeeping) AND "committed result buffer
-            // still occupied". The bitmap only prevents fixed-vs-fixed
-            // collisions at issue; the 10B.0 arbiter is still round-robin and
-            // ignores the bitmap, so a load can preempt a fixed-latency
-            // writeback and leave an unconsumed result that the unit's next
-            // evaluate() would clobber (ALU/DIV/TLOOKUP overwrite next_result_
-            // buffer_) -> lost writeback -> scoreboard destination never
-            // cleared -> dependent warps deadlock. Until 10B.3's fixed-
-            // priority arbiter + combinational-backward writeback stall holds
-            // a preempted result, the scheduler must not issue into a unit
-            // whose committed result buffer is still occupied. This is the
-            // narrow current_result_buffer_.valid portion of the old
-            // current_busy() — a backward committed-state back-pressure read,
-            // discipline-compliant. It is unit-level (not gated on
-            // writes_back): even a non-writeback ALU op deposits a result-
-            // buffer entry the arbiter must drain. Removed in 10B.3; Phase
-            // 10F's doc sweep records the deviation.
-            if (target_result_buffer_occupied(target)) {
-                stats_.warp_stall_unit_busy[w]++;
-                stats_.scheduler_unit_busy_stall_cycles[exec_unit_index(target)]++;
-                next_diagnostics_[w] = unit_busy_outcome(target);
-                continue;
-            }
+            // Phase 10B.3: the interim writeback-result-buffer gate is gone.
+            // The combinational-backward writeback stall now holds a
+            // load-preempted fixed-latency result (the stalled unit's gated
+            // commit() freezes it), so the scheduler no longer needs to poll
+            // each unit's committed result buffer before issuing.
             // Writeback-port hazard: only instructions that write back reserve
             // a slot, so only they can collide.
             if (writes_back &&
@@ -326,6 +276,15 @@ void WarpScheduler::evaluate() {
 }
 
 void WarpScheduler::commit() {
+    // Phase 10B.3: writeback-stall self-gate. On a stalled cycle the scheduler
+    // holds — current_output_ keeps the already-issued instruction (clearing
+    // it would lose the issue) and current_diagnostics_ holds. The scoreboard
+    // is committed UNCONDITIONALLY by TimingModel (it must carry the arbiter's
+    // clear_pending); the scheduler's set_pending is simply absent because the
+    // early-returned evaluate() issued nothing this cycle.
+    if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
+        return;
+    }
     current_output_ = next_output_;
     current_diagnostics_ = next_diagnostics_;
 }

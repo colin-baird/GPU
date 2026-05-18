@@ -1,4 +1,5 @@
 #include "gpu_sim/timing/divide_unit.h"
+#include "gpu_sim/timing/writeback_arbiter.h"
 
 namespace gpu_sim {
 
@@ -28,9 +29,20 @@ void DivideUnit::seed_next() {
 }
 
 void DivideUnit::evaluate() {
+    // Phase 10B.1: REGISTERED opcoll->unit edge via the pull model.
+    if (opcoll_ != nullptr) {
+        const auto& dispatched = opcoll_->current_output();
+        if (dispatched && dispatched->decoded.target_unit == ExecUnit::DIVIDE) {
+            accept(*dispatched, sim_cycle_ != nullptr ? *sim_cycle_ : 0);
+        }
+    }
+
     // Operates on next_* (which was seeded equal to current_* by seed_next()
     // at the top of the tick, and may have been updated by accept() earlier
     // in this tick).
+    // Phase 10B.3: the result buffer is a plain double-buffered pipeline
+    // register — assign next_result_buffer_ fresh every cycle.
+    next_result_buffer_ = WritebackEntry{};
     // Phase 10B.0.5: capture the per-cycle busy flag before the body may
     // clear next_busy_; div_stats.busy_cycles is incremented at commit().
     busy_this_cycle_ = next_busy_;
@@ -44,6 +56,15 @@ void DivideUnit::evaluate() {
 }
 
 void DivideUnit::commit() {
+    // Phase 10B.3: writeback-stall self-gate. On a stalled cycle this stage
+    // holds — current_busy_/cycles_remaining_/pending_result_/result_buffer_
+    // all hold, so the next tick's seed_next()+evaluate() re-derive the
+    // identical countdown step and (if the countdown reached 0) the identical
+    // result. The countdown is decremented at most once per non-stalled cycle.
+    if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
+        return;
+    }
+
     // Phase 10B.0.5: Stats increments relocated here from evaluate()/accept().
     // Both per-cycle flags are consumed and cleared at commit() so a commit()
     // not preceded by an evaluate() never re-counts a stale flag.
@@ -75,16 +96,14 @@ void DivideUnit::reset() {
     accepted_this_cycle_ = false;
 }
 
-bool DivideUnit::next_has_result() const {
-    // COMBINATIONAL edge with the writeback arbiter (same-tick visibility,
-    // zero cycle delta).
-    return next_result_buffer_.valid;
+bool DivideUnit::current_has_result() const {
+    // Phase 10B.3: REGISTERED unit->arbiter edge — committed (current_*) state.
+    return current_result_buffer_.valid;
 }
 
 WritebackEntry DivideUnit::consume_result() {
-    WritebackEntry entry = next_result_buffer_;
-    next_result_buffer_.valid = false;
-    return entry;
+    // Phase 10B.3: pure read — mutates nothing.
+    return current_result_buffer_;
 }
 
 } // namespace gpu_sim

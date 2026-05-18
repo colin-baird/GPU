@@ -1,4 +1,5 @@
 #include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/writeback_arbiter.h"
 
 namespace gpu_sim {
 
@@ -22,6 +23,23 @@ void OperandCollector::seed_next() {
 
 void OperandCollector::evaluate() {
     next_output_ = std::nullopt;
+
+    // Phase 10B.2: REGISTERED scheduler->opcoll edge via the pull model. The
+    // opcoll reads the scheduler's committed output at the top of evaluate()
+    // and, if it is free this cycle, latches it via its own accept(). At this
+    // point next_busy_ has been seeded equal to current_busy_ and accept() has
+    // not yet run, so !next_busy_ is exactly "opcoll free". The scheduler's
+    // opcoll_cooldown_cycles_ gate (10B.0) already paces issue so the opcoll
+    // is free whenever the scheduler presents an op; the !next_busy_ guard is
+    // a belt-and-braces invariant — a busy opcoll never overwrites an in-flight
+    // instruction. scheduler_ is null in isolated unit tests, which drive
+    // accept() directly.
+    if (scheduler_ != nullptr && !next_busy_) {
+        const auto& issued = scheduler_->current_output();
+        if (issued) {
+            accept(*issued);
+        }
+    }
 
     // Operates on next_*. After seed_next() at the top of the tick, next_*
     // equals current_* — so for an in-flight instruction the live values
@@ -48,6 +66,15 @@ void OperandCollector::evaluate() {
 }
 
 void OperandCollector::commit() {
+    // Phase 10B.3: writeback-stall self-gate. On a stalled cycle the opcoll
+    // holds — no next_->current_ flip — so current_output_, busy_,
+    // cycles_remaining_, instr_ are all preserved and the cycle re-evaluates
+    // identically next tick. The frozen current_output_ is exactly the frozen
+    // input the (re-runnable) downstream units pull idempotently.
+    if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
+        return;
+    }
+
     // Phase 10B.0.5: operand_collector_busy_cycles relocated here from
     // evaluate() — counting at commit() (skipped on a stalled cycle) means a
     // re-evaluated cycle is not double-counted. Byte-identical while no stall

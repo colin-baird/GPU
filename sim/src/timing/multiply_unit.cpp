@@ -1,4 +1,5 @@
 #include "gpu_sim/timing/multiply_unit.h"
+#include "gpu_sim/timing/writeback_arbiter.h"
 
 namespace gpu_sim {
 
@@ -28,6 +29,15 @@ void MultiplyUnit::seed_next() {
 }
 
 void MultiplyUnit::evaluate() {
+    // Phase 10B.1: REGISTERED opcoll->unit edge via the pull model. Read
+    // opcoll's committed output and self-select by target_unit.
+    if (opcoll_ != nullptr) {
+        const auto& dispatched = opcoll_->current_output();
+        if (dispatched && dispatched->decoded.target_unit == ExecUnit::MULTIPLY) {
+            accept(*dispatched, sim_cycle_ != nullptr ? *sim_cycle_ : 0);
+        }
+    }
+
     // At entry, next_pipeline_ already contains all prior committed entries
     // (seeded by seed_next() via next_=current_) plus any entry just pushed by
     // accept() this tick. We mutate next_pipeline_ in place: decrement
@@ -36,32 +46,35 @@ void MultiplyUnit::evaluate() {
     // is incremented at commit() gated on it.
     busy_this_cycle_ = !next_pipeline_.empty();
 
-    // result_buffer_ is double-buffered with mutations routed through next_*;
-    // read next_ so we observe the live value if anything earlier this tick
-    // mutated it.
-    bool head_blocked = next_result_buffer_.valid && !next_pipeline_.empty() &&
-                        next_pipeline_.front().cycles_remaining == 0;
+    // Phase 10B.3: the result buffer is a plain double-buffered pipeline
+    // register — assign next_result_buffer_ fresh every cycle. There is no
+    // head-blocked hold: the writeback bitmap (10B.0) guarantees the prior
+    // fixed-latency result was consumed before a fresh one is produced, and a
+    // load-preempted result is held by the stalled (gated) commit() — so a
+    // non-stalled evaluate() can always pop a ready head unconditionally.
+    next_result_buffer_ = WritebackEntry{};
 
     for (auto& entry : next_pipeline_) {
-        if (head_blocked && &entry == &next_pipeline_.front()) {
-            continue;
-        }
         if (entry.cycles_remaining > 0) {
             entry.cycles_remaining--;
         }
     }
 
-    // Check if head of pipeline is done
+    // Check if head of pipeline is done; pop it into the result buffer.
     if (!next_pipeline_.empty() && next_pipeline_.front().cycles_remaining == 0) {
-        if (!next_result_buffer_.valid) {
-            next_result_buffer_ = next_pipeline_.front().wb;
-            next_pipeline_.pop_front();
-        }
-        // If result buffer is occupied, pipeline stalls (head entry stays)
+        next_result_buffer_ = next_pipeline_.front().wb;
+        next_pipeline_.pop_front();
     }
 }
 
 void MultiplyUnit::commit() {
+    // Phase 10B.3: writeback-stall self-gate. On a stalled cycle this stage
+    // holds — no next_->current_ flip, no Stats increment — so the pipeline
+    // and result buffer re-evaluate identically next tick.
+    if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
+        return;
+    }
+
     // Phase 10B.0.5: Stats increments relocated here from evaluate()/accept().
     // Counting at commit() (skipped on a stalled cycle) means a re-evaluated
     // cycle is not double-counted. Byte-identical while no stall exists.
@@ -92,19 +105,16 @@ void MultiplyUnit::reset() {
     accepted_this_cycle_ = false;
 }
 
-bool MultiplyUnit::next_has_result() const {
-    // COMBINATIONAL edge with the writeback arbiter: it queries next_has_result()
-    // AFTER this unit's evaluate in the same tick, and must see the
-    // freshly-popped result. Reading next_* preserves zero cycle-count delta.
-    return next_result_buffer_.valid;
+bool MultiplyUnit::current_has_result() const {
+    // Phase 10B.3: REGISTERED unit->arbiter edge — committed (current_*) state.
+    return current_result_buffer_.valid;
 }
 
 WritebackEntry MultiplyUnit::consume_result() {
-    // Return the live entry; invalidate only the next_* slot. commit() at
-    // tick-end latches the empty buffer into current_*.
-    WritebackEntry entry = next_result_buffer_;
-    next_result_buffer_.valid = false;
-    return entry;
+    // Phase 10B.3: pure read. A consumed result clears naturally next cycle
+    // (the non-stalled commit() lets evaluate() overwrite next_result_buffer_);
+    // a preempted result is held by the stalled (gated) commit().
+    return current_result_buffer_;
 }
 
 std::vector<uint32_t> MultiplyUnit::active_warps() const {

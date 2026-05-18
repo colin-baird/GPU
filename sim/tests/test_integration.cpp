@@ -94,6 +94,9 @@ static uint32_t VDOT8(uint32_t rd, uint32_t rs1, uint32_t rs2) {
 static uint32_t TLOOKUP(uint32_t rd, uint32_t rs1, int32_t imm) {
     return i_type(imm, rs1, 0, rd, isa::OP_TLOOKUP);
 }
+static uint32_t DIV(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+    return r_type(isa::FUNCT7_MULDIV, rs2, rs1, isa::FUNCT3_DIV, rd, isa::OP_ALU_R);
+}
 
 // Helper: set up a single-warp config and return model + timing
 struct IntegrationFixture {
@@ -754,4 +757,39 @@ TEST_CASE("Integration: max cycles limit terminates simulation", "[integration]"
     timing.run(100); // Limit to 100 cycles
 
     REQUIRE(timing.cycle_count() >= 100);
+}
+
+// Phase 10B.3 offset-table regression. Interleaves fixed-latency ops across all
+// four fixed-latency units (ALU / MULTIPLY / DIVIDE / TLOOKUP) at the maximum
+// issue rate the scheduler permits, with several warps so issue is sustained.
+// The writeback arbiter asserts count_fixed_with_result() <= 1 on every cycle —
+// in a Debug build that assert is the live check that kIssueToWritebackOffset[]
+// is exact: if any entry is off, the scheduler's writeback bitmap would fail to
+// space two fixed-latency writebacks onto distinct cycles and the assert would
+// trip. The test also requires the kernel to run to completion (no deadlock):
+// a lost writeback would leave a scoreboard destination pending forever.
+TEST_CASE("Integration: interleaved fixed-latency ops never alias a writeback cycle",
+          "[integration][writeback]") {
+    IntegrationFixture f(6);  // several warps -> sustained issue pressure
+    // Each warp runs the same straight-line interleaving of the four
+    // fixed-latency units. Destinations are spread across distinct registers
+    // so the in-warp scoreboard does not serialize the stream — the scheduler
+    // issues as fast as the writeback bitmap and unit_busy_ countdowns allow.
+    std::vector<uint32_t> prog;
+    for (int rep = 0; rep < 4; ++rep) {
+        prog.push_back(ADDI(5, 0, rep + 1));    // ALU
+        prog.push_back(MUL(6, 5, 5));           // MULTIPLY (pipelined)
+        prog.push_back(TLOOKUP(7, 5, 0));       // TLOOKUP (iterative, 17)
+        prog.push_back(DIV(8, 6, 5));           // DIVIDE (iterative, 32)
+        prog.push_back(ADDI(9, 8, 1));          // ALU consuming the DIV result
+        prog.push_back(MUL(10, 9, 9));          // MULTIPLY
+        prog.push_back(VDOT8(11, 5, 6));        // VDOT8 -> MULTIPLY, 2-cyc opcoll
+    }
+    prog.push_back(ECALL());
+    f.load_program(prog);
+
+    // Runs to completion well within budget; the arbiter assert (Debug) is the
+    // live offset-table check. A deadlock (lost writeback) would hit max_cycles.
+    uint64_t cycles = f.run(50000);
+    REQUIRE(cycles < 50000);
 }

@@ -138,13 +138,6 @@ void LoadGatherBufferFile::flush() {
     reset();
 }
 
-bool LoadGatherBufferFile::next_has_result() const {
-    // Phase M4: REGISTERED — return committed flag. The base interface name
-    // is preserved for compatibility with other ExecutionUnit overrides;
-    // see current_has_result() for the canonical name.
-    return current_has_result_;
-}
-
 WritebackEntry LoadGatherBufferFile::consume_result() {
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t idx = (rr_pointer_ + i) % num_warps_;

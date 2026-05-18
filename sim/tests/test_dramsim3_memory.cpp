@@ -443,10 +443,10 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     gather_file.commit();
     // Pump until the line is filled. Bound the wait so an unrelated
     // regression doesn't deadlock this test.
-    for (uint32_t i = 0; i < 1000 && !gather_file.next_has_result(); ++i) {
+    for (uint32_t i = 0; i < 1000 && !gather_file.current_has_result(); ++i) {
         pump_one_cycle();
     }
-    REQUIRE(gather_file.next_has_result());
+    REQUIRE(gather_file.current_has_result());
     (void)gather_file.consume_result();
     cache.commit();
     gather_file.commit();

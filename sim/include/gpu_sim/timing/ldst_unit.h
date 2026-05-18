@@ -8,6 +8,8 @@
 
 namespace gpu_sim {
 
+class WritebackArbiter;
+
 struct AddrGenFIFOEntry {
     bool valid = false;
     uint32_t warp_id;
@@ -34,11 +36,20 @@ public:
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool next_has_result() const override;
+    bool current_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::LDST; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
+
+    // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
+    void set_operand_collector(class OperandCollector* opcoll) {
+        opcoll_ = opcoll;
+    }
+    void set_writeback_arbiter(class WritebackArbiter* arbiter) {
+        wb_arbiter_ = arbiter;
+    }
+    void set_sim_cycle(const uint64_t* cycle) { sim_cycle_ = cycle; }
 
     // Phase M1 discipline: the address-gen FIFO is REGISTERED. evaluate()
     // does not push directly; it stages an entry in next_push_ and commit()
@@ -124,6 +135,11 @@ private:
     // double-count ldst_stats.
     bool busy_this_cycle_ = false;
     bool accepted_this_cycle_ = false;
+
+    // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
+    OperandCollector* opcoll_ = nullptr;
+    WritebackArbiter* wb_arbiter_ = nullptr;
+    const uint64_t* sim_cycle_ = nullptr;
 };
 
 } // namespace gpu_sim

@@ -69,7 +69,7 @@ TEST_CASE("LoadGatherBuffer: coalesced write fills all 32 slots in one cycle",
     REQUIRE(file.buffer(0).filled_count == WARP_SIZE);
     // Phase M4: latch staged has_result via commit before observing.
     file.commit();
-    REQUIRE(file.next_has_result());
+    REQUIRE(file.current_has_result());
 
     WritebackEntry wb = file.consume_result();
     REQUIRE(wb.valid);
@@ -106,7 +106,7 @@ TEST_CASE("LoadGatherBuffer: partial write populates only selected slots",
     }
 
     // Writeback must not fire yet.
-    REQUIRE_FALSE(file.next_has_result());
+    REQUIRE_FALSE(file.current_has_result());
 }
 
 TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
@@ -148,7 +148,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // Lane 0 — hit.
     REQUIRE(cache.process_load(/*addr=*/0, 0, /*mask=*/1u, values, 1, 0, 0));
     REQUIRE(gather_file.buffer(0).filled_count == 1);
-    REQUIRE_FALSE(gather_file.next_has_result());
+    REQUIRE_FALSE(gather_file.current_has_result());
     gather_file.commit();
 
     // Lanes 1..31 — each a miss on a distinct line. Phase M5: each
@@ -167,7 +167,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
 
     // At this point 31 MSHRs are outstanding; only slot 0 is filled.
     REQUIRE(gather_file.buffer(0).filled_count == 1);
-    REQUIRE_FALSE(gather_file.next_has_result());
+    REQUIRE_FALSE(gather_file.current_has_result());
 
     // Drain the fills one cycle at a time, verifying the writeback does not
     // fire early.
@@ -183,13 +183,13 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
         gather_file.commit();
         uint32_t filled_now = gather_file.buffer(0).filled_count;
         if (filled_now < WARP_SIZE) {
-            REQUIRE_FALSE(gather_file.next_has_result());
+            REQUIRE_FALSE(gather_file.current_has_result());
         }
         fills_completed = filled_now - 1;
     }
 
     REQUIRE(gather_file.buffer(0).filled_count == WARP_SIZE);
-    REQUIRE(gather_file.next_has_result());
+    REQUIRE(gather_file.current_has_result());
 }
 
 TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is busy",
@@ -246,7 +246,7 @@ TEST_CASE("LoadGatherBuffer: consume_result releases buffer and re-claim succeed
                            LoadGatherBufferFile::GatherWriteSource::FILL));
     // Phase M4: latch staged has_result via commit before observing.
     file.commit();
-    REQUIRE(file.next_has_result());
+    REQUIRE(file.current_has_result());
 
     WritebackEntry wb = file.consume_result();
     REQUIRE(wb.valid);
@@ -295,20 +295,20 @@ TEST_CASE("LoadGatherBuffer: round-robin emission across two completed buffers",
                            LoadGatherBufferFile::GatherWriteSource::FILL));
     file.commit();
 
-    REQUIRE(file.next_has_result());
+    REQUIRE(file.current_has_result());
     WritebackEntry first = file.consume_result();
     REQUIRE(first.warp_id == 1);
     REQUIRE(first.dest_reg == 5);
     // Phase M4: recompute REGISTERED has_result via commit between consumes.
     file.commit();
 
-    REQUIRE(file.next_has_result());
+    REQUIRE(file.current_has_result());
     WritebackEntry second = file.consume_result();
     REQUIRE(second.warp_id == 3);
     REQUIRE(second.dest_reg == 7);
     file.commit();
 
-    REQUIRE_FALSE(file.next_has_result());
+    REQUIRE_FALSE(file.current_has_result());
 
     // Next completed buffer after warp 3 should wrap back and prefer the
     // lowest index first: complete warp 0 and warp 2 simultaneously. After

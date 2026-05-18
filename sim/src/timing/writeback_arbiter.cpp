@@ -1,5 +1,7 @@
 #include "gpu_sim/timing/writeback_arbiter.h"
 
+#include <cassert>
+
 namespace gpu_sim {
 
 WritebackArbiter::WritebackArbiter(Scoreboard& scoreboard, Stats& stats)
@@ -9,39 +11,81 @@ void WritebackArbiter::add_source(ExecutionUnit* unit) {
     sources_.push_back(unit);
 }
 
-void WritebackArbiter::evaluate() {
-    // Phase 1 discipline: this is a COMBINATIONAL same-tick edge with each
-    // execution unit. Units run their own evaluate() earlier in tick(),
-    // depositing freshly-produced results into next_result_buffer_; we read
-    // them via next_has_result() (live, next_*) and clear them via consume_result()
-    // (writes next_*.valid=false). The unit's commit() at end-of-tick latches
-    // the cleared slot into current_*, matching the pre-Phase-1 cycle counts.
-    pending_commit_ = std::nullopt;
+namespace {
+// The variable-latency source — the LoadGatherBufferFile — registers with
+// get_type()==LDST. Every other source (ALU/MULTIPLY/DIVIDE/TLOOKUP) is a
+// fixed-latency unit reserved on the scheduler's writeback bitmap.
+bool is_variable_latency(const ExecutionUnit* src) {
+    return src->get_type() == ExecUnit::LDST;
+}
+}  // namespace
 
-    uint32_t valid_count = 0;
-    int32_t winner = -1;
-
-    for (uint32_t i = 0; i < sources_.size(); ++i) {
-        uint32_t idx = (rr_pointer_ + i) % static_cast<uint32_t>(sources_.size());
-        if (sources_[idx]->next_has_result()) {
-            valid_count++;
-            if (winner < 0) {
-                winner = static_cast<int32_t>(idx);
-            }
+uint32_t WritebackArbiter::count_fixed_with_result() const {
+    uint32_t count = 0;
+    for (const auto* source : sources_) {
+        if (!is_variable_latency(source) && source->current_has_result()) {
+            count++;
         }
     }
+    return count;
+}
 
-    if (valid_count > 1) {
-        stats_.writeback_conflicts++;
+ExecutionUnit* WritebackArbiter::first_fixed_with_result() const {
+    for (auto* source : sources_) {
+        if (!is_variable_latency(source) && source->current_has_result()) {
+            return source;
+        }
     }
+    return nullptr;
+}
 
-    if (winner >= 0) {
-        uint32_t idx = static_cast<uint32_t>(winner);
-        WritebackEntry entry = sources_[idx]->consume_result();
+void WritebackArbiter::evaluate() {
+    // Phase 10B.3: REGISTERED unit->arbiter edge + fixed-priority arbitration +
+    // the combinational-backward writeback stall. Sources are read through
+    // current_has_result() (committed end-of-last-cycle state); consume_result()
+    // is a pure read. The arbiter is sequenced FIRST in the evaluate sweep so
+    // next_writeback_stall() is readable same-cycle by every consumer.
+    pending_commit_ = std::nullopt;
+    writeback_stall_ = false;  // reset every evaluate
 
+    // The scheduler's binding writeback bitmap (10B.0) guarantees at most one
+    // fixed-latency source presents a result on any cycle. Assert it — a trip
+    // means kIssueToWritebackOffset[] is wrong for some unit.
+    assert(count_fixed_with_result() <= 1 &&
+           "scheduler bitmap must prevent fixed-vs-fixed writeback contention");
+
+    // Locate the (at most one) ready variable-latency source and the (at most
+    // one, asserted above) ready fixed-latency unit.
+    ExecutionUnit* variable = nullptr;
+    for (auto* source : sources_) {
+        if (is_variable_latency(source) && source->current_has_result()) {
+            variable = source;
+            break;
+        }
+    }
+    ExecutionUnit* fixed = first_fixed_with_result();
+
+    // Fixed-priority arbitration: variable-latency sources (loads) first,
+    // fixed-latency units second. A load on the critical path of every
+    // dependent instruction must retire as early as possible.
+    ExecutionUnit* winner = nullptr;
+    if (variable != nullptr) {
+        winner = variable;
+        // A fixed-latency unit with a result this cycle lost the port — it is
+        // preempted. Assert the combinational-backward stall so it (and every
+        // other issue/execute stage) freezes for the cycle.
+        if (fixed != nullptr) {
+            writeback_stall_ = true;
+            stats_.fixed_writeback_preempted_cycles++;
+        }
+    } else if (fixed != nullptr) {
+        winner = fixed;
+    }
+    // else: idle writeback cycle.
+
+    if (winner != nullptr) {
+        WritebackEntry entry = winner->consume_result();
         pending_commit_ = entry;
-        rr_pointer_ = (idx + 1) % static_cast<uint32_t>(sources_.size());
-
         if (entry.dest_reg != 0) {
             scoreboard_.clear_pending(entry.warp_id, entry.dest_reg);
         }
@@ -58,7 +102,7 @@ bool WritebackArbiter::current_busy() const {
     }
 
     for (const auto* source : sources_) {
-        if (source->next_has_result()) {
+        if (source->current_has_result()) {
             return true;
         }
     }
@@ -69,7 +113,7 @@ bool WritebackArbiter::current_busy() const {
 uint32_t WritebackArbiter::ready_source_count() const {
     uint32_t count = 0;
     for (const auto* source : sources_) {
-        if (source->next_has_result()) {
+        if (source->current_has_result()) {
             count++;
         }
     }
@@ -77,9 +121,9 @@ uint32_t WritebackArbiter::ready_source_count() const {
 }
 
 void WritebackArbiter::reset() {
-    rr_pointer_ = 0;
     committed_ = std::nullopt;
     pending_commit_ = std::nullopt;
+    writeback_stall_ = false;
 }
 
 void WritebackArbiter::flush() {

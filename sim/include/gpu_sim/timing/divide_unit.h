@@ -6,6 +6,8 @@
 
 namespace gpu_sim {
 
+class WritebackArbiter;
+
 class DivideUnit : public ExecutionUnit {
 public:
     explicit DivideUnit(Stats& stats) : stats_(stats) {}
@@ -14,15 +16,14 @@ public:
         return current_busy_ || current_result_buffer_.valid;
     }
 
-    // Phase 10B.0 interim issue gate (DELIBERATE, HUMAN-APPROVED DEVIATION
-    // from the plan — to be REMOVED in Phase 10B.3). See the long rationale
-    // on ALUUnit::current_result_pending(). DivideUnit's evaluate()
-    // unconditionally writes next_result_buffer_ when the iteration count
-    // reaches zero, so an unconsumed result preempted by a load is lost. The
-    // unit_busy_[DIVIDE] countdown gate only covers the structural-input
-    // hazard (current_busy_); this accessor is the current_result_buffer_
-    // .valid portion of the old current_busy(). Removed in 10B.3.
-    bool current_result_pending() const { return current_result_buffer_.valid; }
+    // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
+    void set_operand_collector(class OperandCollector* opcoll) {
+        opcoll_ = opcoll;
+    }
+    void set_writeback_arbiter(class WritebackArbiter* arbiter) {
+        wb_arbiter_ = arbiter;
+    }
+    void set_sim_cycle(const uint64_t* cycle) { sim_cycle_ = cycle; }
 
     // Phase 10B.0.5: copy the carry-forward iterative state current_* ->
     // next_*. evaluate() consumes the prior-cycle busy flag and decrements
@@ -33,7 +34,7 @@ public:
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool next_has_result() const override;
+    bool current_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::DIVIDE; }
 
@@ -48,9 +49,9 @@ public:
         return current_busy_ ? &current_pending_result_ : nullptr;
     }
     const WritebackEntry* result_entry() const {
-        // Matches next_has_result(): read next_* so same-tick produced results
-        // are visible to the writeback arbiter and the post-evaluate trace.
-        return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
+        // Phase 10B.3: the result buffer is a plain double-buffered pipeline
+        // register. The trace path runs after commit(), so it reads current_*.
+        return current_result_buffer_.valid ? &current_result_buffer_ : nullptr;
     }
 
 private:
@@ -75,6 +76,11 @@ private:
     // double-count div_stats.
     bool busy_this_cycle_ = false;
     bool accepted_this_cycle_ = false;
+
+    // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
+    OperandCollector* opcoll_ = nullptr;
+    WritebackArbiter* wb_arbiter_ = nullptr;
+    const uint64_t* sim_cycle_ = nullptr;
 };
 
 } // namespace gpu_sim

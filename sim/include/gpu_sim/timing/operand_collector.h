@@ -8,6 +8,8 @@
 
 namespace gpu_sim {
 
+class WritebackArbiter;
+
 struct DispatchInput {
     DecodedInstruction decoded;
     TraceEvent trace;
@@ -50,13 +52,23 @@ public:
 
     // Phase 2 discipline: writes only into next_* slots. evaluate() runs
     // afterward in the same tick and consumes next_* (combinational forward
-    // inside this stage).
+    // inside this stage). Public so isolated unit tests drive it directly.
     void accept(const IssueOutput& issue);
 
-    // Output to dispatch — COMBINATIONAL forward edge to dispatch_to_unit and
-    // each execution unit's accept(). Returns next_output_ so the just-
-    // produced output is visible to downstream units this same tick.
-    std::optional<DispatchInput>& output() { return next_output_; }
+    // Phase 10B.1/10B.2 back-pointers. The opcoll pulls the scheduler's
+    // committed output in evaluate() (REGISTERED scheduler->opcoll edge) and
+    // reads the arbiter's writeback stall in commit(). Wired by TimingModel;
+    // null in isolated unit tests (then accept() is driven directly and
+    // commit() never stalls).
+    void set_scheduler(WarpScheduler* scheduler) { scheduler_ = scheduler; }
+    void set_writeback_arbiter(class WritebackArbiter* arbiter) {
+        wb_arbiter_ = arbiter;
+    }
+
+    // Phase 10B.1: REGISTERED opcoll->unit output. current_output() returns
+    // the committed slot; each execution unit pulls it at the top of its own
+    // evaluate() and self-selects by decoded.target_unit. evaluate() continues
+    // to write next_output_.
     const std::optional<DispatchInput>& current_output() const { return current_output_; }
 
     // Read by build_cycle_snapshot() / record_cycle_trace(), which run after
@@ -96,6 +108,10 @@ private:
     // increment operand_collector_busy_cycles, so a re-evaluated stalled cycle
     // does not double-count.
     bool busy_this_cycle_ = false;
+
+    // Phase 10B.1/10B.2 back-pointers. nullptr-tolerant for unit tests.
+    WarpScheduler* scheduler_ = nullptr;
+    WritebackArbiter* wb_arbiter_ = nullptr;
 };
 
 } // namespace gpu_sim

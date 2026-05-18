@@ -18,20 +18,13 @@ namespace gpu_sim {
 // opcoll busy-poll pointer: unit availability is now predicted scheduler-side
 // from issue history (unit_busy_ countdowns + the writeback bitmap).
 //
-// The ALU / MUL / DIV / TLOOKUP pointers are retained for ONE narrow purpose
-// only — the Phase 10B.0 interim writeback-result-buffer issue gate (a
-// human-approved deviation, removed in 10B.3): the scheduler reads each unit's
-// current_result_pending() to avoid issuing into a unit whose committed
-// result buffer is still occupied by an unconsumed result. This is NOT the
-// removed busy-poll: it is the narrow current_result_buffer_.valid portion of
-// the old current_busy(), retained because 10B.0's bitmap+arbiter cannot yet
-// hold a load-preempted fixed-latency result. See current_result_pending()'s
-// rationale on each unit and the issue-gate comment in warp_scheduler.cpp.
+// Phase 10B.3 removed the interim writeback-result-buffer issue gate (and the
+// ALU/MUL/DIV/TLOOKUP pointers it needed) — the combinational-backward
+// writeback stall now holds a load-preempted fixed-latency result, so the
+// scheduler no longer reads any execution unit. It retains a WritebackArbiter
+// pointer to read next_writeback_stall() (the stall freeze guard).
 class LdStUnit;
-class ALUUnit;
-class MultiplyUnit;
-class DivideUnit;
-class TLookupUnit;
+class WritebackArbiter;
 
 struct IssueOutput {
     DecodedInstruction decoded;
@@ -71,24 +64,26 @@ public:
     // panic-cascade event rather than a state reset.
     void flush();
 
-    // Phase 10B.0 wiring: TimingModel calls this once at construction with the
-    // scoreboard, branch tracker, the LdSt unit, and the four fixed-latency
-    // execution units. The scoreboard and branch tracker drive issue hazards;
-    // the LdSt unit is read only through its REGISTERED FIFO-occupancy
-    // accessors for the LDST issue gate. The ALU / MUL / DIV / TLOOKUP units
-    // are read only through current_result_pending() for the interim
-    // writeback-result-buffer issue gate (human-approved deviation, removed in
-    // 10B.3 — see the forward-decl comment). All other unit-availability
-    // information is now scheduler-side bookkeeping (unit_busy_ /
-    // writeback_bitmap_), so the opcoll busy-poll pointer was removed.
-    // Pointers may be null in unit tests; null scoreboard/tracker => no
-    // hazard, null ldst => the LDST FIFO gate treats the FIFO as empty, null
-    // fixed-latency unit => the result-buffer gate treats it as not pending.
+    // Phase 10B.0/10B.3 wiring: TimingModel calls this once at construction
+    // with the scoreboard, branch tracker, and the LdSt unit. The scoreboard
+    // and branch tracker drive issue hazards; the LdSt unit is read only
+    // through its REGISTERED FIFO-occupancy accessors for the LDST issue gate.
+    // All other unit-availability information is scheduler-side bookkeeping
+    // (unit_busy_ / writeback_bitmap_). Phase 10B.3 removed the interim
+    // writeback-result-buffer gate, so no execution-unit pointers are wired
+    // here any more. Pointers may be null in unit tests; null
+    // scoreboard/tracker => no hazard, null ldst => the LDST FIFO gate treats
+    // the FIFO as empty.
     void set_dependencies(Scoreboard* scoreboard,
                           BranchShadowTracker* branch_tracker,
-                          LdStUnit* ldst, ALUUnit* alu = nullptr,
-                          MultiplyUnit* mul = nullptr, DivideUnit* div = nullptr,
-                          TLookupUnit* tlookup = nullptr);
+                          LdStUnit* ldst);
+
+    // Phase 10B.3: wire the WritebackArbiter so evaluate() can read
+    // next_writeback_stall() (the early-return freeze guard) and commit() can
+    // gate the next_->current_ flip. Null in unit tests => no stall ever.
+    void set_writeback_arbiter(WritebackArbiter* arbiter) {
+        wb_arbiter_ = arbiter;
+    }
 
     // Test hooks (Phase 10B.0). Unit tests exercise WarpScheduler without a
     // real opcoll / execution-unit set, so they drive the issue scoreboard
@@ -105,7 +100,9 @@ public:
         writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen] = unit;
     }
 
-    std::optional<IssueOutput>& output() { return next_output_; }
+    // Phase 10B.2: REGISTERED scheduler->opcoll output. current_output()
+    // returns the committed slot; the OperandCollector pulls it at the top of
+    // its evaluate(). evaluate() continues to write next_output_.
     const std::optional<IssueOutput>& current_output() const { return current_output_; }
     const std::array<SchedulerIssueOutcome, MAX_WARPS>& current_diagnostics() const {
         return current_diagnostics_;
@@ -114,12 +111,6 @@ public:
 private:
     bool is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const;
     static SchedulerIssueOutcome unit_busy_outcome(ExecUnit unit);
-    // Phase 10B.0 interim writeback-result-buffer gate (human-approved
-    // deviation, removed in 10B.3). True when the target fixed-latency unit's
-    // committed result buffer still holds an unconsumed result; see the
-    // definition in warp_scheduler.cpp and current_result_pending() on each
-    // unit. Reads the wired alu_ / mul_ / div_ / tlookup_ pointers.
-    bool target_result_buffer_occupied(ExecUnit target) const;
 
     uint32_t num_warps_;
     WarpState* warps_;
@@ -130,19 +121,14 @@ private:
 
     // Wired by TimingModel via set_dependencies(). Tests that only construct a
     // WarpScheduler may leave these null (no scoreboard/branch hazard; the
-    // LDST FIFO gate treats an absent ldst_ as an empty FIFO; the four
-    // fixed-latency unit pointers absent => the interim result-buffer gate
-    // treats them as not pending).
+    // LDST FIFO gate treats an absent ldst_ as an empty FIFO).
     Scoreboard* scoreboard_ = nullptr;
     BranchShadowTracker* branch_tracker_ = nullptr;
     LdStUnit* ldst_ = nullptr;
-    // Phase 10B.0 interim writeback-result-buffer gate only (human-approved
-    // deviation, removed in 10B.3). Read exclusively via current_result_
-    // pending(); NOT the removed busy-poll. See the forward-decl comment.
-    ALUUnit* alu_ = nullptr;
-    MultiplyUnit* mul_ = nullptr;
-    DivideUnit* div_ = nullptr;
-    TLookupUnit* tlookup_ = nullptr;
+    // Phase 10B.3: wired via set_writeback_arbiter(). Null in unit tests => no
+    // writeback stall ever (evaluate() never early-returns, commit() never
+    // gates).
+    WritebackArbiter* wb_arbiter_ = nullptr;
 
     // ---- Phase 10B.0 issue scoreboard --------------------------------------
     // Per-unit structural-hazard countdown. Set to the unit's iteration

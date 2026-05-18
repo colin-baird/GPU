@@ -9,6 +9,8 @@
 
 namespace gpu_sim {
 
+class WritebackArbiter;
+
 class ALUUnit : public ExecutionUnit {
 public:
     explicit ALUUnit(Stats& stats) : stats_(stats) {}
@@ -17,25 +19,22 @@ public:
         return current_result_buffer_.valid || current_has_pending_;
     }
 
-    // Phase 10B.0 interim issue gate (DELIBERATE, HUMAN-APPROVED DEVIATION
-    // from the plan — to be REMOVED in Phase 10B.3). The plan's 10B.0 removes
-    // the scheduler's current_busy() poll, replacing the structural-input
-    // hazard with scheduler-side countdowns + the writeback bitmap. But the
-    // old current_busy() was doing double duty: it also reported "result
-    // buffer still occupied (not yet consumed by the arbiter)". 10B.0's
-    // bitmap only prevents fixed-vs-fixed writeback collisions at issue; the
-    // arbiter is still round-robin and does not honor the bitmap until
-    // 10B.3. A load preempting this unit's fixed-latency writeback leaves an
-    // unconsumed result in next_result_buffer_ that this unit's next-cycle
-    // evaluate() would overwrite -> lost writeback -> scoreboard destination
-    // never cleared -> dependent warps deadlock. current_result_pending() is
-    // the narrow current_result_buffer_.valid portion of the old
-    // current_busy(); the scheduler reads it as a backward committed-state
-    // back-pressure read and skips issuing into a unit whose result buffer is
-    // still occupied. Phase 10B.3's fixed-priority arbiter + combinational-
-    // backward writeback stall subsume this gate, at which point it is
-    // removed. (Phase 10F's doc sweep records the deviation.)
-    bool current_result_pending() const { return current_result_buffer_.valid; }
+    // Phase 10B.1: nullptr-tolerant back-pointers. The ALU pulls opcoll's
+    // committed output in evaluate() (REGISTERED opcoll->unit edge) and reads
+    // the arbiter's writeback stall in commit(). Wired by TimingModel; null in
+    // unit tests that exercise the ALU in isolation (then accept() is driven
+    // directly and commit() never stalls).
+    void set_operand_collector(class OperandCollector* opcoll) {
+        opcoll_ = opcoll;
+    }
+    void set_writeback_arbiter(class WritebackArbiter* arbiter) {
+        wb_arbiter_ = arbiter;
+    }
+    // Phase 10B.1: the pull model's accept() needs the current simulation
+    // cycle (formerly passed by TimingModel::dispatch_to_unit). The unit reads
+    // it through this pointer into TimingModel::cycle_. Null in unit tests,
+    // which call accept(input, cycle) directly with an explicit cycle.
+    void set_sim_cycle(const uint64_t* cycle) { sim_cycle_ = cycle; }
 
     // Phase 10B.0.5: the ALU has 1-cycle latency, so its execution slot
     // (has_pending_ / pending_input_) is a per-cycle latch of opcoll's
@@ -48,7 +47,7 @@ public:
     void evaluate() override;
     void commit() override;
     void reset() override;
-    bool next_has_result() const override;
+    bool current_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::ALU; }
 
@@ -114,9 +113,10 @@ public:
         return current_has_pending_ ? &current_pending_input_ : nullptr;
     }
     const WritebackEntry* result_entry() const {
-        // Matches next_has_result(): read next_* so same-tick popped results are
-        // visible to the writeback arbiter and the post-evaluate trace path.
-        return next_result_buffer_.valid ? &next_result_buffer_ : nullptr;
+        // Phase 10B.3: the result buffer is a plain double-buffered pipeline
+        // register. The trace path runs after commit(), so it reads the
+        // committed current_* slot.
+        return current_result_buffer_.valid ? &current_result_buffer_ : nullptr;
     }
 
 private:
@@ -151,9 +151,28 @@ private:
     RedirectRequest current_redirect_request_{};
     RedirectRequest next_redirect_request_{};
 
+    // Phase 10B.3: category-4 control state — deliberately NOT gated by the
+    // writeback stall and NOT seed_next'd. Branch resolution is combinational
+    // (the clock-enable gates state latches, not the resolution datapath), so
+    // a stalled ALU re-runs evaluate() on the SAME branch each frozen cycle.
+    // The branch-predictor update and the branch-tracker write are writes to
+    // shared structures, not pipeline registers, so the gated commit() does
+    // not protect them. branch_resolved_ records that resolution side-effects
+    // have already fired for the branch currently in the resolve-stage
+    // register: side-effects fire only when it is clear, firing them sets it,
+    // and commit() clears it whenever the resolve-stage register advances (a
+    // non-stalled commit()). "Branch still at the resolve stage" iff "ALU was
+    // stalled" — the ALU is fully pipelined and the writeback stall is the
+    // only thing that holds it — so no instruction tag is needed.
+    bool branch_resolved_ = false;
+
     // Wired post-construction; nullptr-tolerant for unit tests in isolation.
     BranchShadowTracker* branch_tracker_ = nullptr;
     BranchPredictor* branch_predictor_ = nullptr;
+    // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
+    OperandCollector* opcoll_ = nullptr;
+    WritebackArbiter* wb_arbiter_ = nullptr;
+    const uint64_t* sim_cycle_ = nullptr;
 };
 
 } // namespace gpu_sim
