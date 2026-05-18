@@ -23,11 +23,10 @@ constexpr uint32_t kExecUnitCount = 6;  // ALU..SYSTEM
 // (a single busy flag + countdown — see divide_unit.h / tlookup_unit.h); their
 // latencies are the single source of truth here and the units reference these
 // constants. MULTIPLY is a fully-pipelined unit whose depth is the SimConfig
-// field `multiply_pipeline_stages` (default 3). The compile-time
-// kMulPipelineStages constant is the canonical depth the scheduler's writeback
-// bitmap is sized against; the runtime MultiplyUnit still honors its config
-// field. A config that overrode multiply_pipeline_stages above this value
-// would need a wider bitmap — not exercised by any current config/test.
+// field `multiply_pipeline_stages` (default 3). The default constant below is
+// used only for default-table documentation/tests; the live WarpScheduler
+// computes multiply writeback offsets and bitmap length from the configured
+// runtime depth.
 constexpr uint32_t kDivideLatency = 32;
 constexpr uint32_t kTlookupLatency = 17;
 constexpr uint32_t kMulPipelineStages = 3;
@@ -54,13 +53,13 @@ constexpr std::array<uint32_t, kExecUnitCount> kUnitIterationLatency = [] {
     return t;
 }();
 
-// Issue -> writeback distance per unit, in cycles. END-OF-10B state: every
-// forward edge on the scheduler->opcoll->unit->arbiter path is now REGISTERED.
-// 10B.1 (opcoll->unit), 10B.2 (scheduler->opcoll), and 10B.3 (unit->arbiter)
-// each added one cycle of pipeline depth, so every fixed-latency entry is the
-// 10B.0 land value plus 3. The arbiter-side count_fixed_with_result() <= 1
-// assert (writeback_arbiter.cpp) is the live check that these offsets are
-// exact — a trip means an entry is wrong.
+// Issue -> writeback distance per unit, in cycles for the default configuration.
+// END-OF-10B state: every forward edge on the scheduler->opcoll->unit->arbiter
+// path is now REGISTERED. 10B.1 (opcoll->unit), 10B.2 (scheduler->opcoll), and
+// 10B.3 (unit->arbiter) each added one cycle of pipeline depth, so every
+// fixed-latency entry is the 10B.0 land value plus 3. The live scheduler uses
+// compute_issue_to_writeback_offset(unit, configured_mul_depth, is_vdot8);
+// this default table is retained for tests that explicitly bind the default.
 constexpr std::array<uint32_t, kExecUnitCount> kIssueToWritebackOffset = [] {
     std::array<uint32_t, kExecUnitCount> t{};
     t[exec_unit_index(ExecUnit::ALU)]      = 3;                      // 0 + 3 REGISTERED edges
@@ -72,28 +71,56 @@ constexpr std::array<uint32_t, kExecUnitCount> kIssueToWritebackOffset = [] {
     return t;
 }();
 
-// Length of the circular writeback-slot bitmap. Strictly greater than the
-// largest issue->writeback offset so a max-offset reservation never aliases
-// bitmap_head_ itself (the slot cleared this cycle). VDOT8 spends an extra
-// opcoll cycle, so MULTIPLY's effective offset is one larger — accounted here.
-constexpr uint32_t kWritebackBitmapLen =
-    1 + std::max({kIssueToWritebackOffset[exec_unit_index(ExecUnit::ALU)],
-                  kIssueToWritebackOffset[exec_unit_index(ExecUnit::MULTIPLY)] + 1,
-                  kIssueToWritebackOffset[exec_unit_index(ExecUnit::DIVIDE)],
-                  kIssueToWritebackOffset[exec_unit_index(ExecUnit::TLOOKUP)]});
-
-// Per-issue issue->writeback offset. VDOT8 targets MULTIPLY but spends 2 cycles
-// in the operand collector instead of 1, so its writeback lands one cycle
-// later than a plain MUL — add 1 to MULTIPLY's table value. is_vdot8 is
-// derived at the issue site from the decoded instruction (num_src_regs == 3).
-inline constexpr uint32_t compute_issue_to_writeback_offset(ExecUnit unit,
-                                                            bool is_vdot8) {
-    uint32_t offset = kIssueToWritebackOffset[exec_unit_index(unit)];
+inline constexpr uint32_t compute_issue_to_writeback_offset(
+    ExecUnit unit, uint32_t multiply_pipeline_stages, bool is_vdot8) {
+    uint32_t offset = 0;
+    switch (unit) {
+        case ExecUnit::ALU:
+            offset = 3;
+            break;
+        case ExecUnit::MULTIPLY:
+            offset = multiply_pipeline_stages + 2;
+            break;
+        case ExecUnit::DIVIDE:
+            offset = kDivideLatency + 2;
+            break;
+        case ExecUnit::TLOOKUP:
+            offset = kTlookupLatency + 2;
+            break;
+        case ExecUnit::LDST:
+        case ExecUnit::SYSTEM:
+        case ExecUnit::NONE:
+        default:
+            offset = 0;
+            break;
+    }
     if (unit == ExecUnit::MULTIPLY && is_vdot8) {
         offset += 1;
     }
     return offset;
 }
+
+// Per-issue issue->writeback offset for the default multiply depth. VDOT8
+// targets MULTIPLY but spends 2 cycles in the operand collector instead of 1,
+// so its writeback lands one cycle later than a plain MUL.
+inline constexpr uint32_t compute_issue_to_writeback_offset(ExecUnit unit,
+                                                            bool is_vdot8) {
+    return compute_issue_to_writeback_offset(unit, kMulPipelineStages, is_vdot8);
+}
+
+inline constexpr uint32_t compute_writeback_bitmap_len(uint32_t multiply_pipeline_stages) {
+    return 1 + std::max({
+        compute_issue_to_writeback_offset(ExecUnit::ALU, multiply_pipeline_stages, false),
+        compute_issue_to_writeback_offset(ExecUnit::MULTIPLY, multiply_pipeline_stages, true),
+        compute_issue_to_writeback_offset(ExecUnit::DIVIDE, multiply_pipeline_stages, false),
+        compute_issue_to_writeback_offset(ExecUnit::TLOOKUP, multiply_pipeline_stages, false),
+    });
+}
+
+// Default bitmap length. WarpScheduler sizes its live bitmap with the runtime
+// multiply depth; this constant remains for default-config test expectations.
+constexpr uint32_t kWritebackBitmapLen =
+    compute_writeback_bitmap_len(kMulPipelineStages);
 
 struct WritebackEntry {
     bool valid = false;

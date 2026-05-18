@@ -763,10 +763,11 @@ TEST_CASE("Integration: max cycles limit terminates simulation", "[integration]"
 // four fixed-latency units (ALU / MULTIPLY / DIVIDE / TLOOKUP) at the maximum
 // issue rate the scheduler permits, with several warps so issue is sustained.
 // The writeback arbiter asserts count_fixed_with_result() <= 1 on every cycle —
-// in a Debug build that assert is the live check that kIssueToWritebackOffset[]
-// is exact: if any entry is off, the scheduler's writeback bitmap would fail to
-// space two fixed-latency writebacks onto distinct cycles and the assert would
-// trip. The test also requires the kernel to run to completion (no deadlock):
+// in a Debug build that assert is the live check that the scheduler's runtime
+// issue->writeback offsets are exact: if any offset is off, the scheduler's
+// writeback bitmap would fail to space two fixed-latency writebacks onto
+// distinct cycles and the assert would trip. The test also requires the kernel
+// to run to completion (no deadlock):
 // a lost writeback would leave a scoreboard destination pending forever.
 TEST_CASE("Integration: interleaved fixed-latency ops never alias a writeback cycle",
           "[integration][writeback]") {

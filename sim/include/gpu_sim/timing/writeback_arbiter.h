@@ -48,8 +48,8 @@ public:
 private:
     // Counts fixed-latency sources presenting a result this cycle. The
     // scheduler's binding writeback bitmap (10B.0) guarantees this is <= 1;
-    // an assert in evaluate() is the live check that kIssueToWritebackOffset[]
-    // is exact.
+    // an assert in evaluate() is the live check that the scheduler's runtime
+    // issue->writeback offsets are exact.
     uint32_t count_fixed_with_result() const;
     // The single fixed-latency source with a result this cycle, or nullptr.
     ExecutionUnit* first_fixed_with_result() const;

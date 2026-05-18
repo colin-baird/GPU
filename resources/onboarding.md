@@ -168,7 +168,9 @@ Kernel arguments are passed as `--arg0=N` through `--arg3=N` and arrive in regis
 ctest --test-dir build --output-on-failure
 ```
 
-Tests live in `sim/tests/`. Each `test_*.cpp` covers a specific subsystem (cache, decoder, scoreboard, branch predictor, timing components, etc.).
+Tests live in `sim/tests/`. Each `test_*.cpp` covers a specific subsystem (cache, decoder, scoreboard, branch predictor, timing components, etc.). Top-level CTest also runs Python tooling checks for timing discipline: `timing_naming_lint` and `signal_diagram_ast_snapshot`.
+
+The devcontainer installs the tooling these checks need: Graphviz for diagram rendering plus a version-matched clang/libclang/Python binding stack. It also sets `CLANG_RESOURCE_DIR` so libclang can find compiler builtin headers during AST extraction instead of producing a partial graph.
 
 ### ISA compliance
 
@@ -244,4 +246,4 @@ When you add a new source file to the simulator, also add a description entry to
 | How are cross-stage signals classified? | `resources/timing_discipline.md` |
 | What is RISC-V RV32IM? | `resources/riscv_card.md` |
 | What changes lack test coverage? | `UNTESTED.md` |
-| What is the change workflow? | `AGENTS.md` | 
+| What is the change workflow? | `AGENTS.md` |

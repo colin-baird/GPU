@@ -9,6 +9,7 @@
 #include "gpu_sim/stats.h"
 #include <optional>
 #include <array>
+#include <vector>
 
 namespace gpu_sim {
 
@@ -52,7 +53,8 @@ enum class SchedulerIssueOutcome {
 class WarpScheduler : public PipelineStage {
 public:
     WarpScheduler(uint32_t num_warps, WarpState* warps,
-                  FunctionalModel& func_model, Stats& stats);
+                  FunctionalModel& func_model, Stats& stats,
+                  uint32_t multiply_pipeline_stages = kMulPipelineStages);
 
     void evaluate() override;
     void commit() override;
@@ -97,7 +99,7 @@ public:
         unit_busy_[exec_unit_index(unit)] = cycles;
     }
     void test_reserve_writeback_slot(ExecUnit unit, uint32_t offset) {
-        writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen] = unit;
+        writeback_bitmap_[bitmap_slot(offset)] = unit;
     }
 
     // Phase 10B.2: REGISTERED scheduler->opcoll output. current_output()
@@ -111,11 +113,14 @@ public:
 private:
     bool is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const;
     static SchedulerIssueOutcome unit_busy_outcome(ExecUnit unit);
+    uint32_t issue_to_writeback_offset(ExecUnit unit, bool is_vdot8) const;
+    size_t bitmap_slot(uint32_t offset) const;
 
     uint32_t num_warps_;
     WarpState* warps_;
     FunctionalModel& func_model_;
     Stats& stats_;
+    uint32_t multiply_pipeline_stages_;
 
     uint32_t rr_pointer_ = 0;
 
@@ -156,12 +161,13 @@ private:
     uint32_t ldst_iteration_latency_ = 0;
 
     // Writeback-slot bitmap — the binding fixed-latency writeback schedule. A
-    // circular array; each occupied entry marks a near-future cycle on which a
-    // fixed-latency writeback is already promised. An issue reserves the entry
-    // at (bitmap_head_ + offset); the gate refuses any fixed-latency op whose
+    // circular array sized from the configured fixed-latency offsets; each
+    // occupied entry marks a near-future cycle on which a fixed-latency
+    // writeback is already promised. An issue reserves the entry at
+    // (bitmap_head_ + offset); the gate refuses any fixed-latency op whose
     // predicted writeback cycle is already claimed. bitmap_head_ advances one
     // slot per non-frozen cycle.
-    std::array<std::optional<ExecUnit>, kWritebackBitmapLen> writeback_bitmap_{};
+    std::vector<std::optional<ExecUnit>> writeback_bitmap_;
     uint32_t bitmap_head_ = 0;
 
     // LDST FIFO-occupancy accounting: a scheduler-side monotonic count of ops

@@ -27,13 +27,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Project-specific packages ---
+# graphviz: `dot`, used by tools/render_signal_diagram.py --svg.
+# clang/libclang/python3-clang: version-matched libclang library, compiler
+# resource headers, and Python bindings for the AST signal-diagram extractor
+# (tools/diagram_extract_ast.py, used by render_signal_diagram.py --validate)
+# and the timing-naming lint's cross-module-read analysis pass. The explicit
+# CLANG_RESOURCE_DIR avoids partial ASTs when libclang cannot find builtin
+# compiler headers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential \
+  clang-18 \
   cmake \
   ninja-build \
   gdb \
   gcc-riscv64-unknown-elf \
+  graphviz \
+  libclang-18-dev \
+  python3-clang-18 \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV LIBCLANG_LIBRARY_PATH=/usr/lib/llvm-18/lib
+ENV CLANG_RESOURCE_DIR=/usr/lib/llvm-18/lib/clang/18
 
 # --- User setup (from base template) ---
 RUN existing_user=$(getent passwd $USER_UID | cut -d: -f1) && \

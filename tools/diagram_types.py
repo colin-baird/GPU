@@ -40,3 +40,4 @@ class ExtractionResult:
     modules: list[Module] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)

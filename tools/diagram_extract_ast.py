@@ -19,7 +19,12 @@ Passes B/C then look up the index instead of re-walking every TU. This
 keeps the cost bounded by the project's own AST rather than the full
 preprocessed TU; module classes, their methods, and the `TimingModel`
 constructor all live under `sim/`, so nothing the extractor needs is
-pruned away and the output is unchanged.
+pruned away and the output is unchanged. The extractor also validates a
+small set of structural invariants before the renderer can use its output:
+if libclang degrades to a partial AST (for example, missing compiler
+resource headers make `std::unique_ptr<T>` opaque), required
+`TimingModel` fields and core edges disappear and extraction reports a
+hard error instead of emitting a partial diagram.
 
 Pass overview (numbered to match `project-plans/snazzy-sprouting-charm.md`):
 
@@ -48,7 +53,10 @@ bindings are not installed; install via:
 
     pip install -r tools/requirements.txt
 
-or, on Debian/Ubuntu, `apt install python3-clang`.
+or, on Debian/Ubuntu, `apt install python3-clang`. Set
+`CLANG_RESOURCE_DIR` to the matching clang resource directory when
+libclang does not discover builtin compiler headers from its install
+prefix; the devcontainer sets this to `/usr/lib/llvm-18/lib/clang/18`.
 """
 
 from __future__ import annotations
@@ -110,6 +118,67 @@ STANDALONE_MODULES: set[str] = {
     "L1Cache",
     "ExternalMemoryInterface",
     "PanicController",
+}
+
+# Fields in `TimingModel` that must resolve through `_build_field_type_map`.
+# Missing entries are a strong signal that libclang produced a partial AST
+# (the historical failure mode was missing compiler resource headers, which
+# left only direct fields visible and hid every `std::unique_ptr<T>` member).
+REQUIRED_TIMING_MODEL_FIELDS: dict[str, str] = {
+    "fetch_":          "FetchStage",
+    "decode_":         "DecodeStage",
+    "scheduler_":      "WarpScheduler",
+    "opcoll_":         "OperandCollector",
+    "alu_":            "ALUUnit",
+    "mul_":            "MultiplyUnit",
+    "div_":            "DivideUnit",
+    "tlookup_":        "TLookupUnit",
+    "ldst_":           "LdStUnit",
+    "mem_if_":         "ExternalMemoryInterface",
+    "gather_file_":    "LoadGatherBufferFile",
+    "cache_":          "L1Cache",
+    "coalescing_":     "CoalescingUnit",
+    "wb_arbiter_":     "WritebackArbiter",
+    "panic_":          "PanicController",
+    "scoreboard_":     "Scoreboard",
+    "branch_tracker_": "BranchShadowTracker",
+}
+
+# High-signal architectural edges that must be present in a complete AST
+# extraction. This is not the full diagram; it is a floor chosen to catch the
+# same classes of partial extraction that can otherwise look plausible.
+REQUIRED_EDGE_TRIPLES: set[tuple[str, str, str]] = {
+    # Issue / execute spine.
+    ("WarpScheduler",    "OperandCollector", "REGISTERED"),
+    ("OperandCollector", "ALUUnit",          "REGISTERED"),
+    ("OperandCollector", "MultiplyUnit",     "REGISTERED"),
+    ("OperandCollector", "DivideUnit",       "REGISTERED"),
+    ("OperandCollector", "TLookupUnit",      "REGISTERED"),
+    ("OperandCollector", "LdStUnit",         "REGISTERED"),
+
+    # Fixed and variable result sources registered with the writeback arbiter.
+    ("ALUUnit",              "WritebackArbiter", "REGISTERED"),
+    ("MultiplyUnit",         "WritebackArbiter", "REGISTERED"),
+    ("DivideUnit",           "WritebackArbiter", "REGISTERED"),
+    ("TLookupUnit",          "WritebackArbiter", "REGISTERED"),
+    ("LdStUnit",             "WritebackArbiter", "REGISTERED"),
+    ("LoadGatherBufferFile", "WritebackArbiter", "REGISTERED"),
+
+    # Panic drained-query side channel.
+    ("ALUUnit",          "PanicController", "REGISTERED"),
+    ("MultiplyUnit",     "PanicController", "REGISTERED"),
+    ("DivideUnit",       "PanicController", "REGISTERED"),
+    ("TLookupUnit",      "PanicController", "REGISTERED"),
+    ("LdStUnit",         "PanicController", "REGISTERED"),
+    ("OperandCollector", "PanicController", "REGISTERED"),
+    ("WritebackArbiter", "PanicController", "REGISTERED"),
+
+    # Memory handshake and writeback stall.
+    ("CoalescingUnit",   "L1Cache",              "REGISTERED"),
+    ("CoalescingUnit",   "LoadGatherBufferFile", "REGISTERED"),
+    ("L1Cache",          "CoalescingUnit",       "COMBINATIONAL"),
+    ("WritebackArbiter", "WarpScheduler",        "COMBINATIONAL"),
+    ("WritebackArbiter", "ALUUnit",              "COMBINATIONAL"),
 }
 
 # Names of base classes whose transitive subclasses are diagram modules.
@@ -179,7 +248,11 @@ def _split_command(entry: dict) -> list[str]:
     file_arg = entry["file"]
     if argv and (argv[-1] == file_arg or argv[-1].endswith(file_arg)):
         argv = argv[:-1]
-    return [a for a in argv if a not in ("-c",)]
+    argv = [a for a in argv if a not in ("-c",)]
+    resource_dir = os.environ.get("CLANG_RESOURCE_DIR")
+    if resource_dir and "-resource-dir" not in argv:
+        argv.extend(["-resource-dir", resource_dir])
+    return argv
 
 
 def _direct_bases(cursor: cindex.Cursor) -> list[str]:
@@ -1005,7 +1078,7 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
         return ExtractionResult(
             modules=[],
             edges=[],
-            warnings=[
+            errors=[
                 f"no timing translation units found under "
                 f"{sim_root}/src/timing in {compile_commands}"
             ],
@@ -1020,6 +1093,7 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
                 "version matches the compiler used to populate "
                 "compile_commands.json"
             ],
+            errors=["AST extraction failed: no timing translation units parsed"],
         )
 
     seen_classes, base_map, decl_map, method_index, timing_ctor = _build_index(
@@ -1031,7 +1105,24 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
 
     field_type_maps = _build_field_type_map(decl_map, module_names)
 
+    errors: list[str] = []
     timing_field_map = field_type_maps.get("TimingModel", {})
+    missing_or_wrong_fields = {
+        field: expected
+        for field, expected in REQUIRED_TIMING_MODEL_FIELDS.items()
+        if timing_field_map.get(field) != expected
+    }
+    if missing_or_wrong_fields:
+        details = ", ".join(
+            f"{field}->{expected}" for field, expected in sorted(missing_or_wrong_fields.items())
+        )
+        errors.append(
+            "AST extraction incomplete: TimingModel field map is missing "
+            "or misresolved required component field(s): "
+            f"{details}. This usually means libclang parsed a partial AST; "
+            "check compile_commands.json and compiler resource-header setup."
+        )
+
     pass_b_edges: list[Edge] = []
     pass_b_warnings: list[str] = []
     if timing_ctor is not None:
@@ -1040,6 +1131,10 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
         )
     else:
         pass_b_warnings = ["Pass B: TimingModel constructor definition not found"]
+        errors.append(
+            "AST extraction incomplete: TimingModel constructor definition "
+            "not found, so constructor wiring cannot be recovered."
+        )
 
     pass_c_edges, pass_c_warnings = _walk_pass_c(
         module_names, method_index, field_type_maps,
@@ -1068,6 +1163,17 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
                 if e.label not in fragments:
                     existing.label = f"{existing.label} / {e.label}"
 
+    missing_edges = REQUIRED_EDGE_TRIPLES - set(merged)
+    if missing_edges:
+        details = ", ".join(
+            f"{src}->{dst}[{klass}]"
+            for src, dst, klass in sorted(missing_edges)
+        )
+        errors.append(
+            "AST extraction incomplete: missing required core edge(s): "
+            f"{details}. Refuse to emit a partial signal-flow graph."
+        )
+
     warnings = (parse_warnings + discovery_warnings
                 + pass_b_warnings + pass_c_warnings)
     warnings.insert(
@@ -1080,4 +1186,5 @@ def extract(compile_commands: Path, sim_root: Path) -> ExtractionResult:
         modules=modules,
         edges=list(merged.values()),
         warnings=warnings,
+        errors=errors,
     )

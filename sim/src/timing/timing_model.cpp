@@ -145,8 +145,9 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     // replacing the pre-evaluate set_decode_pending_warp setter and the
     // output_consumed_ round-trip.
     fetch_->set_decode(decode_.get());
-    scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
-                                                 func_model, stats);
+    scheduler_ = std::make_unique<WarpScheduler>(
+        config.num_warps, warps_.data(), func_model, stats,
+        config.multiply_pipeline_stages);
     opcoll_ = std::make_unique<OperandCollector>(stats);
     fetch_->set_branch_tracker(&branch_tracker_);
 

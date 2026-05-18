@@ -50,7 +50,8 @@ void WritebackArbiter::evaluate() {
 
     // The scheduler's binding writeback bitmap (10B.0) guarantees at most one
     // fixed-latency source presents a result on any cycle. Assert it — a trip
-    // means kIssueToWritebackOffset[] is wrong for some unit.
+    // means the scheduler's runtime issue->writeback offset is wrong for some
+    // unit.
     assert(count_fixed_with_result() <= 1 &&
            "scheduler bitmap must prevent fixed-vs-fixed writeback contention");
 

@@ -43,14 +43,14 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 /tests/                        # Backend-agnostic test suites
   riscv-isa/                     # Official RISC-V ISA compliance tests
   synthetic/                     # Targeted spec-edge kernels (Phase 6 bug-hunt)
-  test_signal_diagram.py         # Snapshot test for the AST signal-flow extractor
+  test_signal_diagram.py         # CTest-registered snapshot test for the AST signal-flow extractor
 /tools/                        # Developer tooling
   bench_compare.py               # A/B benchmark comparison and history tracking
   render_signal_diagram.py       # Architecture poster renderer: emits DOT/Mermaid/SVG
   diagram_types.py               # Module/Edge dataclasses shared by extractors and renderer
   diagram_extract_ast.py         # libclang-driven extractor (the default `--source=ast`)
   diagram_extract_md.py          # Markdown-driven extractor (cross-check via `--source=markdown`)
-  requirements.txt               # Python deps for the AST extractor (clang>=14)
+  requirements.txt               # Python deps for the AST extractor/lint (libclang>=18)
 /resources/
   gpu_architectural_spec.md      # Full architectural spec (the source of truth)
   riscv_card.md                  # RISC-V ISA reference card
@@ -166,7 +166,7 @@ This rule applies in every context — multi-agent workflow, direct implementati
 | New feature or capability visible to users (new CLI flags, new execution mode, new benchmark) | `README.md`, `resources/onboarding.md` if it affects workflow |
 | New documentation artifact created | `AGENTS.md` Key References |
 | Agent prompt or workflow rule changed | `AGENTS.md` |
-| New cross-stage accessor in the timing model | Lint passes (`tools/lint_timing_naming.py`, enforced via CTest target `timing_naming_lint`) |
+| New cross-stage accessor in the timing model | Lint passes (`tools/lint_timing_naming.py`, enforced via CTest target `timing_naming_lint`); signal diagram snapshot remains green (`signal_diagram_ast_snapshot`) |
 | Change kept without targeted tests | Add entry to `UNTESTED.md` |
 | Targeted tests committed for a logged change | Remove entry from `UNTESTED.md` |
 

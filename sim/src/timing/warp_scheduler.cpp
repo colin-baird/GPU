@@ -3,6 +3,9 @@
 #include "gpu_sim/timing/ldst_unit.h"
 #include "gpu_sim/timing/writeback_arbiter.h"
 
+#include <algorithm>
+#include <stdexcept>
+
 namespace gpu_sim {
 
 SchedulerIssueOutcome WarpScheduler::unit_busy_outcome(ExecUnit unit) {
@@ -17,9 +20,16 @@ SchedulerIssueOutcome WarpScheduler::unit_busy_outcome(ExecUnit unit) {
 }
 
 WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
-                             FunctionalModel& func_model, Stats& stats)
+                             FunctionalModel& func_model, Stats& stats,
+                             uint32_t multiply_pipeline_stages)
     : num_warps_(num_warps), warps_(warps),
-      func_model_(func_model), stats_(stats) {}
+      func_model_(func_model), stats_(stats),
+      multiply_pipeline_stages_(multiply_pipeline_stages) {
+    if (multiply_pipeline_stages_ == 0) {
+        throw std::invalid_argument("multiply_pipeline_stages must be >= 1");
+    }
+    writeback_bitmap_.resize(compute_writeback_bitmap_len(multiply_pipeline_stages_));
+}
 
 void WarpScheduler::set_dependencies(Scoreboard* scoreboard,
                                      BranchShadowTracker* branch_tracker,
@@ -41,6 +51,14 @@ bool WarpScheduler::is_scoreboard_clear(WarpId warp, const DecodedInstruction& d
     // Check rd as source (VDOT8: 3-operand)
     if (d.reads_rd && scoreboard_->current_pending(warp, d.rd)) return false;
     return true;
+}
+
+uint32_t WarpScheduler::issue_to_writeback_offset(ExecUnit unit, bool is_vdot8) const {
+    return compute_issue_to_writeback_offset(unit, multiply_pipeline_stages_, is_vdot8);
+}
+
+size_t WarpScheduler::bitmap_slot(uint32_t offset) const {
+    return (bitmap_head_ + offset) % writeback_bitmap_.size();
 }
 
 void WarpScheduler::evaluate() {
@@ -68,7 +86,7 @@ void WarpScheduler::evaluate() {
     // N is checked one lower at N+1 (the decrement-then-check ordering that
     // makes the countdowns exact).
     writeback_bitmap_[bitmap_head_] = std::nullopt;   // reserved cycle elapsed
-    bitmap_head_ = (bitmap_head_ + 1) % kWritebackBitmapLen;
+    bitmap_head_ = (bitmap_head_ + 1) % writeback_bitmap_.size();
     for (auto& b : unit_busy_) {
         if (b > 0) --b;                                // DIVIDE / TLOOKUP only
     }
@@ -124,7 +142,7 @@ void WarpScheduler::evaluate() {
         const bool writes_back = decoded.has_rd && decoded.rd != 0;
         // offset is read by both the bitmap conflict check and the reservation
         // at issue. Harmless for LDST / SYSTEM (offset 0, never reserve).
-        const uint32_t offset = compute_issue_to_writeback_offset(target, is_vdot8);
+        const uint32_t offset = issue_to_writeback_offset(target, is_vdot8);
 
         if (target == ExecUnit::LDST) {
             // (1) Addr-gen structural hazard. LdStUnit's address-generation
@@ -175,8 +193,7 @@ void WarpScheduler::evaluate() {
             // each unit's committed result buffer before issuing.
             // Writeback-port hazard: only instructions that write back reserve
             // a slot, so only they can collide.
-            if (writes_back &&
-                writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen]) {
+            if (writes_back && writeback_bitmap_[bitmap_slot(offset)]) {
                 stats_.warp_stall_unit_busy[w]++;
                 stats_.scheduler_writeback_contention_stall_cycles[
                     exec_unit_index(target)]++;
@@ -227,7 +244,7 @@ void WarpScheduler::evaluate() {
         const ExecUnit target = d.target_unit;
         const bool is_vdot8   = (d.num_src_regs == 3);
         const bool writes_back = d.has_rd && d.rd != 0;
-        const uint32_t offset = compute_issue_to_writeback_offset(target, is_vdot8);
+        const uint32_t offset = issue_to_writeback_offset(target, is_vdot8);
 
         if (target == ExecUnit::LDST) {
             // LDST reserves no writeback-bitmap slot (variable latency: loads
@@ -247,8 +264,7 @@ void WarpScheduler::evaluate() {
             }
             // Reserve the writeback slot for fixed-latency ops that write back.
             if (writes_back) {
-                writeback_bitmap_[(bitmap_head_ + offset) % kWritebackBitmapLen] =
-                    target;
+                writeback_bitmap_[bitmap_slot(offset)] = target;
             }
         }
         opcoll_cooldown_cycles_ = is_vdot8 ? 2 : 1;
@@ -299,7 +315,7 @@ void WarpScheduler::reset() {
     // with LdStUnit::reset()'s fifo_total_pushes_ (both run in the panic-flush
     // cascade) so the (issued - pushed) difference restarts at zero.
     unit_busy_.fill(0);
-    writeback_bitmap_.fill(std::nullopt);
+    std::fill(writeback_bitmap_.begin(), writeback_bitmap_.end(), std::nullopt);
     bitmap_head_ = 0;
     ldst_issued_total_ = 0;
     opcoll_cooldown_cycles_ = 0;

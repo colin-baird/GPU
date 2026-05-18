@@ -43,6 +43,12 @@ static uint32_t encode_div(uint32_t rd, uint32_t rs1, uint32_t rs2) {
                   isa::OP_ALU_R);
 }
 
+// MUL rd, rs1, rs2 — targets the fully-pipelined MultiplyUnit.
+static uint32_t encode_mul(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+    return r_type(isa::FUNCT7_MULDIV, rs2, rs1, isa::FUNCT3_MUL, rd,
+                  isa::OP_ALU_R);
+}
+
 struct SchedulerFixture {
     SimConfig config;
     FunctionalModel func_model;
@@ -52,9 +58,11 @@ struct SchedulerFixture {
     std::vector<WarpState> warps;
     std::unique_ptr<WarpScheduler> scheduler;
 
-    SchedulerFixture(uint32_t num_warps = 4)
+    SchedulerFixture(uint32_t num_warps = 4,
+                     uint32_t multiply_pipeline_stages = kMulPipelineStages)
         : config(), func_model(config) {
         config.num_warps = num_warps;
+        config.multiply_pipeline_stages = multiply_pipeline_stages;
         config.start_pc = 0;
         func_model = FunctionalModel(config);
 
@@ -64,7 +72,8 @@ struct SchedulerFixture {
         }
 
         scheduler = std::make_unique<WarpScheduler>(
-            num_warps, warps.data(), func_model, stats);
+            num_warps, warps.data(), func_model, stats,
+            config.multiply_pipeline_stages);
         // Phase 10B.0: scoreboard and branch_tracker wired via
         // set_dependencies(). The opcoll / unit busy-poll pointers were
         // removed — the scheduler predicts unit availability from its own
@@ -181,6 +190,38 @@ TEST_CASE("WarpScheduler: stalls on writeback-bitmap contention", "[scheduler]")
     REQUIRE(f.stats.warp_stall_unit_busy[0] == 1);
     REQUIRE(f.stats.scheduler_writeback_contention_stall_cycles[
                 static_cast<size_t>(ExecUnit::ALU)] == 1);
+}
+
+TEST_CASE("WarpScheduler: multiply writeback bitmap uses configured pipeline depth",
+          "[scheduler]") {
+    // The multiply pipeline depth is a SimConfig parameter. The scheduler's
+    // binding writeback bitmap must therefore reserve/check the configured
+    // multiply offset, not the default-depth constant.
+    constexpr uint32_t kConfiguredMulStages = 5;
+    SchedulerFixture f(1, kConfiguredMulStages);
+    f.load_and_push(0, 0, encode_mul(5, 1, 2));
+
+    const uint32_t runtime_offset = compute_issue_to_writeback_offset(
+        ExecUnit::MULTIPLY, kConfiguredMulStages, /*is_vdot8=*/false);
+    REQUIRE(runtime_offset ==
+            kConfiguredMulStages + 2);
+    REQUIRE(runtime_offset !=
+            kIssueToWritebackOffset[exec_unit_index(ExecUnit::MULTIPLY)]);
+
+    // test_reserve_writeback_slot stamps writeback_bitmap_[head + offset]
+    // before evaluate() advances the head. Reserve at +1 relative to the
+    // runtime issue offset so the post-advance gate sees the collision.
+    f.scheduler->test_reserve_writeback_slot(ExecUnit::MULTIPLY,
+                                             runtime_offset + 1);
+
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
+    REQUIRE(f.stats.warp_stall_unit_busy[0] == 1);
+    REQUIRE(f.stats.scheduler_writeback_contention_stall_cycles[
+                static_cast<size_t>(ExecUnit::MULTIPLY)] == 1);
 }
 
 TEST_CASE("WarpScheduler: stalls when iterative target unit busy", "[scheduler]") {

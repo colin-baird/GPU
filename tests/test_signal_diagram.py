@@ -10,13 +10,18 @@ correct rendering.
 Run via:
 
     cmake -B build && cmake --build build -j8   # ensure compile_commands.json
+    ctest --test-dir build -R signal_diagram_ast_snapshot --output-on-failure
     python3 -m pytest tests/test_signal_diagram.py
     # or, if pytest is unavailable:
     python3 tests/test_signal_diagram.py
+
+CTest passes the active build's compile database through
+`GPU_SIGNAL_COMPILE_DB`; standalone runs default to `build/compile_commands.json`.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -29,7 +34,10 @@ import diagram_extract_ast  # noqa: E402
 import diagram_extract_md  # noqa: E402
 
 
-COMPILE_DB = REPO_ROOT / "build" / "compile_commands.json"
+COMPILE_DB = Path(os.environ.get(
+    "GPU_SIGNAL_COMPILE_DB",
+    REPO_ROOT / "build" / "compile_commands.json",
+))
 SIM_ROOT = REPO_ROOT / "sim"
 TIMING_DOC = REPO_ROOT / "resources" / "timing_discipline.md"
 
@@ -56,6 +64,10 @@ class SignalDiagramTests(unittest.TestCase):
     def test_module_count(self) -> None:
         # 5 PipelineStage subclasses + 6 leaf ExecutionUnit subclasses +
         # 7 standalone modules = 18.
+        self.assertFalse(
+            self.ast_result.errors,
+            f"AST extractor reported errors: {self.ast_result.errors}",
+        )
         self.assertEqual(len(self.ast_result.modules), 18)
 
     def test_module_set_matches_markdown(self) -> None:

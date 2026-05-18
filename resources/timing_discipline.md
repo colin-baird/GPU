@@ -141,7 +141,8 @@ read by an upstream-of-it consumer along the data direction — is
 **forbidden**: it collapses a cycle of pipeline depth. The
 `tools/lint_timing_naming.py` cross-module pass classifies every
 `other->next_*()` read by dataflow direction and fails the build on a
-forward one.
+forward one. In strict mode it also fails if the AST layer cannot run;
+`--skip-cross-module` is an explicit local opt-out for header-only checks.
 
 Accessors that return a transient backward signal are named
 `next_<noun>()` or `next_<adjective>()`.
@@ -301,9 +302,12 @@ its own issue history:
   non-pipelined `DIVIDE`/`TLOOKUP` (compile-time `kUnitIterationLatency`)
   and `LDST` (runtime addr-gen latency). Category-2 carry-forward state.
 - **`writeback_bitmap_` + `bitmap_head_`** — the binding fixed-latency
-  writeback schedule. A fixed-latency writeback op reserves the slot at
-  `bitmap_head_ + kIssueToWritebackOffset`; the gate refuses a colliding
-  reservation. `bitmap_head_` advances one slot per non-frozen cycle.
+  writeback schedule. The bitmap is runtime-sized from the configured
+  fixed-latency offsets (notably `SimConfig::multiply_pipeline_stages`).
+  A fixed-latency writeback op reserves the slot at
+  `bitmap_head_ + issue_to_writeback_offset`; the gate refuses a
+  colliding reservation. `bitmap_head_` advances one slot per non-frozen
+  cycle.
 - **`ldst_issued_total_`** — a monotonic count for the event-driven LDST
   FIFO-occupancy gate; the in-transit population is the difference
   against the FIFO's committed push counter.
@@ -413,7 +417,7 @@ it.
 | 4 | `LdStUnit::current_fifo_size()` / `current_fifo_total_pushes()` (REGISTERED committed-state accessors); each other `ExecutionUnit::current_busy()` | `WarpScheduler::evaluate` reads the LdSt FIFO accessors for the event-driven LDST FIFO-occupancy issue gate; the per-unit `current_busy()` poll is **no longer read by the scheduler** (panic-drain query only, row 14) | LDST FIFO-occupancy counters / per-unit busy bit | **REGISTERED** | back-pressure | Phase 10B.0 removed the scheduler's `unit->current_busy()` issue-gating poll; the scheduler now predicts unit availability internally via the `unit_busy_[]` iteration-latency countdown and the binding writeback bitmap. The only surviving scheduler→unit cross-stage read is the REGISTERED LDST FIFO-occupancy accounting; each unit's `current_busy()` survives only for the panic-drain query (row 14). | compliant (Phase 10B.0) | 4, 10B.0 |
 | 5 | `WarpScheduler::evaluate` writes `branch_tracker_.note_branch_issued(w)` (next_); `ALUUnit::evaluate` writes `note_resolved_correctly(w)` (next_) on correct prediction (branch resolution moved into the ALU in Phase 10A); `FetchStage::evaluate` writes `note_redirect_applied(w)` (next_) when applying a redirect | `WarpScheduler::evaluate` reads `branch_tracker_.current_in_flight(w)` (current_) | per-warp branch-shadow bit | **REGISTERED** per-warp `current_`/`next_` pair via `BranchShadowTracker` (Scoreboard pattern) | forward-data (writers publish, scheduler reads) | tick-order: `branch_tracker_.seed_next` -> writers in evaluates -> commits -> `branch_tracker_.commit` | compliant (Phase 10A) | 5, 10A |
 | 6 | `OperandCollector::accept()` writes only `next_busy_`/`next_cycles_remaining_`/`next_instr_` | `OperandCollector::evaluate` (reads `next_*` after the prior commit, so equal to committed values until accept overrides) and `OperandCollector::current_busy()` (reads `current_busy_`) | opcoll busy/cycles/instr | **REGISTERED** next/current | (internal) | `accept()` only mutates `next_*`; `commit()` flips next/current for busy, cycles_remaining, instr, and output | compliant (Phase 2) | 2 |
-| 7 | each of `ALUUnit`/`MultiplyUnit`/`DivideUnit`/`TLookupUnit`/`LdStUnit` produces a result into its double-buffered `next_result_buffer_`; `LoadGatherBufferFile` is also registered as a writeback source via `wb_arbiter_->add_source`. The opcoll→unit edge is the pull model: each unit's `evaluate()` reads `opcoll_->current_output()` and self-selects by `target_unit` (Phase 10B.1); the scheduler→opcoll edge is the same pull model (10B.2) | `WritebackArbiter::evaluate` reads each source's `current_has_result()` (committed); `consume_result()` is a **pure read** that mutates nothing | per-unit `pending_input_`, `pipeline_`/iterative counters, `result_buffer_` (all `next_*`/`current_*` double-buffered) | **REGISTERED** on every edge of the issue/execute path: `scheduler→opcoll`, `opcoll→unit`, `unit→wb_arbiter`. 10B.1/10B.2/10B.3 each registered one of these, adding one cycle of pipeline depth apiece — see `kIssueToWritebackOffset[]` in `execution_unit.h` | forward-data | every unit's `commit()` flips `next_*→current_*` for all double-buffered fields (gated by the writeback stall, row 16); `accept()` writes only `next_*`; `consume_result()` mutates nothing | compliant (Phase 10B.1–10B.3) | 1, 10B.1, 10B.2, 10B.3 |
+| 7 | each of `ALUUnit`/`MultiplyUnit`/`DivideUnit`/`TLookupUnit`/`LdStUnit` produces a result into its double-buffered `next_result_buffer_`; `LoadGatherBufferFile` is also registered as a writeback source via `wb_arbiter_->add_source`. The opcoll→unit edge is the pull model: each unit's `evaluate()` reads `opcoll_->current_output()` and self-selects by `target_unit` (Phase 10B.1); the scheduler→opcoll edge is the same pull model (10B.2) | `WritebackArbiter::evaluate` reads each source's `current_has_result()` (committed); `consume_result()` is a **pure read** that mutates nothing | per-unit `pending_input_`, `pipeline_`/iterative counters, `result_buffer_` (all `next_*`/`current_*` double-buffered) | **REGISTERED** on every edge of the issue/execute path: `scheduler→opcoll`, `opcoll→unit`, `unit→wb_arbiter`. 10B.1/10B.2/10B.3 each registered one of these, adding one cycle of pipeline depth apiece — see `compute_issue_to_writeback_offset()` in `execution_unit.h`; the scheduler passes the configured multiply depth so the bitmap remains exact for non-default `multiply_pipeline_stages` | forward-data | every unit's `commit()` flips `next_*→current_*` for all double-buffered fields (gated by the writeback stall, row 16); `accept()` writes only `next_*`; `consume_result()` mutates nothing | compliant (Phase 10B.1–10B.3) | 1, 10B.1, 10B.2, 10B.3 |
 | 8 | `WritebackArbiter::evaluate` writes scoreboard via `scoreboard_.clear_pending()` (releases destinations); `WarpScheduler::evaluate` writes via `scoreboard_.set_pending()` (claims destinations on issue) | scheduler's `evaluate()` reads scoreboard via `current_pending()` (current_) for issue gating | scoreboard pending bits | **REGISTERED** | forward-data | `Scoreboard` already exposes `next_*`/`current_*`, so `set_pending` / `clear_pending` only write `next_` | compliant | none |
 | 9 | `CoalescingUnit::evaluate` reads `ldst_.current_fifo_front()` (Phase M1 REGISTERED), then calls `gather_file_.claim()`, `cache_.process_load()`/`process_store()` mid-evaluate; also reads `cache_.next_stalled()` at top of its evaluate as a same-cycle backpressure signal, and `gather_file_.current_busy(warp)` as a per-warp back-pressure gate before consuming a load from the LdSt FIFO. FIFO pop is staged in coalescing's `next_pop_` and applied via `ldst_.pop_front()` from `CoalescingUnit::commit()`. | LdStUnit FIFO, gather buffer file, cache | REGISTERED FIFO + command-style mutations + COMBINATIONAL stall read + REGISTERED gather-busy read | LdSt FIFO is REGISTERED as of Phase M1: producer (`LdStUnit::commit`) applies the staged push from `next_push_`; consumer (`CoalescingUnit::commit`) applies the staged pop. Producer touches the back, consumer touches the front, so commit order is irrelevant. Reads during evaluate see the stable cycle-start FIFO state. command-style mutations into gather/cache remain documented "internal-subsystem-mutating commands"; the gather-buffer write-port boundary arbitrates via REGISTERED state owned by `LoadGatherBufferFile` (row 11). The `cache.next_stalled()` read is a Phase 9 COMBINATIONAL same-tick edge: cache's stall signal is combinationally driven from registered tag/write-buffer/pending_fill state, and `cache.evaluate()` runs before `coalescing.evaluate()` in tick order. The `gather_file.current_busy()` read is a REGISTERED back-pressure accessor over the gather buffer's committed `current_*` state. | back-pressure (cache→coalescing stall, gather→coalescing busy) + forward-data (coalescing→ldst/gather/cache commands) | gather-buffer port arbitration cleaned up (Phase 7); cache↔coalescing stall edge formally classified COMBINATIONAL with call-site comment in `coalescing_unit.cpp` (Phase 9); LdSt FIFO promoted to REGISTERED with deferred push/pop (Phase M1) | compliant (Phase 7 + 9 + M1) | 7, 9, M1 |
 | 10 | `L1Cache` external observable surface: REGISTERED scratch (`pending_fill_`, four `last_*_event_` slots) flipped by `commit()`, accessors return `current_*`. COMBINATIONAL same-tick (`stalled_`, `stall_reason_`) — single slot, reset at top of `evaluate`, observed mid-tick by coalescing (row 9) and post-commit by `record_cycle_trace`. Internal hardware state (`tags_`, `mshrs_`, `write_buffer_`) intentionally direct-mutated. | `TimingModel::record_cycle_trace` (post-commit, REGISTERED reads); `CoalescingUnit::evaluate` (same-tick, COMBINATIONAL stall read); cache itself; cache test expectations | mixed boundary discipline | mixed: REGISTERED for trace/scratch; COMBINATIONAL for stall | back-pressure (cache→coalescing stall) + forward-data (cache→trace) | Phase 9 carve-out: scratch trace events and the cross-cycle `pending_fill_` carrier go through `current_/next_` pairs so `record_cycle_trace` (which runs after `cache.commit()`) sees committed state via the `current_*` slot. Stall flags stay single-slot COMBINATIONAL because pipelining would cost a cycle of backpressure latency every stall transition (~5% on `embedding_gather`) without a hardware payoff at this cache scale. Internal MSHR/tag/write-buffer mutation stays direct because it has no cross-stage observers — only `L1Cache` itself touches it, and `test_cache.cpp` / `test_cache_mshr_merging.cpp` assert MSHR/tag state synchronously. | compliant (Phase 9); cache external boundary now classified per-field, internals carved out by design | 9 |
@@ -438,7 +442,18 @@ The renderer drives off two extractors:
   `tools/diagram_extract_ast.py` walks the timing translation units in
   `build/compile_commands.json` (run `cmake -B build && cmake --build
   build` first). The C++ source is the source of truth, so the diagram
-  picks up new modules and edges automatically.
+  picks up new modules and edges automatically. The extractor refuses to
+  emit a graph if structural completeness checks fail: `TimingModel`'s
+  required component fields must resolve, and a high-signal floor of core
+  issue/execute, writeback, panic-drain, memory-handshake, and writeback-
+  stall edges must be present. This catches partial libclang parses
+  (for example, missing compiler resource headers that make
+  `std::unique_ptr<T>` members opaque) before they can produce a
+  plausible but incomplete diagram.
+  If libclang cannot find builtin compiler headers in a local environment,
+  set `CLANG_RESOURCE_DIR` to the matching clang resource directory; the
+  devcontainer installs clang/libclang 18 and sets this to
+  `/usr/lib/llvm-18/lib/clang/18`.
 - **`--source=markdown`.** The legacy extractor under
   `tools/diagram_extract_md.py` parses the per-boundary inventory above.
   Retained as the cross-check view of the same data.
@@ -447,7 +462,8 @@ Run `python3 tools/render_signal_diagram.py --validate` to diff the two
 extractors. Documented carve-outs live in
 `render_signal_diagram.VALIDATE_ALLOW_LIST`; everything else fails the
 diff. The snapshot test at `tests/test_signal_diagram.py` pins module
-count and a hand-curated edge floor.
+count, the AST extractor's no-error contract, and a hand-curated edge
+floor; it is registered in CTest as `signal_diagram_ast_snapshot`.
 
 ## Forbidden patterns
 
@@ -889,9 +905,11 @@ order, with their commit boundary and cycle delta:
   scheduler early-returns in `evaluate()` and gates `commit()`. The 10B.0
   interim result-buffer gate was **removed** here (the stall subsumes it).
   Stat `fixed_writeback_preempted_cycles` added, `writeback_conflicts`
-  removed. `kIssueToWritebackOffset[]` reached its end values (ALU=3,
-  MUL=`kMulPipelineStages`+2, DIV=`kDivideLatency`+2,
-  TLOOKUP=`kTlookupLatency`+2; `kWritebackBitmapLen`=35). Cycle delta vs
+  removed. `compute_issue_to_writeback_offset()` reached its end values
+  (ALU=3, MUL=`multiply_pipeline_stages`+2, DIV=`kDivideLatency`+2,
+  TLOOKUP=`kTlookupLatency`+2; default `kWritebackBitmapLen`=35, with
+  the live scheduler bitmap sized from the configured multiply depth).
+  Cycle delta vs
   `6351335`: matmul +0.9%, gemv −3.3%, fused_linear_activation +4.9%,
   softmax_row +5.0%, embedding_gather +0.3%, layernorm_lite +10.5%.
   Inventory rows: 7, 16.
@@ -930,7 +948,15 @@ order, with their commit boundary and cycle delta:
   cross-module read pass; the diagram extractor / `test_signal_diagram.py`
   reclassifications) and two stale `timing_model.cpp` branch-tracker
   comments corrected. No production behavior change. `render_signal_diagram.py
-  --validate` returns green and `lint_timing_naming.py` passes strictly.
+  --validate` returns green and `lint_timing_naming.py` passes strictly. A
+  follow-up tightened the CTest invocation to pass the active build's
+  `compile_commands.json` and made missing AST prerequisites a strict failure
+  unless `--skip-cross-module` is explicitly requested. A second follow-up
+  hardened the signal-diagram AST extractor itself: partial parses that lose
+  required `TimingModel` component fields or core architectural edges now
+  return extractor errors, the renderer refuses to emit output, and
+  `tests/test_signal_diagram.py` runs under CTest as
+  `signal_diagram_ast_snapshot`.
 
 ### Cumulative cycle delta (end-of-Phase-9 → end-of-Phase-10)
 

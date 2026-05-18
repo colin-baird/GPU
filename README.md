@@ -59,8 +59,12 @@ Optional, depending on what you want to run:
 
 - `riscv64-unknown-elf-gcc`, `riscv32-unknown-elf-gcc`, or `riscv64-elf-gcc` for workload benchmark kernel builds
 - `riscv64-unknown-elf-gcc` for the RISC-V ISA compliance flow in `tests/riscv-isa/`
+- Graphviz (`dot`) for regenerating `tools/signal_diagram.svg`
+- Python libclang bindings plus matching clang resource headers for the AST signal-diagram extractor and timing-naming lint
 
 If no supported RISC-V cross-compiler is installed, the benchmark targets are skipped at CMake configure time.
+
+The devcontainer installs these optional tooling dependencies automatically, including Graphviz and a version-matched clang/libclang stack for the AST extractor.
 
 ## Build
 
@@ -116,6 +120,9 @@ From the repository root:
 ```bash
 ctest --test-dir build --output-on-failure
 ```
+
+Top-level CTest also runs Python timing-discipline checks, including the
+accessor lint and the AST signal-diagram snapshot.
 
 Or run only the simulator tests:
 

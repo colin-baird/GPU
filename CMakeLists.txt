@@ -32,6 +32,13 @@ if(BUILD_TESTS)
     if(Python3_Interpreter_FOUND)
         add_test(NAME timing_naming_lint
                  COMMAND ${Python3_EXECUTABLE}
-                         ${CMAKE_SOURCE_DIR}/tools/lint_timing_naming.py)
+                         ${CMAKE_SOURCE_DIR}/tools/lint_timing_naming.py
+                         --compile-db ${CMAKE_BINARY_DIR}/compile_commands.json
+                         --sim-root ${CMAKE_SOURCE_DIR}/sim)
+        add_test(NAME signal_diagram_ast_snapshot
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_SOURCE_DIR}/tests/test_signal_diagram.py)
+        set_tests_properties(signal_diagram_ast_snapshot PROPERTIES
+                             ENVIRONMENT "GPU_SIGNAL_COMPILE_DB=${CMAKE_BINARY_DIR}/compile_commands.json")
     endif()
 endif()

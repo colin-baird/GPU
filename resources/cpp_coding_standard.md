@@ -429,7 +429,10 @@ Direction is therefore not a free axis: REGISTERED edges are forward-data,
 COMBINATIONAL edges are backward control. The cycle prefix is mechanically
 encoded by the accessor's name (`current_*` / `next_*`) and the lint
 (`tools/lint_timing_naming.py`) enforces that a `next_*` cross-module read
-only ever flows backward (upstream reader, downstream producer).
+only ever flows backward (upstream reader, downstream producer). The
+cross-module layer is part of the enforced lint: if its AST prerequisites or
+compile database are unavailable, the default run fails rather than silently
+passing a header-only check.
 
 ## Cross-stage accessor naming
 

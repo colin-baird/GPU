@@ -333,18 +333,26 @@ def run_extractor(source: str, *, md_path: Path, compile_db: Path,
         try:
             import diagram_extract_ast  # noqa: WPS433 — lazy import
         except ImportError as exc:
-            print(
-                f"error: AST extractor unavailable ({exc}). Install via:\n"
-                "    pip install -r tools/requirements.txt\n"
-                "  or rerun with --source=markdown.",
-                file=sys.stderr,
+            return ExtractionResult(
+                errors=[
+                    f"AST extractor unavailable ({exc}). Install via "
+                    "`pip install -r tools/requirements.txt` or rerun "
+                    "with --source=markdown."
+                ],
             )
-            sys.exit(2)
-        return diagram_extract_ast.extract(
-            compile_commands=compile_db,
-            sim_root=sim_root,
-        )
+        try:
+            return diagram_extract_ast.extract(
+                compile_commands=compile_db,
+                sim_root=sim_root,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return ExtractionResult(errors=[str(exc)])
     raise ValueError(f"unknown source: {source!r}")
+
+
+def print_extraction_errors(source: str, result: ExtractionResult) -> None:
+    for err in result.errors:
+        print(f"error: {source} extractor: {err}", file=sys.stderr)
 
 
 # ----------------------------------------------------------------------------
@@ -486,6 +494,10 @@ def main(argv: list[str] | None = None) -> int:
             compile_db=args.compile_db,
             sim_root=args.sim_root,
         )
+        if md_result.errors or ast_result.errors:
+            print_extraction_errors("markdown", md_result)
+            print_extraction_errors("ast", ast_result)
+            return 2
         had_diff, lines = diff_results(ast_result, md_result, strict=args.strict)
         for line in lines:
             print(line)
@@ -499,6 +511,9 @@ def main(argv: list[str] | None = None) -> int:
         compile_db=args.compile_db,
         sim_root=args.sim_root,
     )
+    if result.errors:
+        print_extraction_errors(args.source, result)
+        return 2
 
     def _is_summary(w: str) -> bool:
         # Each extractor's leading warning is an informational summary
