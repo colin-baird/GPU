@@ -166,6 +166,77 @@ TEST_CASE("WarpScheduler: VDOT8 checks rd as a source hazard", "[scheduler]") {
     REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
 }
 
+TEST_CASE("WarpScheduler: stalls a WAW hazard to keep same-register writeback in order",
+          "[scheduler][timing]") {
+    // Pathological intra-warp WAW: two instructions write the SAME destination
+    // register, and the second one's source operands are clear -- so the RAW
+    // source checks all pass and only a destination-register check can catch
+    // it. Execution-unit latencies are asymmetric: MUL's issue->writeback
+    // offset is 5, ALU's is 3. Without the WAW gate the scheduler would issue
+    //
+    //   cycle 0:  MUL  x5, x1, x2     (writeback at cycle 5)
+    //   cycle 1:  ADDI x5, x0, 99     (writeback at cycle 4)
+    //
+    // back-to-back, and the ALU result would reach the writeback arbiter one
+    // cycle BEFORE the MUL -- the MUL would then clobber x5, so the older
+    // instruction's write lands last (out-of-order writeback). The WAW gate
+    // must hold the ADDI until the MUL's write commits.
+    SchedulerFixture f(1);
+
+    // Cycle 0: MUL x5, x1, x2 issues freely (x1/x2 not pending) and marks x5
+    // pending for the warp.
+    f.load_and_push(0, 0, encode_mul(5, 1, 2));
+
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+    f.scoreboard.commit();
+    REQUIRE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_output()->pc == 0);
+    REQUIRE(f.scoreboard.current_pending(0, 5));
+
+    // Cycle 1: ADDI x5, x0, 99 -- writes x5 (still pending) but reads only x0.
+    // Pure WAW: a source-only scoreboard check would let it through. It must
+    // be stalled, and reported as a scoreboard stall.
+    f.load_and_push(0, 4, encode_addi(5, 0, 99));
+
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+    f.scoreboard.commit();
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_diagnostics()[0]
+            == SchedulerIssueOutcome::SCOREBOARD);
+    REQUIRE(f.stats.warp_stall_scoreboard[0] == 1);
+
+    // Cycle 2: x5 still pending -- the stall is a standing gate, not a
+    // one-shot verdict cached from cycle 1.
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+    f.scoreboard.commit();
+    REQUIRE_FALSE(f.scheduler->current_output().has_value());
+    REQUIRE(f.stats.warp_stall_scoreboard[0] == 2);
+
+    // The MUL's write commits -- the writeback arbiter clears x5.
+    f.scoreboard.seed_next();
+    f.scoreboard.clear_pending(0, 5);
+    f.scoreboard.commit();
+
+    // Cycle 3: with the prior write retired, the ADDI is finally free to
+    // issue -- strictly after the MUL, so the two writes to x5 retire in
+    // program order.
+    f.scoreboard.seed_next();
+    f.scheduler->evaluate();
+    f.scheduler->commit();
+    f.scoreboard.commit();
+    REQUIRE(f.scheduler->current_output().has_value());
+    REQUIRE(f.scheduler->current_output()->pc == 4);
+    REQUIRE(f.scheduler->current_diagnostics()[0]
+            == SchedulerIssueOutcome::ISSUED);
+    REQUIRE(f.stats.total_instructions_issued == 2);
+}
+
 TEST_CASE("WarpScheduler: stalls on writeback-bitmap contention", "[scheduler]") {
     // Phase 10B.0: the scheduler refuses to issue a fixed-latency op whose
     // predicted writeback cycle is already claimed in the bitmap. Reserve the
