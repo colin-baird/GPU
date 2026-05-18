@@ -148,18 +148,20 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     scheduler_ = std::make_unique<WarpScheduler>(config.num_warps, warps_.data(),
                                                  func_model, stats);
     opcoll_ = std::make_unique<OperandCollector>(stats);
-    // Phase 5: opcoll publishes a REGISTERED redirect-request and clears
-    // branch_in_flight directly into the tracker's next_ on resolve_branch()
-    // for correctly-predicted branches. For mispredicts, opcoll defers the
-    // clear and fetch.commit() does it when applying the redirect.
-    opcoll_->set_branch_tracker(&branch_tracker_);
     fetch_->set_branch_tracker(&branch_tracker_);
-    // Phase 5: fetch and decode read opcoll's current_redirect_request()
-    // during their own commit() to apply the flush.
-    fetch_->set_opcoll(opcoll_.get());
-    decode_->set_opcoll(opcoll_.get());
 
     alu_ = std::make_unique<ALUUnit>(stats);
+    // Phase 10A: branch resolution moved from OperandCollector to ALUUnit.
+    // The ALU publishes a REGISTERED redirect-request and clears
+    // branch_in_flight directly into the tracker's next_ for correctly-
+    // predicted branches; for mispredicts the ALU defers the clear and
+    // fetch.commit() does it when applying the redirect. fetch and decode
+    // read the ALU's current_redirect_request() during their own commit()
+    // to apply the flush.
+    alu_->set_branch_tracker(&branch_tracker_);
+    alu_->set_branch_predictor(branch_predictor_.get());
+    fetch_->set_alu(alu_.get());
+    decode_->set_alu(alu_.get());
     mul_ = std::make_unique<MultiplyUnit>(config.multiply_pipeline_stages, stats);
     div_ = std::make_unique<DivideUnit>(stats);
     tlookup_ = std::make_unique<TLookupUnit>(stats);
@@ -321,21 +323,6 @@ bool TimingModel::all_warps_done() const {
     return true;
 }
 
-bool TimingModel::branch_mispredicted(const DispatchInput& input) const {
-    if (!input.trace.is_branch) {
-        return false;
-    }
-
-    const uint32_t predicted_next_pc = input.prediction.predicted_taken
-        ? input.prediction.predicted_target
-        : (input.pc + 4);
-    const uint32_t actual_next_pc = input.trace.branch_taken
-        ? input.trace.branch_target
-        : (input.pc + 4);
-
-    return predicted_next_pc != actual_next_pc;
-}
-
 bool TimingModel::tick() {
     cycle_++;
     stats_.total_cycles = cycle_;
@@ -469,31 +456,14 @@ bool TimingModel::tick() {
 
     if (opcoll_->output()) {
         dispatch_to_unit(*opcoll_->output());
-
-        const auto& out = *opcoll_->output();
-        if (out.trace.is_branch) {
-            stats_.branch_predictions++;
-            branch_predictor_->update(out.pc, out.decoded, out.prediction,
-                                      out.trace.branch_taken, out.trace.branch_target);
-            const bool mispredicted = branch_mispredicted(out);
-            const uint32_t actual_target = out.trace.branch_taken
-                ? out.trace.branch_target
-                : (out.pc + 4);
-            // Phase 5 REGISTERED branch resolution: opcoll clears the
-            // branch-shadow tracker (writes into next_) and, on
-            // misprediction, writes next_redirect_request_. fetch.commit()
-            // and decode.commit() read opcoll.current_redirect_request_
-            // at cycle N+1 (after this cycle's opcoll.commit() flips
-            // next_ -> current_). This is +1 cycle vs. the prior mid-tick
-            // mutation; accepted by Option A.
-            opcoll_->resolve_branch(out.warp_id, mispredicted, actual_target);
-            if (mispredicted) {
-                stats_.branch_mispredictions++;
-                stats_.branch_flushes++;
-            }
-        }
     }
 
+    // Phase 10A: branch resolution moved into ALUUnit::evaluate(). The ALU
+    // received this cycle's dispatched branch via alu_->accept() inside
+    // dispatch_to_unit() above; its evaluate() now updates the branch
+    // predictor and publishes the REGISTERED redirect-request. fetch.commit()
+    // and decode.commit() read alu.current_redirect_request_ at cycle N+1
+    // (after this cycle's alu.commit() flips next_ -> current_).
     alu_->evaluate();
     mul_->evaluate();
     div_->evaluate();
@@ -1006,7 +976,7 @@ void TimingModel::emit_cycle_events(const CycleTraceSnapshot& snapshot, bool pan
     }
 
     if (opcoll_->current_output() &&
-        branch_mispredicted(*opcoll_->current_output())) {
+        ALUUnit::branch_mispredicted(*opcoll_->current_output())) {
         const auto& branch = *opcoll_->current_output();
         TraceArgs args = instruction_args(snapshot.cycle, branch.warp_id, branch.pc,
                                           branch.decoded.raw, branch.decoded.target_unit,

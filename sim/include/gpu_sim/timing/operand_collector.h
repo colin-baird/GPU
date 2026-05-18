@@ -16,56 +16,9 @@ struct DispatchInput {
     BranchPrediction prediction;
 };
 
-// Phase 5 REGISTERED branch-redirect signal. The OperandCollector publishes
-// next_redirect_request_ when a branch resolves with misprediction during
-// its evaluate(); commit() flips next_-> current_; FetchStage and
-// DecodeStage read current_redirect_request() during their own commit() and
-// flush as needed. This replaces the prior mid-tick fetch_->redirect_warp
-// and decode_->invalidate_warp side-channel calls from timing_model.cpp.
-struct RedirectRequest {
-    bool valid = false;
-    uint32_t warp_id = 0;
-    uint32_t target_pc = 0;
-};
-
 class OperandCollector : public PipelineStage {
 public:
     explicit OperandCollector(Stats& stats) : stats_(stats) {}
-
-    // Phase 5 wiring: opcoll knows about the branch-shadow tracker so
-    // resolve_branch() can clear it directly into next_*. Wired by
-    // TimingModel after construction (nullptr-tolerant for unit tests
-    // that exercise OperandCollector in isolation).
-    void set_branch_tracker(BranchShadowTracker* tracker) {
-        branch_tracker_ = tracker;
-    }
-
-    // Phase 5 REGISTERED branch resolution: called from TimingModel::tick()
-    // after opcoll_->evaluate() has produced its output for a BRANCH/JAL/JALR.
-    // Always clears branch_in_flight in next_ for the resolving warp; if
-    // mispredicted == true, also writes next_redirect_request_ so that
-    // fetch.commit() and decode.commit() can flush this same cycle's
-    // boundary. The redirect itself is delayed by 1 cycle relative to the
-    // pre-Phase-5 mid-tick fetch_->redirect_warp call: fetch/decode see
-    // current_redirect_request_ in cycle N+1 after commit() flips next_.
-    void resolve_branch(uint32_t warp_id, bool mispredicted, uint32_t target_pc);
-    const RedirectRequest& current_redirect_request() const {
-        return current_redirect_request_;
-    }
-
-    // Phase 3 of the naming-and-access-discipline refactor: replaces the
-    // free function `read_redirect_request(override, opcoll)`. Folding
-    // the override-vs-current_redirect_request_ choice into a member
-    // function gives the libclang AST extractor a statically resolvable
-    // receiver (this opcoll) and removes a parameter-bound cross-stage
-    // read. FetchStage::commit() and DecodeStage::commit() each call this
-    // through their wired `opcoll_` pointer; the caller still gates on
-    // `opcoll_ != nullptr` for the unit-test default.
-    RedirectRequest current_redirect_request_or_override(
-        const std::optional<RedirectRequest>& override_request) const {
-        if (override_request) return *override_request;
-        return current_redirect_request_;
-    }
 
     // Back-pressure discipline (REGISTERED + back-pressure direction):
     // current_busy() is a const accessor reading only committed
@@ -125,16 +78,6 @@ private:
     // committed copy used by post-commit observers (branch_redirect tracing).
     std::optional<DispatchInput> current_output_;
     std::optional<DispatchInput> next_output_;
-
-    // Phase 5 REGISTERED redirect-request signal. resolve_branch() writes
-    // next_redirect_request_; commit() flips it to current_redirect_request_.
-    // FetchStage and DecodeStage read current_redirect_request() during
-    // their own commit() to apply the flush, replacing the prior mid-tick
-    // side-channel calls from timing_model.cpp.
-    RedirectRequest current_redirect_request_{};
-    RedirectRequest next_redirect_request_{};
-
-    BranchShadowTracker* branch_tracker_ = nullptr;
 };
 
 } // namespace gpu_sim

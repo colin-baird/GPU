@@ -1,6 +1,6 @@
 #include "gpu_sim/timing/fetch_stage.h"
 #include "gpu_sim/timing/decode_stage.h"
-#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/alu_unit.h"
 #include "gpu_sim/timing/branch_shadow_tracker.h"
 
 namespace gpu_sim {
@@ -94,19 +94,19 @@ void FetchStage::commit() {
     // when backpressured, producing nullopt or a fresh fetch otherwise).
     current_output_ = next_output_;
 
-    // Phase 5: apply REGISTERED redirect-request from the OperandCollector
-    // (or test override). The signal we read here is the producer's
-    // current_redirect_request_, latched by opcoll.commit() on the previous
-    // cycle (opcoll.commit() runs after fetch.commit() within the same
-    // tick). So a misprediction observed in opcoll.evaluate() at cycle N
-    // becomes visible to fetch.commit() at cycle N+1, applying the flush
-    // there. This adds +1 cycle to mispredict-recovery vs. the prior
-    // mid-tick mutation — accepted by Option A.
+    // Phase 10A: apply REGISTERED redirect-request from the ALU (or test
+    // override). The signal we read here is the producer's
+    // current_redirect_request_, latched by alu.commit() on the previous
+    // cycle (alu.commit() runs after fetch.commit() within the same tick).
+    // So a misprediction resolved in alu.evaluate() at cycle N becomes
+    // visible to fetch.commit() at cycle N+1, applying the flush there.
+    // Branch resolution moved from OperandCollector to ALUUnit in Phase 10A;
+    // the cycle behavior of the redirect is unchanged.
     RedirectRequest req;
     if (redirect_override_) {
         req = *redirect_override_;
-    } else if (opcoll_) {
-        req = opcoll_->current_redirect_request_or_override(std::nullopt);
+    } else if (alu_) {
+        req = alu_->current_redirect_request_or_override(std::nullopt);
     }
     if (req.valid) {
         apply_redirect(req.warp_id, req.target_pc);

@@ -3,7 +3,7 @@
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/warp_state.h"
-#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/functional/memory.h"
 #include "gpu_sim/stats.h"
 #include <optional>
@@ -12,6 +12,7 @@ namespace gpu_sim {
 
 class DecodeStage;          // forward decl: fetch reads decode.current_busy()
 class BranchShadowTracker;  // forward decl: fetch clears in-flight on redirect apply
+class ALUUnit;              // forward decl: fetch reads alu.current_redirect_request()
 
 struct FetchOutput {
     uint32_t raw_instruction;
@@ -36,11 +37,11 @@ public:
     // evaluate() as READY/STALL signals (Phase 3 discipline).
     void set_decode(const DecodeStage* decode) { decode_ = decode; }
 
-    // Phase 5: wire opcoll so fetch.commit() can read its REGISTERED
-    // current_redirect_request() and apply the flush from there. Replaces
-    // the prior mid-tick fetch_->redirect_warp(...) side-channel call from
-    // timing_model.cpp.
-    void set_opcoll(const OperandCollector* opcoll) { opcoll_ = opcoll; }
+    // Phase 10A: wire the ALU so fetch.commit() can read its REGISTERED
+    // current_redirect_request() and apply the flush from there. Branch
+    // resolution moved from OperandCollector to ALUUnit in Phase 10A; this
+    // setter replaces the former set_opcoll(...).
+    void set_alu(const ALUUnit* alu) { alu_ = alu; }
 
     // Phase 5: wire branch-shadow tracker so fetch.commit() can clear the
     // in-flight bit (write into tracker.next_) at the same moment it
@@ -97,7 +98,7 @@ private:
     BranchPredictor& predictor_;
     Stats& stats_;
     const DecodeStage* decode_ = nullptr;
-    const OperandCollector* opcoll_ = nullptr;
+    const ALUUnit* alu_ = nullptr;
     BranchShadowTracker* branch_tracker_ = nullptr;
 
     uint32_t rr_pointer_ = 0;

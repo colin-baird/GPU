@@ -60,7 +60,6 @@ private:
     };
 
     void dispatch_to_unit(const DispatchInput& input);
-    bool branch_mispredicted(const DispatchInput& input) const;
     bool pipeline_drained() const;
     bool execution_units_drained() const;
     void discard_writeback_results();

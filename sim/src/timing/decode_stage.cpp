@@ -1,5 +1,5 @@
 #include "gpu_sim/timing/decode_stage.h"
-#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/alu_unit.h"
 
 namespace gpu_sim {
 
@@ -43,17 +43,18 @@ void DecodeStage::commit() {
     // whether to panic_->trigger().
     current_ebreak_request_ = next_ebreak_request_;
 
-    // Phase 5: apply REGISTERED redirect-request from the OperandCollector
-    // BEFORE the pending->buffer push. The signal here is opcoll's
-    // current_redirect_request_ latched by opcoll.commit() on the previous
+    // Phase 10A: apply REGISTERED redirect-request from the ALU BEFORE the
+    // pending->buffer push. The signal here is the ALU's
+    // current_redirect_request_ latched by alu.commit() on the previous
     // cycle. Applying the invalidate first prevents this commit from
     // pushing a shadow instruction (the pending entry that decode.evaluate
     // accepted while reading from the wrong path) into the warp's buffer.
+    // Branch resolution moved from OperandCollector to ALUUnit in Phase 10A.
     RedirectRequest req;
     if (redirect_override_) {
         req = *redirect_override_;
-    } else if (opcoll_) {
-        req = opcoll_->current_redirect_request_or_override(std::nullopt);
+    } else if (alu_) {
+        req = alu_->current_redirect_request_or_override(std::nullopt);
     }
     if (req.valid) {
         apply_redirect_invalidate(req.warp_id);

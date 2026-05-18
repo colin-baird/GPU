@@ -30,9 +30,50 @@ void ALUUnit::evaluate() {
         next_result_buffer_.pc = next_pending_input_.pc;
         next_result_buffer_.raw_instruction = next_pending_input_.decoded.raw;
         next_result_buffer_.issue_cycle = next_pending_cycle_;
-        next_has_pending_ = false;
         stats_.alu_stats.busy_cycles++;
         stats_.alu_stats.instructions++;
+
+        // Phase 10A: branch resolution, moved here from TimingModel::tick().
+        // The next_has_pending_ guard above is mandatory: next_pending_input_
+        // is only meaningful when the ALU actually has an instruction this
+        // cycle. Gate the branch work on the trace flag of *this* cycle's
+        // input. This is byte-identical to the prior post-opcoll block in
+        // TimingModel: opcoll.evaluate -> dispatch_to_unit -> alu.accept ->
+        // alu.evaluate all run in the same tick, so the branch the ALU sees
+        // here is exactly the branch the old block resolved off opcoll.output().
+        // The redirect stays REGISTERED (next_ -> current_ at commit), so
+        // fetch/decode still observe last cycle's latched redirect.
+        if (next_pending_input_.trace.is_branch) {
+            const DispatchInput& in = next_pending_input_;
+            stats_.branch_predictions++;
+            if (branch_predictor_) {
+                branch_predictor_->update(in.pc, in.decoded, in.prediction,
+                                          in.trace.branch_taken,
+                                          in.trace.branch_target);
+            }
+            const bool mispredicted = branch_mispredicted(in);
+            const uint32_t actual_target = in.trace.branch_taken
+                ? in.trace.branch_target
+                : (in.pc + 4);
+            if (mispredicted) {
+                // Mispredict: publish the REGISTERED redirect. The branch-
+                // shadow clear is deferred to FetchStage::commit() when it
+                // applies the redirect — clearing here would unblock the
+                // scheduler to issue a shadow instruction from a not-yet-
+                // flushed buffer.
+                next_redirect_request_.valid = true;
+                next_redirect_request_.warp_id = in.warp_id;
+                next_redirect_request_.target_pc = actual_target;
+                stats_.branch_mispredictions++;
+                stats_.branch_flushes++;
+            } else if (branch_tracker_) {
+                // Correct prediction: no shadow path, clear the in-flight bit
+                // immediately (writes into the tracker's next_ slot).
+                branch_tracker_->note_resolved_correctly(in.warp_id);
+            }
+        }
+
+        next_has_pending_ = false;
     }
 }
 
@@ -42,6 +83,13 @@ void ALUUnit::commit() {
     current_has_pending_ = next_has_pending_;
     current_pending_input_ = next_pending_input_;
     current_pending_cycle_ = next_pending_cycle_;
+    // Phase 10A: flip the REGISTERED redirect-request slot, then clear next_
+    // so a single mispredict does not repeat-fire on subsequent cycles.
+    // Fetch and decode read current_redirect_request_ during their own
+    // commit() (which runs before alu.commit() within the same tick), so the
+    // redirect they apply is last cycle's, latched by THIS commit a tick ago.
+    current_redirect_request_ = next_redirect_request_;
+    next_redirect_request_.valid = false;
 }
 
 void ALUUnit::reset() {
@@ -49,6 +97,23 @@ void ALUUnit::reset() {
     next_result_buffer_.valid = false;
     current_has_pending_ = false;
     next_has_pending_ = false;
+    current_redirect_request_ = RedirectRequest{};
+    next_redirect_request_ = RedirectRequest{};
+}
+
+bool ALUUnit::branch_mispredicted(const DispatchInput& input) {
+    if (!input.trace.is_branch) {
+        return false;
+    }
+
+    const uint32_t predicted_next_pc = input.prediction.predicted_taken
+        ? input.prediction.predicted_target
+        : (input.pc + 4);
+    const uint32_t actual_next_pc = input.trace.branch_taken
+        ? input.trace.branch_target
+        : (input.pc + 4);
+
+    return predicted_next_pc != actual_next_pc;
 }
 
 bool ALUUnit::next_has_result() const {

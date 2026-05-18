@@ -2,12 +2,14 @@
 
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/fetch_stage.h"
-#include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/decoder.h"
 #include <optional>
 
 namespace gpu_sim {
+
+class ALUUnit;  // forward decl: decode reads alu.current_redirect_request()
 
 // Phase 6 REGISTERED EBREAK side-channel. evaluate() writes
 // next_ebreak_request_ when it sees an EBREAK at decode; commit() flips
@@ -53,11 +55,11 @@ public:
     // evaluate time, which equals committed state.
     bool current_busy() const { return pending_.valid; }
 
-    // Phase 5: wire opcoll so decode.commit() can read its REGISTERED
+    // Phase 10A: wire the ALU so decode.commit() can read its REGISTERED
     // current_redirect_request() and invalidate any matching pending entry.
-    // Replaces the prior mid-tick decode_->invalidate_warp(...) call from
-    // timing_model.cpp.
-    void set_opcoll(const OperandCollector* opcoll) { opcoll_ = opcoll; }
+    // Branch resolution moved from OperandCollector to ALUUnit in Phase 10A;
+    // this setter replaces the former set_opcoll(...).
+    void set_alu(const ALUUnit* alu) { alu_ = alu; }
 
     // Phase 5 test hook: explicit override of the redirect-request signal
     // for unit tests that drive DecodeStage in isolation.
@@ -80,7 +82,7 @@ private:
 
     WarpState* warps_;
     FetchStage& fetch_;
-    const OperandCollector* opcoll_ = nullptr;
+    const ALUUnit* alu_ = nullptr;
 
     // Phase 6 REGISTERED ebreak side-channel: evaluate() writes next_;
     // commit() flips next_ -> current_; TimingModel reads current_ at the
