@@ -151,13 +151,14 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     fetch_->set_branch_tracker(&branch_tracker_);
 
     alu_ = std::make_unique<ALUUnit>(stats);
-    // Phase 10A: branch resolution moved from OperandCollector to ALUUnit.
-    // The ALU publishes a REGISTERED redirect-request and clears
-    // branch_in_flight directly into the tracker's next_ for correctly-
+    // Phase 10A/10E: branch resolution moved from OperandCollector to ALUUnit.
+    // The ALU asserts a COMBINATIONAL-backward redirect (next_redirect()) and
+    // clears branch_in_flight directly into the tracker's next_ for correctly-
     // predicted branches; for mispredicts the ALU defers the clear and
-    // fetch.commit() does it when applying the redirect. fetch and decode
-    // read the ALU's current_redirect_request() during their own commit()
-    // to apply the flush.
+    // fetch.evaluate() does it (note_redirect_applied) when applying the
+    // redirect. fetch and decode read the ALU's next_redirect() at the top of
+    // their own evaluate() — the back-to-front sweep runs the ALU first — and
+    // apply the flush the same cycle the branch resolves.
     alu_->set_branch_tracker(&branch_tracker_);
     alu_->set_branch_predictor(branch_predictor_.get());
     fetch_->set_alu(alu_.get());

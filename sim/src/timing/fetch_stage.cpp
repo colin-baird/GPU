@@ -22,6 +22,26 @@ std::optional<uint32_t> FetchStage::query_decode_pending_warp() const {
 }
 
 void FetchStage::evaluate() {
+    // Phase 10E: apply the COMBINATIONAL-backward redirect at the top of
+    // evaluate(). The ALU resolved the branch earlier in this same tick (the
+    // back-to-front sweep runs execution units before the frontend), so
+    // alu_->next_redirect() carries this cycle's fresh transient. The
+    // test-only override takes precedence for isolated FetchStage tests.
+    // apply_redirect() mutates committed warp/buffer/output state directly —
+    // this is the redirect-flush moment; the redirected warp is then skipped
+    // by the fetch scan below (its buffer was just flushed and PC reset).
+    RedirectRequest req;
+    if (redirect_override_) {
+        req = *redirect_override_;
+    } else if (alu_) {
+        req = alu_->next_redirect();
+    }
+    const std::optional<uint32_t> redirected_warp =
+        req.valid ? std::optional<uint32_t>(req.warp_id) : std::nullopt;
+    if (req.valid) {
+        apply_redirect(req.warp_id, req.target_pc);
+    }
+
     // READY/STALL gate: if last cycle's output is still in current_output_
     // and decode is not ready to consume it this cycle, hold the output
     // (carry into next_output_) and do not fetch a new instruction.
@@ -58,6 +78,11 @@ void FetchStage::evaluate() {
     bool fetched = false;
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_ + i) % num_warps_;
+        // Phase 10E: skip the warp that was redirected this cycle. Its buffer
+        // was just flushed and its PC reset to the resolved target; the
+        // earliest a correct-path fetch may issue for it is the NEXT cycle
+        // (the mispredict shadow: resolve+flush N -> fetch N+1).
+        if (redirected_warp.has_value() && *redirected_warp == w) continue;
         auto& buf = warps_[w].instr_buffer;
         uint32_t inflight_to_w = 0;
         if (decode_pending_warp.has_value() && *decode_pending_warp == w) inflight_to_w++;
@@ -92,25 +117,10 @@ void FetchStage::commit() {
     // current_output_ is REGISTERED: evaluate() has already encoded the
     // hold-vs-advance decision into next_output_ (carrying current forward
     // when backpressured, producing nullopt or a fresh fetch otherwise).
+    // Phase 10E: the redirect-apply moved into evaluate() — it reads the
+    // ALU's COMBINATIONAL-backward next_redirect() the same cycle the branch
+    // resolves. commit() now only flips the REGISTERED output register.
     current_output_ = next_output_;
-
-    // Phase 10A: apply REGISTERED redirect-request from the ALU (or test
-    // override). The signal we read here is the producer's
-    // current_redirect_request_, latched by alu.commit() on the previous
-    // cycle (alu.commit() runs after fetch.commit() within the same tick).
-    // So a misprediction resolved in alu.evaluate() at cycle N becomes
-    // visible to fetch.commit() at cycle N+1, applying the flush there.
-    // Branch resolution moved from OperandCollector to ALUUnit in Phase 10A;
-    // the cycle behavior of the redirect is unchanged.
-    RedirectRequest req;
-    if (redirect_override_) {
-        req = *redirect_override_;
-    } else if (alu_) {
-        req = alu_->current_redirect_request_or_override(std::nullopt);
-    }
-    if (req.valid) {
-        apply_redirect(req.warp_id, req.target_pc);
-    }
 }
 
 void FetchStage::reset() {

@@ -53,8 +53,8 @@ public:
 
     // Phase 10A: branch resolution moved here from TimingModel::tick(). The
     // ALU resolves a branch in its own evaluate() — it updates the branch
-    // predictor, and on misprediction publishes a REGISTERED redirect into
-    // next_redirect_request_; on a correct prediction it clears the
+    // predictor, and on misprediction asserts the combinational-backward
+    // redirect (next_redirect_); on a correct prediction it clears the
     // branch-shadow tracker's in-flight bit. Wired by TimingModel after
     // construction (nullptr-tolerant for unit tests in isolation).
     void set_branch_tracker(BranchShadowTracker* tracker) {
@@ -64,37 +64,32 @@ public:
         branch_predictor_ = predictor;
     }
 
-    // Phase 10A REGISTERED redirect-request signal. evaluate() writes
-    // next_redirect_request_ on a mispredicted branch; commit() flips it to
-    // current_redirect_request_. FetchStage and DecodeStage read
-    // current_redirect_request() during their own commit() to apply the
-    // flush. Kept REGISTERED as an interim staging step (see RedirectRequest
-    // comment in execution_unit.h); converted to combinational backward in
-    // Phase 10E.
-    const RedirectRequest& current_redirect_request() const {
-        return current_redirect_request_;
+    // Phase 10E COMBINATIONAL-backward redirect signal. evaluate() resets
+    // next_redirect_ at its top, then asserts it on a mispredicted branch
+    // (gated by branch_resolved_ so it fires exactly once across a
+    // multi-cycle writeback stall). FetchStage and DecodeStage read
+    // next_redirect() at the top of their own evaluate() — the back-to-front
+    // sweep (Phase 10D) runs the ALU before the frontend, so the read sees
+    // this tick's fresh transient. The redirect is a backward control signal
+    // (Principle 6): there is no current_* slot and no commit() flip.
+    const RedirectRequest& next_redirect() const {
+        return next_redirect_;
     }
 
-    // Folds the override-vs-current_redirect_request_ choice into a member
-    // function so the libclang AST extractor sees a statically resolvable
-    // receiver. FetchStage::commit() and DecodeStage::commit() call this
-    // through their wired `alu_` pointer; the caller still gates on
-    // `alu_ != nullptr` for the unit-test default.
-    RedirectRequest current_redirect_request_or_override(
-        const std::optional<RedirectRequest>& override_request) const {
-        if (override_request) return *override_request;
-        return current_redirect_request_;
-    }
-
-    // Test hook: explicit override of the redirect-request signal, used by
-    // tests that drive ALUUnit in isolation. Mirrors the prior opcoll hook.
+    // Test hook: explicit override of the redirect signal, used by tests that
+    // drive ALUUnit in isolation. evaluate() reads this directly into the
+    // transient next_redirect_ at its top (before branch resolution); a real
+    // resolved branch in the same evaluate() may overwrite it.
     void set_redirect_request_override(bool valid, uint32_t warp_id,
                                        uint32_t target_pc) {
         RedirectRequest req;
         req.valid = valid;
         req.warp_id = warp_id;
         req.target_pc = target_pc;
-        next_redirect_request_ = req;
+        redirect_override_ = req;
+    }
+    void clear_redirect_request_override() {
+        redirect_override_.reset();
     }
 
     // Phase 10A: shared misprediction check, moved from TimingModel. A branch
@@ -144,12 +139,14 @@ private:
     // Not a double-buffered field — evaluate() assigns it fresh each cycle.
     bool processed_this_cycle_ = false;
 
-    // Phase 10A REGISTERED redirect-request signal. evaluate() writes
-    // next_redirect_request_ on a mispredicted branch; commit() flips it to
-    // current_redirect_request_. FetchStage / DecodeStage read
-    // current_redirect_request() during their own commit().
-    RedirectRequest current_redirect_request_{};
-    RedirectRequest next_redirect_request_{};
+    // Phase 10E COMBINATIONAL-backward redirect signal. Single transient
+    // slot, reset at the top of evaluate() and asserted on a mispredicted
+    // branch the same cycle; there is no current_* twin and no commit()
+    // flip. FetchStage / DecodeStage read it via next_redirect() at the top
+    // of their own evaluate() (back-to-front sweep: ALU runs first).
+    RedirectRequest next_redirect_{};
+    // Test-only override; when set, evaluate() reads it into next_redirect_.
+    std::optional<RedirectRequest> redirect_override_;
 
     // Phase 10B.3: category-4 control state — deliberately NOT gated by the
     // writeback stall and NOT seed_next'd. Branch resolution is combinational

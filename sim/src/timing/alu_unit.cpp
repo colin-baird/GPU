@@ -33,6 +33,12 @@ void ALUUnit::evaluate() {
     // "no result"; the accepted op (if any) overwrites it below.
     next_result_buffer_ = WritebackEntry{};
 
+    // Phase 10E: the redirect is a COMBINATIONAL-backward transient. Reset it
+    // at the top of every evaluate() so a stalled re-run, or a cycle with no
+    // mispredict, asserts nothing. The test-only override (if set) seeds it;
+    // a real resolved branch below may overwrite it.
+    next_redirect_ = redirect_override_ ? *redirect_override_ : RedirectRequest{};
+
     // Phase 10B.0.5: assign the per-cycle scratch flag fresh every cycle so a
     // re-evaluated stalled cycle recomputes it from scratch. commit()
     // consumes it to perform the Stats increments.
@@ -70,47 +76,46 @@ void ALUUnit::evaluate() {
         // Phase 10B.0.5: alu_stats.busy_cycles / .instructions are incremented
         // in commit() (gated on processed_this_cycle_), not here.
 
-        // Phase 10A: branch resolution. Phase 10B.3: branch resolution is
-        // combinational — it still resolves and drives the redirect each
-        // stalled cycle — but its SIDE-EFFECTS (predictor update, tracker
-        // write, branch Stats) are writes to shared structures the gated
-        // commit() does not protect, so they must fire EXACTLY ONCE. The
-        // branch_resolved_ control bit (category-4: not gated, not seeded)
-        // guards them: fire only when clear, then set it. commit() clears it
-        // whenever the resolve-stage register advances (a non-stalled cycle).
-        if (next_pending_input_.trace.is_branch) {
+        // Phase 10A: branch resolution. Phase 10B.3 / 10E: branch resolution
+        // is combinational — it re-runs each stalled cycle — but every
+        // observable effect must fire EXACTLY ONCE. The branch_resolved_
+        // control bit (category-4: not gated, not seeded) guards them: fire
+        // only when clear, then set it. commit() clears it whenever the
+        // resolve-stage register advances (a non-stalled cycle).
+        //
+        // Phase 10E: the redirect itself is now a COMBINATIONAL-backward
+        // transient (no gated commit() to dedup it), so its assertion is
+        // gated by branch_resolved_ alongside the predictor/tracker/Stats
+        // side-effects. A branch held at the resolve stage by a multi-cycle
+        // writeback stall therefore asserts next_redirect() exactly once —
+        // on the first (non-resolved) evaluate of that branch — and the
+        // frontend, which is not gated by the stall, applies the flush that
+        // same cycle (see fetch_stage.cpp / decode_stage.cpp).
+        if (next_pending_input_.trace.is_branch && !branch_resolved_) {
             const DispatchInput& in = next_pending_input_;
             const bool mispredicted = branch_mispredicted(in);
             const uint32_t actual_target = in.trace.branch_taken
                 ? in.trace.branch_target
                 : (in.pc + 4);
+            stats_.branch_predictions++;
+            if (branch_predictor_) {
+                branch_predictor_->update(in.pc, in.decoded, in.prediction,
+                                          in.trace.branch_taken,
+                                          in.trace.branch_target);
+            }
             if (mispredicted) {
-                // Mispredict: publish the REGISTERED redirect. Recomputed
-                // identically on a stalled re-run; the gated commit() dedups
-                // the redirect itself, branch_resolved_ dedups the side
-                // effects below.
-                next_redirect_request_.valid = true;
-                next_redirect_request_.warp_id = in.warp_id;
-                next_redirect_request_.target_pc = actual_target;
+                // Assert the combinational-backward redirect this cycle.
+                next_redirect_.valid = true;
+                next_redirect_.warp_id = in.warp_id;
+                next_redirect_.target_pc = actual_target;
+                stats_.branch_mispredictions++;
+                stats_.branch_flushes++;
+            } else if (branch_tracker_) {
+                // Correct prediction: clear the in-flight bit (writes the
+                // tracker's next_ slot).
+                branch_tracker_->note_resolved_correctly(in.warp_id);
             }
-            if (!branch_resolved_) {
-                // Side-effects: fire exactly once across a multi-cycle stall.
-                stats_.branch_predictions++;
-                if (branch_predictor_) {
-                    branch_predictor_->update(in.pc, in.decoded, in.prediction,
-                                              in.trace.branch_taken,
-                                              in.trace.branch_target);
-                }
-                if (mispredicted) {
-                    stats_.branch_mispredictions++;
-                    stats_.branch_flushes++;
-                } else if (branch_tracker_) {
-                    // Correct prediction: clear the in-flight bit (writes the
-                    // tracker's next_ slot).
-                    branch_tracker_->note_resolved_correctly(in.warp_id);
-                }
-                branch_resolved_ = true;
-            }
+            branch_resolved_ = true;
         }
 
         next_has_pending_ = false;
@@ -142,10 +147,9 @@ void ALUUnit::commit() {
     current_result_buffer_ = next_result_buffer_;
     current_has_pending_ = next_has_pending_;
     current_pending_input_ = next_pending_input_;
-    // Phase 10A: flip the REGISTERED redirect-request slot, then clear next_
-    // so a single mispredict does not repeat-fire on subsequent cycles.
-    current_redirect_request_ = next_redirect_request_;
-    next_redirect_request_.valid = false;
+    // Phase 10E: the redirect is a COMBINATIONAL-backward transient — no
+    // current_* slot, no flip. evaluate() resets and re-asserts it each
+    // cycle; the frontend reads it the same cycle (back-to-front sweep).
     // Phase 10B.3: a non-stalled commit() advances the resolve-stage register,
     // so the branch (if any) leaves the ALU — clear branch_resolved_ so the
     // next branch to occupy the stage resolves its side-effects afresh.
@@ -157,8 +161,8 @@ void ALUUnit::reset() {
     next_result_buffer_.valid = false;
     current_has_pending_ = false;
     next_has_pending_ = false;
-    current_redirect_request_ = RedirectRequest{};
-    next_redirect_request_ = RedirectRequest{};
+    next_redirect_ = RedirectRequest{};
+    redirect_override_.reset();
     branch_resolved_ = false;
 }
 

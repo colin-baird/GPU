@@ -106,16 +106,15 @@ struct WritebackEntry {
     uint64_t issue_cycle = 0;  // For latency tracking
 };
 
-// REGISTERED branch-redirect signal. The producer (ALUUnit as of Phase 10A;
-// formerly OperandCollector) publishes next_redirect_request_ when a branch
-// resolves with misprediction during its evaluate(); commit() flips
-// next_ -> current_; FetchStage and DecodeStage read current_redirect_request()
-// during their own commit() and flush as needed.
-//
-// Phase 10A note: under Principle 6 a redirect is a backward control signal
-// and should be combinational backward. It is kept REGISTERED here as an
-// interim staging step; the conversion to combinational backward happens in
-// Phase 10E once the back-to-front evaluate sweep is in place.
+// COMBINATIONAL-backward branch-redirect signal (Phase 10E). The producer
+// (ALUUnit) asserts next_redirect_ when a branch resolves with misprediction
+// during its evaluate(); FetchStage and DecodeStage read next_redirect() at
+// the top of their own evaluate() the SAME cycle and flush as needed. Under
+// Principle 6 a redirect is a backward control signal: the back-to-front
+// evaluate sweep (Phase 10D) runs the ALU before the frontend, so the
+// transient is delivered with zero handoff latency and there is no current_*
+// twin and no commit() flip. (Phases 10A-10D kept it REGISTERED as an interim
+// staging step; 10E converted it to the discipline-correct form.)
 struct RedirectRequest {
     bool valid = false;
     uint32_t warp_id = 0;

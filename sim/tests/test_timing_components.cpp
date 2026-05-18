@@ -112,10 +112,14 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
     fetch.commit();
 
     REQUIRE(fetch.current_output().has_value());
-    // Phase 5: redirect_warp() is gone; the test now drives the same flush
-    // by setting the REGISTERED redirect-request override and running
-    // commit() — exactly how production code now applies a redirect.
+    // Phase 10E: the redirect is now COMBINATIONAL-backward and applied at the
+    // top of evaluate() (not commit()). Drive the same flush by setting the
+    // redirect override and running an evaluate()/commit() pair — exactly how
+    // production code now applies a redirect (fetch reads alu->next_redirect()
+    // at the top of its evaluate()). evaluate() applies the flush; commit()
+    // flips the (now-empty) output register.
     fetch.set_redirect_request_override(true, 0, 16);
+    fetch.evaluate();
     fetch.commit();
     fetch.clear_redirect_request_override();
 
@@ -172,32 +176,55 @@ TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
     REQUIRE(warps[0].instr_buffer.is_empty());
 }
 
-TEST_CASE("DecodeStage: invalidate_warp drops pending decode before commit", "[timing]") {
+TEST_CASE("DecodeStage: redirect drops carried-forward pending decode", "[timing]") {
     Stats stats;
     StaticDirectionalBranchPredictor predictor;
     InstructionMemory imem(64);
     imem.write(0, i_type(7, 0, isa::FUNCT3_ADD_SUB, 5, isa::OP_ALU_I));
 
     std::vector<WarpState> warps;
-    warps.emplace_back(2);
+    warps.emplace_back(2);  // buffer depth 2
     warps[0].reset(0);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
     fetch.evaluate();
     fetch.commit();
+    REQUIRE(fetch.current_output().has_value());
 
     DecodeStage decode(warps.data(), fetch);
+    // Decode stages a pending entry for warp 0 from the fetch output.
+    decode.seed_next();
     decode.evaluate();
-    // Phase 5: invalidate_warp() is gone; drive the same effect via the
-    // REGISTERED redirect-request override before commit(). Decode's
-    // commit() now reads opcoll.current_redirect_request_ (or the override)
-    // after attempting to push to instr_buffer and drops the pending entry
-    // if the warp matches.
+    // Fill the warp buffer so decode.commit()'s pending->buffer push FAILS,
+    // leaving the entry carried forward in current_pending_ — the exact state
+    // a mispredict redirect must invalidate.
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
+    decode.commit();
+    REQUIRE(decode.current_pending_warp().has_value());  // carried forward
+    REQUIRE(warps[0].instr_buffer.size() == 2);
+
+    // Clear the fetch output so the invalidating decode.evaluate() does not
+    // re-stage a fresh entry — in the real pipeline fetch.evaluate() clears
+    // its own output for the redirected warp earlier in the same tick.
+    warps[0].active = false;
+    fetch.evaluate();
+    fetch.commit();
+    REQUIRE_FALSE(fetch.current_output().has_value());
+
+    // Phase 10E: the redirect-invalidate now runs at the top of evaluate()
+    // (reading the ALU's COMBINATIONAL-backward next_redirect(), here driven
+    // by the test override). It drops the carried-forward next_pending_ entry
+    // for the redirected warp before commit() would push it.
     decode.set_redirect_request_override(true, 0);
+    decode.seed_next();
+    decode.evaluate();
     decode.commit();
     decode.clear_redirect_request_override();
 
-    REQUIRE(warps[0].instr_buffer.is_empty());
+    // The shadow pending entry was dropped — no third push into the buffer.
+    REQUIRE_FALSE(decode.current_pending_warp().has_value());
+    REQUIRE(warps[0].instr_buffer.size() == 2);
 }
 
 TEST_CASE("Fetch skips warp with full buffer", "[timing]") {

@@ -12,7 +12,7 @@ namespace gpu_sim {
 
 class DecodeStage;          // forward decl: fetch reads decode.current_busy()
 class BranchShadowTracker;  // forward decl: fetch clears in-flight on redirect apply
-class ALUUnit;              // forward decl: fetch reads alu.current_redirect_request()
+class ALUUnit;              // forward decl: fetch reads alu.next_redirect()
 
 struct FetchOutput {
     uint32_t raw_instruction;
@@ -37,10 +37,10 @@ public:
     // evaluate() as READY/STALL signals (Phase 3 discipline).
     void set_decode(const DecodeStage* decode) { decode_ = decode; }
 
-    // Phase 10A: wire the ALU so fetch.commit() can read its REGISTERED
-    // current_redirect_request() and apply the flush from there. Branch
-    // resolution moved from OperandCollector to ALUUnit in Phase 10A; this
-    // setter replaces the former set_opcoll(...).
+    // Phase 10A/10E: wire the ALU so fetch.evaluate() can read its
+    // COMBINATIONAL-backward next_redirect() and apply the flush the same
+    // cycle the branch resolves. Branch resolution moved from OperandCollector
+    // to ALUUnit in Phase 10A; this setter replaced the former set_opcoll(...).
     void set_alu(const ALUUnit* alu) { alu_ = alu; }
 
     // Phase 5: wire branch-shadow tracker so fetch.commit() can clear the
@@ -54,9 +54,9 @@ public:
         branch_tracker_ = tracker;
     }
 
-    // Phase 5 test hook: explicit override of the redirect-request signal
-    // for unit tests that drive FetchStage in isolation. When set, takes
-    // precedence over opcoll_->current_redirect_request().
+    // Test hook: explicit override of the redirect signal for unit tests that
+    // drive FetchStage in isolation. When set, evaluate() uses it in place of
+    // alu_->next_redirect().
     void set_redirect_request_override(bool valid, uint32_t warp_id, uint32_t target_pc) {
         RedirectRequest req;
         req.valid = valid;
@@ -86,10 +86,10 @@ public:
 private:
     bool query_decode_ready() const;
     std::optional<uint32_t> query_decode_pending_warp() const;
-    // Phase 5: applied from commit() when the upstream REGISTERED redirect
-    // signal is valid. Mutates committed state (warp PC, instr_buffer,
-    // current_output_) — this is correct because commit() is exactly where
-    // committed-state updates belong.
+    // Phase 10E: applied from evaluate() when the ALU's COMBINATIONAL-backward
+    // redirect (or the test override) is asserted. Mutates committed state
+    // (warp PC, instr_buffer, current_output_/next_output_) — the redirect is
+    // a backward control signal and the flush is its same-cycle effect.
     void apply_redirect(uint32_t warp_id, uint32_t target_pc);
 
     uint32_t num_warps_;

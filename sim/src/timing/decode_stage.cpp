@@ -20,6 +20,27 @@ void DecodeStage::evaluate() {
     // invalid each evaluate to prevent a stale request from carrying.
     next_ebreak_request_ = EBreakRequest{};
 
+    // Phase 10E: apply the COMBINATIONAL-backward redirect-invalidate at the
+    // top of evaluate(), BEFORE the carry-forward guard. The ALU resolved the
+    // branch earlier in this same tick (back-to-front sweep); fetch.evaluate()
+    // also already ran this cycle and flushed the redirected warp's buffer and
+    // cleared its fetch output. The invalidate targets next_pending_ — the
+    // slot evaluate() owns and commit() will flip into current_pending_ and
+    // push to the buffer. A shadow entry decoded last cycle is carried here in
+    // next_pending_ (seed_next() copied it from current_pending_); dropping it
+    // before the guard both prevents the shadow push and lets evaluate() pull
+    // a fresh correct-path fetch output (which fetch already cleared to
+    // nullopt for the redirected warp, so nothing wrong is re-staged).
+    RedirectRequest req;
+    if (redirect_override_) {
+        req = *redirect_override_;
+    } else if (alu_) {
+        req = alu_->next_redirect();
+    }
+    if (req.valid) {
+        apply_redirect_invalidate(req.warp_id);
+    }
+
     // Phase 10D.0: evaluate() consumes and mutates next_pending_ (seeded
     // equal to current_pending_ by seed_next()).
     if (next_pending_.valid) return;
@@ -54,30 +75,11 @@ void DecodeStage::commit() {
     current_ebreak_request_ = next_ebreak_request_;
 
     // Phase 10D.0: flip the double-buffered pending slot. evaluate() wrote
-    // next_pending_; the redirect-invalidate and the pending->buffer push
-    // below are committed-state mutations and so operate on current_pending_
-    // after the flip — byte-identical to the prior in-place mutation of the
-    // single pending_ field, because evaluate() runs before commit() in the
-    // same tick and seed_next() leaves next_pending_ == current_pending_ on a
-    // cycle that pulls nothing.
+    // next_pending_ (and Phase 10E: already applied any redirect-invalidate
+    // to it the same cycle the branch resolved). The pending->buffer push
+    // below is a committed-state mutation and operates on current_pending_
+    // after the flip.
     current_pending_ = next_pending_;
-
-    // Phase 10A: apply REGISTERED redirect-request from the ALU BEFORE the
-    // pending->buffer push. The signal here is the ALU's
-    // current_redirect_request_ latched by alu.commit() on the previous
-    // cycle. Applying the invalidate first prevents this commit from
-    // pushing a shadow instruction (the pending entry that decode.evaluate
-    // accepted while reading from the wrong path) into the warp's buffer.
-    // Branch resolution moved from OperandCollector to ALUUnit in Phase 10A.
-    RedirectRequest req;
-    if (redirect_override_) {
-        req = *redirect_override_;
-    } else if (alu_) {
-        req = alu_->current_redirect_request_or_override(std::nullopt);
-    }
-    if (req.valid) {
-        apply_redirect_invalidate(req.warp_id);
-    }
 
     if (current_pending_.valid) {
         if (!warps_[current_pending_.target_warp].instr_buffer.is_full()) {
@@ -97,10 +99,12 @@ void DecodeStage::reset() {
 }
 
 void DecodeStage::apply_redirect_invalidate(uint32_t warp_id) {
-    // Phase 10D.0: called from commit() after the next_->current_ flip, so it
-    // operates on the committed slot.
-    if (current_pending_.valid && current_pending_.target_warp == warp_id) {
-        current_pending_.valid = false;
+    // Phase 10E: called from the top of evaluate(), so it operates on
+    // next_pending_ — the slot evaluate() owns and commit() flips into
+    // current_pending_ before the pending->buffer push. Dropping the shadow
+    // entry here prevents commit() from pushing it into the warp buffer.
+    if (next_pending_.valid && next_pending_.target_warp == warp_id) {
+        next_pending_.valid = false;
     }
 }
 

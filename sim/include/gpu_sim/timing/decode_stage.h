@@ -9,7 +9,7 @@
 
 namespace gpu_sim {
 
-class ALUUnit;  // forward decl: decode reads alu.current_redirect_request()
+class ALUUnit;  // forward decl: decode reads alu.next_redirect()
 
 // Phase 6 REGISTERED EBREAK side-channel. evaluate() writes
 // next_ebreak_request_ when it sees an EBREAK at decode; commit() flips
@@ -65,14 +65,16 @@ public:
     // 10D's back-to-front sweep reversal.
     bool current_busy() const { return current_pending_.valid; }
 
-    // Phase 10A: wire the ALU so decode.commit() can read its REGISTERED
-    // current_redirect_request() and invalidate any matching pending entry.
-    // Branch resolution moved from OperandCollector to ALUUnit in Phase 10A;
-    // this setter replaces the former set_opcoll(...).
+    // Phase 10A/10E: wire the ALU so decode.evaluate() can read its
+    // COMBINATIONAL-backward next_redirect() and invalidate any matching
+    // pending entry the same cycle the branch resolves. Branch resolution
+    // moved from OperandCollector to ALUUnit in Phase 10A; this setter
+    // replaced the former set_opcoll(...).
     void set_alu(const ALUUnit* alu) { alu_ = alu; }
 
-    // Phase 5 test hook: explicit override of the redirect-request signal
-    // for unit tests that drive DecodeStage in isolation.
+    // Test hook: explicit override of the redirect signal for unit tests that
+    // drive DecodeStage in isolation. When set, evaluate() uses it in place of
+    // alu_->next_redirect().
     void set_redirect_request_override(bool valid, uint32_t warp_id) {
         RedirectRequest req;
         req.valid = valid;
@@ -85,9 +87,9 @@ public:
     }
 
 private:
-    // Phase 5: applied from commit() when the upstream REGISTERED redirect
-    // signal is valid. Drops the pending entry if it belongs to the
-    // redirected warp.
+    // Phase 10E: applied from the top of evaluate() when the ALU's
+    // COMBINATIONAL-backward redirect (or the test override) is asserted.
+    // Drops the next_pending_ entry if it belongs to the redirected warp.
     void apply_redirect_invalidate(uint32_t warp_id);
 
     WarpState* warps_;
