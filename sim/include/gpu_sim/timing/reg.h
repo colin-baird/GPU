@@ -47,6 +47,13 @@ public:
     // Committed read — the normal cross-cycle / cross-stage read.
     const T& current() const { return current_; }
 
+    // Committed read-write. For the redirect-flush pattern only: a backward
+    // control signal (a branch mispredict resolved this same cycle) forces an
+    // upstream stage to invalidate committed state mid-evaluate() — the flush
+    // is the redirect's same-cycle effect. Not a normal staged write; ordinary
+    // state updates stage via set_next() / next_mut() and latch at commit().
+    T& current_mut() { return current_; }
+
     // Staged read. INTRA-STAGE self-reads only: a producer reading back a
     // value it staged earlier in this same evaluate(). A cross-module next()
     // read is a combinational-forward hazard — forbidden, lint-enforced.

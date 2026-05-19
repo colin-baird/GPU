@@ -168,8 +168,18 @@ TIMING_MODULES: set[str] = {
 # `MSHRFile::next_at`), driven by the owning module's evaluate; it is an
 # intra-module registered-pair write, not a cross-*stage* back-pressure
 # edge, so the cross-module-read layer skips it.
+#
+# `Reg` / `RegFifo` (sim/include/gpu_sim/timing/reg.h) are the state
+# primitives every stage's registers are built from. `Reg::next()` /
+# `Reg::next_mut()` are intra-object staged accessors: a `Reg` member is
+# always `private` to its owning stage, so a `<reg>.next_mut()` call is the
+# stage touching its own register, never a cross-stage edge. Cross-stage
+# reads still go through the *stage's* own `next_*()` accessor, whose
+# declaring class resolves via MODULE_ORDER and is checked normally.
 INTERNAL_HELPER_CLASSES: set[str] = {
     "MSHRFile",
+    "Reg",
+    "RegFifo",
 }
 
 # Methods exempt from the prefix rule. Each entry below was verified to

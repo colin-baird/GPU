@@ -205,7 +205,13 @@ re-evaluation idempotent.
 `Reg::current()` is the only cross-stage / cross-cycle read.
 `Reg::next()` is an *intra-stage* staged read (a producer reading back a
 value it staged earlier this `evaluate()`); a cross-module `next()` read
-is the forbidden combinational-forward edge and is lint-enforced. A
+is the forbidden combinational-forward edge and is lint-enforced.
+`Reg::current_mut()` is the narrow exception: the redirect-flush pattern,
+where a branch mispredict resolved this same cycle forces an upstream
+stage to invalidate committed state mid-`evaluate()` (the redirect's
+same-cycle effect — e.g. `FetchStage` clearing `current_output_`). It is
+not a normal staged write; ordinary updates stage via `set_next()` /
+`next_mut()` and latch at `commit()`. A
 stage's public `current_*()` / `next_*()` accessors forward to the
 underlying primitive, so the accessor surface and naming rules below are
 unchanged.

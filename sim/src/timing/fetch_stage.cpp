@@ -7,7 +7,9 @@ namespace gpu_sim {
 
 FetchStage::FetchStage(uint32_t num_warps, WarpState* warps,
                        const InstructionMemory& imem, BranchPredictor& predictor, Stats& stats)
-    : num_warps_(num_warps), warps_(warps), imem_(imem), predictor_(predictor), stats_(stats) {}
+    : num_warps_(num_warps), warps_(warps), imem_(imem), predictor_(predictor), stats_(stats) {
+    register_state(&rr_pointer_, &output_);
+}
 
 bool FetchStage::query_decode_ready() const {
     if (has_ready_override_) return decode_ready_override_;
@@ -42,19 +44,20 @@ void FetchStage::evaluate() {
         apply_redirect(req.warp_id, req.target_pc);
     }
 
-    // READY/STALL gate: if last cycle's output is still in current_output_
-    // and decode is not ready to consume it this cycle, hold the output
-    // (carry into next_output_) and do not fetch a new instruction.
+    // READY/STALL gate: if last cycle's output is still in the committed
+    // output slot and decode is not ready to consume it this cycle, hold the
+    // output (carry it into the staged slot) and do not fetch a new
+    // instruction.
     const bool decode_ready = query_decode_ready();
-    if (current_output_.has_value() && !decode_ready) {
-        next_output_ = current_output_;  // retain — REGISTERED hold
+    if (output_.current().has_value() && !decode_ready) {
+        output_.set_next(output_.current());  // retain — REGISTERED hold
         stats_.fetch_skip_count++;
         stats_.fetch_skip_backpressure++;
-        rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
+        rr_pointer_.set_next((rr_pointer_.current() + 1) % num_warps_);
         return;
     }
 
-    next_output_ = std::nullopt;
+    output_.set_next(std::nullopt);
 
     const std::optional<uint32_t> decode_pending_warp = query_decode_pending_warp();
 
@@ -72,12 +75,13 @@ void FetchStage::evaluate() {
     // push fails, decode goes pending, and fetch backpressures every cycle
     // until the warp drains.
     const std::optional<uint32_t> current_output_warp =
-        current_output_.has_value() ? std::optional<uint32_t>(current_output_->warp_id)
-                                    : std::nullopt;
+        output_.current().has_value()
+            ? std::optional<uint32_t>(output_.current()->warp_id)
+            : std::nullopt;
 
     bool fetched = false;
     for (uint32_t i = 0; i < num_warps_; ++i) {
-        uint32_t w = (rr_pointer_ + i) % num_warps_;
+        uint32_t w = (rr_pointer_.current() + i) % num_warps_;
         // Phase 10E: skip the warp that was redirected this cycle. Its buffer
         // was just flushed and its PC reset to the resolved target; the
         // earliest a correct-path fetch may issue for it is the NEXT cycle
@@ -96,7 +100,7 @@ void FetchStage::evaluate() {
             out.warp_id = w;
             out.pc = pc;
             out.prediction = predictor_.predict(pc, out.raw_instruction);
-            next_output_ = out;
+            output_.set_next(out);
             warps_[w].pc = out.prediction.predicted_taken ? out.prediction.predicted_target
                                                           : (pc + 4);
             fetched = true;
@@ -109,24 +113,26 @@ void FetchStage::evaluate() {
         stats_.fetch_skip_all_full++;
     }
 
-    // Pointer always advances to (original + 1), regardless of which warp was fetched
-    rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
+    // Pointer always advances to (original + 1), regardless of which warp was
+    // fetched. The advanced value is staged and latched by commit().
+    rr_pointer_.set_next((rr_pointer_.current() + 1) % num_warps_);
 }
 
 void FetchStage::commit() {
-    // current_output_ is REGISTERED: evaluate() has already encoded the
-    // hold-vs-advance decision into next_output_ (carrying current forward
-    // when backpressured, producing nullopt or a fresh fetch otherwise).
-    // Phase 10E: the redirect-apply moved into evaluate() — it reads the
-    // ALU's COMBINATIONAL-backward next_redirect() the same cycle the branch
-    // resolves. commit() now only flips the REGISTERED output register.
-    current_output_ = next_output_;
+    // The output slot is REGISTERED: evaluate() has already encoded the
+    // hold-vs-advance decision into the staged slot (carrying current forward
+    // when backpressured, producing nullopt or a fresh fetch otherwise) and
+    // staged the advanced rr_pointer_. Phase 10E: the redirect-apply moved
+    // into evaluate() — it reads the ALU's COMBINATIONAL-backward
+    // next_redirect() the same cycle the branch resolves. commit() now only
+    // latches the REGISTERED state.
+    commit_all();
 }
 
 void FetchStage::reset() {
-    rr_pointer_ = 0;
-    current_output_ = std::nullopt;
-    next_output_ = std::nullopt;
+    // reset_all() clears both the committed and staged slots of rr_pointer_
+    // and output_ (rr_pointer_ -> 0, output_ -> nullopt).
+    reset_all();
     has_pending_override_ = false;
     decode_pending_warp_override_ = std::nullopt;
     has_ready_override_ = false;
@@ -137,12 +143,17 @@ void FetchStage::reset() {
 void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
     warps_[warp_id].pc = target_pc;
     warps_[warp_id].instr_buffer.flush();
-    // Invalidate any in-flight fetch for this warp.
-    if (current_output_ && current_output_->warp_id == warp_id) {
-        current_output_ = std::nullopt;
+    // Invalidate any in-flight fetch for this warp. apply_redirect() runs at
+    // the top of evaluate(), so the committed-slot clear is read this same
+    // cycle by the backpressure gate and the eligibility scan below — the
+    // redirect-flush is a same-cycle effect of the backward control signal.
+    // The staged-slot clear mirrors the pre-migration behavior; evaluate()
+    // restages the slot on every code path afterward.
+    if (output_.current() && output_.current()->warp_id == warp_id) {
+        output_.current_mut() = std::nullopt;
     }
-    if (next_output_ && next_output_->warp_id == warp_id) {
-        next_output_ = std::nullopt;
+    if (output_.next() && output_.next()->warp_id == warp_id) {
+        output_.next_mut() = std::nullopt;
     }
     // Phase 5: clear branch_in_flight in the tracker's next_ slot at the
     // same moment we apply the redirect-flush. This is the deferred half

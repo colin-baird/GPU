@@ -4,6 +4,7 @@
 #include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/timing/execution_unit.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/functional/memory.h"
 #include "gpu_sim/stats.h"
 #include <optional>
@@ -21,7 +22,7 @@ struct FetchOutput {
     BranchPrediction prediction;
 };
 
-class FetchStage : public PipelineStage {
+class FetchStage : public PipelineStage, public RegisteredStage {
 public:
     FetchStage(uint32_t num_warps, WarpState* warps,
                const InstructionMemory& imem, BranchPredictor& predictor, Stats& stats);
@@ -29,8 +30,8 @@ public:
     void evaluate() override;
     void commit() override;
     void reset() override;
-    std::optional<FetchOutput>& output() { return next_output_; }
-    const std::optional<FetchOutput>& current_output() const { return current_output_; }
+    std::optional<FetchOutput>& output() { return output_.next_mut(); }
+    const std::optional<FetchOutput>& current_output() const { return output_.current(); }
 
     // Wire decode after both stages are constructed. Fetch reads
     // decode->current_busy() and decode->current_pending_warp() during
@@ -88,8 +89,9 @@ private:
     std::optional<uint32_t> query_decode_pending_warp() const;
     // Phase 10E: applied from evaluate() when the ALU's COMBINATIONAL-backward
     // redirect (or the test override) is asserted. Mutates committed state
-    // (warp PC, instr_buffer, current_output_/next_output_) — the redirect is
-    // a backward control signal and the flush is its same-cycle effect.
+    // (warp PC, instr_buffer, the output register's committed and staged
+    // slots) — the redirect is a backward control signal and the flush is its
+    // same-cycle effect.
     void apply_redirect(uint32_t warp_id, uint32_t target_pc);
 
     uint32_t num_warps_;
@@ -101,9 +103,17 @@ private:
     const ALUUnit* alu_ = nullptr;
     BranchShadowTracker* branch_tracker_ = nullptr;
 
-    uint32_t rr_pointer_ = 0;
-    std::optional<FetchOutput> current_output_;
-    std::optional<FetchOutput> next_output_;
+    // Round-robin warp pointer. A clock-edge register: evaluate() reads the
+    // committed (pre-advance) value and stages the advanced value; commit()
+    // latches it. FetchStage is not seeded (it has no seed_next() — see
+    // TimingModel::tick()), which is faithful because evaluate() stages both
+    // rr_pointer_ and the output slot on every code path each cycle.
+    Reg<uint32_t> rr_pointer_;
+
+    // Fetch->decode REGISTERED output slot. evaluate() stages next via
+    // set_next(); commit() latches it into the committed slot that
+    // current_output() exposes.
+    Reg<std::optional<FetchOutput>> output_;
 
     // Test-only overrides; default state is "ready, no pending warp" so a
     // FetchStage exercised in isolation behaves like the previous default.
