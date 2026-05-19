@@ -34,6 +34,14 @@ DRAMSim3Memory::DRAMSim3Memory(const SimConfig& cfg, Stats& stats)
         throw std::invalid_argument(
             "DRAMSim3Memory: cache_line_size_bytes < dramsim3_bytes_per_burst");
     }
+    // Phase 6 (reg.h migration): enroll the REGISTERED request slots so
+    // commit_all() / reset_all() drive them uniformly. The backend
+    // intentionally has no seed_next() and is not in TimingModel::tick()'s
+    // seed phase — read_request_ / write_request_ are memoryless-consumer
+    // slots (evaluate consumes whatever sits in current() and clears it via
+    // current_mut(); auto-seeding next from current would re-latch the
+    // consumed request). See memory_interface.h for the full discipline.
+    register_state(&read_request_, &write_request_);
     rebuild_memory_system();
 }
 
@@ -127,14 +135,16 @@ bool DRAMSim3Memory::submit_write(uint32_t line_addr) {
 }
 
 void DRAMSim3Memory::set_next_read_request(uint32_t line_addr, uint32_t mshr_id) {
-    next_read_request_.valid = true;
-    next_read_request_.line_addr = line_addr;
-    next_read_request_.mshr_id = mshr_id;
+    auto& rr = read_request_.next_mut();
+    rr.valid = true;
+    rr.line_addr = line_addr;
+    rr.mshr_id = mshr_id;
 }
 
 void DRAMSim3Memory::set_next_write_request(uint32_t line_addr) {
-    next_write_request_.valid = true;
-    next_write_request_.line_addr = line_addr;
+    auto& wr = write_request_.next_mut();
+    wr.valid = true;
+    wr.line_addr = line_addr;
 }
 
 bool DRAMSim3Memory::next_request_stall() const {
@@ -148,14 +158,17 @@ bool DRAMSim3Memory::next_request_stall() const {
 
 void DRAMSim3Memory::evaluate() {
     // Phase M5: drain current_*_request_ into the request FIFO at top of
-    // evaluate.
-    if (current_read_request_.valid) {
-        submit_read(current_read_request_.line_addr, current_read_request_.mshr_id);
-        current_read_request_.valid = false;
+    // evaluate. Memoryless-consumer: consume the committed slot and
+    // invalidate it via the documented current_mut() escape hatch
+    // (matches today's pre-migration `current_*_request_.valid = false`).
+    if (read_request_.current().valid) {
+        submit_read(read_request_.current().line_addr,
+                    read_request_.current().mshr_id);
+        read_request_.current_mut().valid = false;
     }
-    if (current_write_request_.valid) {
-        submit_write(current_write_request_.line_addr);
-        current_write_request_.valid = false;
+    if (write_request_.current().valid) {
+        submit_write(write_request_.current().line_addr);
+        write_request_.current_mut().valid = false;
     }
 
     ++fabric_cycle_;
@@ -194,11 +207,14 @@ void DRAMSim3Memory::evaluate() {
 }
 
 void DRAMSim3Memory::commit() {
-    // Phase M5: flip REGISTERED request slots.
-    current_read_request_ = next_read_request_;
-    next_read_request_ = PendingMemoryRequest{};
-    current_write_request_ = next_write_request_;
-    next_write_request_ = PendingMemoryRequest{};
+    // Phase 6 (reg.h migration): flip the REGISTERED request slots via
+    // commit_all(), then explicitly clear the staged slot — equivalent to
+    // today's `next_*_request_ = PendingMemoryRequest{}` at the tail of
+    // commit(). See memory_interface.cpp for the full memoryless-consumer
+    // rationale.
+    commit_all();
+    read_request_.set_next(PendingMemoryRequest{});
+    write_request_.set_next(PendingMemoryRequest{});
 }
 
 MemoryResponse DRAMSim3Memory::get_response() {
@@ -216,8 +232,8 @@ MemoryResponse DRAMSim3Memory::get_write_ack() {
 bool DRAMSim3Memory::is_idle() const {
     if (!request_fifo_.empty() || !responses_.empty() || !write_acks_.empty()) return false;
     if (!pending_write_acks_.empty()) return false;
-    if (current_read_request_.valid || next_read_request_.valid) return false;
-    if (current_write_request_.valid || next_write_request_.valid) return false;
+    if (read_request_.current().valid || read_request_.next().valid) return false;
+    if (write_request_.current().valid || write_request_.next().valid) return false;
     for (const auto& a : read_assembly_) {
         if (a.active) return false;
     }
@@ -241,10 +257,10 @@ void DRAMSim3Memory::reset() {
     pending_write_acks_.clear();
     for (auto& a : read_assembly_) a = {};
     read_chunk_to_mshr_.clear();
-    current_read_request_ = PendingMemoryRequest{};
-    next_read_request_ = PendingMemoryRequest{};
-    current_write_request_ = PendingMemoryRequest{};
-    next_write_request_ = PendingMemoryRequest{};
+    // Phase 6 (reg.h migration): reset_all() clears both current_ AND next_
+    // for every enrolled Reg — equivalent to today's
+    // `current_*_request_ = PendingMemoryRequest{}; next_*_request_ = ...`.
+    reset_all();
     phase_ = 0.0;
     fabric_cycle_ = 0;
     dram_ticks_ = 0;

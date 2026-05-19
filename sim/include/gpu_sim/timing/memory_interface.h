@@ -2,6 +2,7 @@
 
 #include "gpu_sim/types.h"
 #include "gpu_sim/stats.h"
+#include "gpu_sim/timing/reg.h"
 #include <deque>
 
 namespace gpu_sim {
@@ -80,7 +81,20 @@ public:
 };
 
 // Original behavior: every request completes after exactly `latency` cycles.
-class FixedLatencyMemory : public ExternalMemoryInterface {
+//
+// Phase 6 (reg.h migration): the REGISTERED request slots are wrapped as
+// Reg<PendingMemoryRequest> and enrolled via RegisteredStage::register_state.
+// The backend deliberately opts out of the seed phase (memoryless-consumer
+// pattern): evaluate() unconditionally consumes whatever sits in
+// read_request_.current() / write_request_.current() and clears the slot via
+// the documented current_mut() mid-cycle invalidation escape hatch. The cache
+// writes the staged slot through set_next_*_request; commit() drives
+// commit_all() and then explicitly clears the staged slot via set_next(...)
+// — equivalent to the pre-migration `next_*_request_ = PendingMemoryRequest{}`
+// at the tail of commit(). Auto-seeding would re-latch a value the consumer
+// just cleared (the same memoryless-consumer hazard L1Cache's load_cmd_ /
+// store_cmd_ opt out of in Phase 5a).
+class FixedLatencyMemory : public ExternalMemoryInterface, public RegisteredStage {
 public:
     FixedLatencyMemory(uint32_t latency, Stats& stats);
 
@@ -103,25 +117,26 @@ public:
     size_t write_ack_count() const override { return write_acks_.size(); }
     bool is_idle() const override {
         return in_flight_.empty() && responses_.empty() && write_acks_.empty()
-               && !current_read_request_.valid && !next_read_request_.valid
-               && !current_write_request_.valid && !next_write_request_.valid;
+               && !read_request_.current().valid && !read_request_.next().valid
+               && !write_request_.current().valid && !write_request_.next().valid;
     }
     size_t in_flight_count() const override { return in_flight_.size(); }
     size_t response_count() const override { return responses_.size(); }
 
 private:
-    uint32_t latency_;
-    Stats& stats_;
-    std::deque<MemoryRequest> in_flight_;
-    std::deque<MemoryResponse> responses_;
+    uint32_t latency_;  // config
+    Stats& stats_;      // config (back-pointer)
+    // Internal scheduling queues — not REGISTERED double-buffered pairs.
+    // evaluate() pushes/pops these in a single pass each cycle; they are
+    // not observed cross-cycle as staged-vs-committed values.
+    std::deque<MemoryRequest> in_flight_;     // internal scheduling queue
+    std::deque<MemoryResponse> responses_;    // internal scheduling queue
     // Write completions land here, separate from the read-fill responses_
     // queue, so the cache can drain them unconditionally each cycle.
-    std::deque<MemoryResponse> write_acks_;
-    // Phase M5: REGISTERED request slots.
-    PendingMemoryRequest current_read_request_;
-    PendingMemoryRequest next_read_request_;
-    PendingMemoryRequest current_write_request_;
-    PendingMemoryRequest next_write_request_;
+    std::deque<MemoryResponse> write_acks_;   // internal scheduling queue
+    // Phase 6 (reg.h migration): REGISTERED request slots.
+    Reg<PendingMemoryRequest> read_request_;
+    Reg<PendingMemoryRequest> write_request_;
 };
 
 } // namespace gpu_sim

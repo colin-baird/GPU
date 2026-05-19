@@ -1,0 +1,38 @@
+# CMake generated Testfile for 
+# Source directory: /workspace/sim/tests
+# Build directory: /workspace/build_fixed/sim/tests
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test(test_reg "/workspace/build_fixed/sim/tests/test_reg")
+set_tests_properties(test_reg PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;11;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_decoder "/workspace/build_fixed/sim/tests/test_decoder")
+set_tests_properties(test_decoder PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;12;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_alu "/workspace/build_fixed/sim/tests/test_alu")
+set_tests_properties(test_alu PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;13;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_functional "/workspace/build_fixed/sim/tests/test_functional")
+set_tests_properties(test_functional PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;14;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_scoreboard "/workspace/build_fixed/sim/tests/test_scoreboard")
+set_tests_properties(test_scoreboard PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;15;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_cache "/workspace/build_fixed/sim/tests/test_cache")
+set_tests_properties(test_cache PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;16;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_coalescing "/workspace/build_fixed/sim/tests/test_coalescing")
+set_tests_properties(test_coalescing PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;17;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_warp_scheduler "/workspace/build_fixed/sim/tests/test_warp_scheduler")
+set_tests_properties(test_warp_scheduler PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;18;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_branch "/workspace/build_fixed/sim/tests/test_branch")
+set_tests_properties(test_branch PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;19;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_panic "/workspace/build_fixed/sim/tests/test_panic")
+set_tests_properties(test_panic PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;20;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_integration "/workspace/build_fixed/sim/tests/test_integration")
+set_tests_properties(test_integration PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;21;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_timing_components "/workspace/build_fixed/sim/tests/test_timing_components")
+set_tests_properties(test_timing_components PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;22;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_instruction_latency "/workspace/build_fixed/sim/tests/test_instruction_latency")
+set_tests_properties(test_instruction_latency PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;23;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_load_gather_buffer "/workspace/build_fixed/sim/tests/test_load_gather_buffer")
+set_tests_properties(test_load_gather_buffer PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;24;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_cache_mshr_merging "/workspace/build_fixed/sim/tests/test_cache_mshr_merging")
+set_tests_properties(test_cache_mshr_merging PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;25;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")
+add_test(test_config "/workspace/build_fixed/sim/tests/test_config")
+set_tests_properties(test_config PROPERTIES  _BACKTRACE_TRIPLES "/workspace/sim/tests/CMakeLists.txt;8;add_test;/workspace/sim/tests/CMakeLists.txt;26;add_gpu_test;/workspace/sim/tests/CMakeLists.txt;0;")

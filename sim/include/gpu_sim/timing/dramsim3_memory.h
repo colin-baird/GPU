@@ -3,6 +3,7 @@
 #include "gpu_sim/config.h"
 #include "gpu_sim/stats.h"
 #include "gpu_sim/timing/memory_interface.h"
+#include "gpu_sim/timing/reg.h"
 
 #include <cstdint>
 #include <deque>
@@ -18,7 +19,13 @@ namespace gpu_sim {
 // `ExternalMemoryInterface` surface used by the cache and is selected by
 // `SimConfig::memory_backend == "dramsim3"`. Models the DE-10 Nano DDR3 with
 // an asynchronous fabric/DRAM clock crossing and chunked cache-line transfers.
-class DRAMSim3Memory : public ExternalMemoryInterface {
+//
+// Phase 6 (reg.h migration): mirrors FixedLatencyMemory's REGISTERED request
+// slot wrapping. The DRAM-scheduling internals (request_fifo_, in-flight
+// reassembly, response/write-ack queues, fabric/DRAM clock counters) are
+// internal scheduling/instrumentation state, NOT REGISTERED double-buffered
+// pairs, so they stay plain — see the annotations on each member.
+class DRAMSim3Memory : public ExternalMemoryInterface, public RegisteredStage {
 public:
     DRAMSim3Memory(const SimConfig& cfg, Stats& stats);
     ~DRAMSim3Memory() override;
@@ -86,14 +93,15 @@ private:
     void rebuild_memory_system();
     void on_read_complete(uint64_t hex_addr);
 
-    const SimConfig& cfg_;
-    Stats& stats_;
+    const SimConfig& cfg_;  // config (back-pointer)
+    Stats& stats_;          // config (back-pointer)
 
-    std::unique_ptr<dramsim3::MemorySystem> mem_;
+    std::unique_ptr<dramsim3::MemorySystem> mem_;  // config (constructed once / on reset)
 
-    uint32_t bytes_per_burst_;
-    uint32_t line_size_;
-    uint32_t chunks_per_line_;
+    // ── Config (const after construction) ──────────────────────────────────
+    uint32_t bytes_per_burst_;   // config
+    uint32_t line_size_;         // config
+    uint32_t chunks_per_line_;   // config
     // The request FIFO is logically split into two reserved regions:
     //   - reads: num_mshrs * chunks_per_line slots, never starved by writes,
     //     guaranteeing submit_read always succeeds (since at most num_mshrs
@@ -103,8 +111,8 @@ private:
     //     consumes as backpressure (drain_write_buffer pops only on success).
     // request_fifo_depth_ is exactly the sum of the two regions. Anything
     // larger is wasteful; anything smaller violates the architectural bound.
-    uint32_t request_fifo_depth_;
-    uint32_t write_region_capacity_;
+    uint32_t request_fifo_depth_;    // config
+    uint32_t write_region_capacity_; // config
     // Architectural bounds on the two completion queues, each asserted at
     // its push site:
     //   - read responses: at most one per in-flight MSHR, so num_mshrs.
@@ -113,57 +121,83 @@ private:
     //     synthetic write ack is 1:1 with submit_write, so the write-ack
     //     queue holds a subset of those. The chunks_per_line cushion absorbs
     //     the bounded same-cycle multi-enqueue overshoot.
-    uint32_t read_response_queue_capacity_;
-    uint32_t write_ack_queue_capacity_;
+    uint32_t read_response_queue_capacity_;  // config
+    uint32_t write_ack_queue_capacity_;      // config
     // Synthetic write-ack durability latency: DRAM cycles from a write being
     // issued to DRAM until its ack is released to the cache (SimConfig
     // dramsim3_write_commit_latency_tck). Models the DDR write-commit window
     // (~CWL + BL/2 + tWR, plus column spacing for a multi-chunk line).
-    uint32_t write_commit_latency_tck_;
+    uint32_t write_commit_latency_tck_;      // config
 
     // DRAM ticks per fabric tick. Fractional ratios accumulate in `phase_`.
-    double ticks_per_fabric_;
-    double phase_ = 0.0;
+    double ticks_per_fabric_;          // config
+    double phase_ = 0.0;               // sim-instrumentation (fractional cross-clock accumulator)
 
-    // Bounded request FIFO (fabric clock producer; DRAM clock consumer).
-    std::deque<PendingChunk> request_fifo_;
+    // ── Internal scheduling state (plain, not REGISTERED) ──────────────────
+    //
+    // Phase 6 (reg.h migration) — request_fifo_ exception, analogous to the
+    // Phase 3 ldst addr_gen_fifo_ exception (commit bed4043). RegFifo<T> is
+    // NOT the right abstraction here: the producer and consumer co-occur
+    // within a single evaluate(). At the top of evaluate(), the REGISTERED
+    // current_*_request_ slot is drained by calling submit_read/submit_write,
+    // which push chunks straight into request_fifo_. Later in the SAME
+    // evaluate(), the `while (phase_ >= 1.0)` loop pops from
+    // request_fifo_.front() to issue chunks into DRAMSim3. RegFifo's
+    // commit-time pop-then-push would defer the staged push until after
+    // evaluate() returns, denying the consumer this cycle's just-submitted
+    // chunks — a real cycle-of-latency behavior change. Test paths also
+    // call submit_read/submit_write directly and immediately call evaluate(),
+    // expecting same-cycle DRAM admission availability; RegFifo would
+    // require an intervening commit(). The deque + explicit
+    // write_chunks_in_fifo_ occupancy counter encodes the in-evaluate
+    // producer→consumer pattern with no behavior change.
+    std::deque<PendingChunk> request_fifo_;   // internal scheduling queue (Phase-3-style RegFifo exception)
     // Number of write chunks currently in request_fifo_. Tracked explicitly
-    // so submit_write can enforce the write-region bound in O(1).
-    uint32_t write_chunks_in_fifo_ = 0;
+    // so submit_write can enforce the write-region bound in O(1). Mirrors
+    // request_fifo_'s plain-deque kind.
+    uint32_t write_chunks_in_fifo_ = 0;       // internal scheduling counter
 
     // Response FIFO (DRAM clock producer; fabric clock consumer). Reads only.
-    std::deque<MemoryResponse> responses_;
+    std::deque<MemoryResponse> responses_;    // internal scheduling queue
     // Write-ack FIFO — synthetic write acks released after the commit
     // latency, drained unconditionally by the cache.
-    std::deque<MemoryResponse> write_acks_;
+    std::deque<MemoryResponse> write_acks_;   // internal scheduling queue
     // Synthetic write acks awaiting their commit latency. One per submit_write,
     // sorted by release tick (submit order, constant latency); the front-most
     // ready entry is promoted into write_acks_ each evaluate().
-    std::deque<PendingWriteAck> pending_write_acks_;
+    std::deque<PendingWriteAck> pending_write_acks_;  // internal scheduling queue
 
     // Per-MSHR read reassembly. Indexed by mshr_id; sized to cfg.num_mshrs.
-    std::vector<ReadAssembly> read_assembly_;
+    std::vector<ReadAssembly> read_assembly_; // internal scheduling state
 
     // Reverse map from a read chunk's byte address to its owning MSHR.
-    std::unordered_map<uint64_t, uint32_t> read_chunk_to_mshr_;
+    std::unordered_map<uint64_t, uint32_t> read_chunk_to_mshr_;  // internal scheduling state
 
+    // ── Simulator instrumentation (not modeled clocked hardware) ───────────
     // Fabric-clock cycle counter, incremented once per evaluate(). Used to
     // tag in-flight reads with their submit cycle so per-request latency
     // (submit→response) can be accumulated into Stats on completion.
-    uint64_t fabric_cycle_ = 0;
+    uint64_t fabric_cycle_ = 0;     // sim-instrumentation
 
     // Total DRAMSim3 ClockTicks issued since construction or last reset.
-    size_t dram_ticks_ = 0;
+    size_t dram_ticks_ = 0;         // sim-instrumentation
     // Peak queue depths observed; used by tests to assert the architectural
     // bounds are respected under stress.
-    size_t max_response_queue_ = 0;
-    size_t max_write_ack_queue_ = 0;
+    size_t max_response_queue_ = 0; // sim-instrumentation
+    size_t max_write_ack_queue_ = 0;// sim-instrumentation
 
-    // Phase M5: REGISTERED request slots.
-    PendingMemoryRequest current_read_request_;
-    PendingMemoryRequest next_read_request_;
-    PendingMemoryRequest current_write_request_;
-    PendingMemoryRequest next_write_request_;
+    // ── REGISTERED state ───────────────────────────────────────────────────
+    // Phase 6 (reg.h migration): wrapped as Reg<PendingMemoryRequest> and
+    // enrolled via RegisteredStage::register_state. Memoryless-consumer
+    // contract — evaluate() drains current() into the request FIFO and
+    // invalidates the committed slot via the documented current_mut() escape
+    // hatch; commit() drives commit_all() and then explicitly clears the
+    // staged slot via set_next(PendingMemoryRequest{}). The backend opts
+    // out of the seed phase for the same reason FixedLatencyMemory does
+    // (and the same reason L1Cache::load_cmd_/store_cmd_ do in Phase 5a):
+    // auto-seeding next from current would re-latch the consumed request.
+    Reg<PendingMemoryRequest> read_request_;
+    Reg<PendingMemoryRequest> write_request_;
 };
 
 } // namespace gpu_sim

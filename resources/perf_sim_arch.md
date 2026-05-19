@@ -503,38 +503,84 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
     deadlock-free property the write-ack pin (`cache.*`) depends on.
 - **`FixedLatencyMemory(latency, stats_ref)`**: Default backend. Every
   request completes after exactly `latency` cycles. Used by all unit tests
-  and by the simulator unless a different backend is selected.
+  and by the simulator unless a different backend is selected. Phase 6
+  (reg.h migration): derives `RegisteredStage`; the REGISTERED request
+  slots are `Reg<PendingMemoryRequest> read_request_` and `write_request_`,
+  enrolled via `register_state(...)`. `commit()` calls `commit_all()` then
+  explicitly clears the staged slot via `set_next(PendingMemoryRequest{})`
+  — equivalent to the pre-migration `next_*_request_ = PendingMemoryRequest{}`
+  at the tail of commit(). The backend deliberately opts out of the seed
+  phase (no `seed_next()`, not in `TimingModel::tick()`'s seed list):
+  evaluate consumes the slot via `current_mut().valid = false`
+  (memoryless-consumer pattern, mirroring `L1Cache::load_cmd_`/`store_cmd_`
+  from Phase 5a). Auto-seeding next from current would re-latch the
+  consumed request.
   - `set_next_read_request(line_addr, mshr_id)`,
-    `set_next_write_request(line_addr)`: REGISTERED forward; stage in
-    `next_*_request_`, increment stats. `commit()` flips
-    `next_*_request_` → `current_*_request_`.
+    `set_next_write_request(line_addr)`: REGISTERED forward; stage by
+    writing `read_request_.next_mut()` / `write_request_.next_mut()`,
+    increment stats. `commit_all()` flips next → current.
   - `next_request_stall()`: COMBINATIONAL backward; always `false`
     (the in_flight_ deque is unbounded for FixedLatencyMemory).
   - `submit_read(line_addr, mshr_id)`, `submit_write(line_addr)`:
     Test-direct path; pushes straight into `in_flight_` with
     `latency` countdown. Production cache uses the REGISTERED stagers.
-  - `evaluate()`: Drains any valid `current_read_request_` /
-    `current_write_request_` into `in_flight_` with `cycles_remaining =
-    latency`, then decrements all in-flight countdowns. Routes completed
-    requests to the right channel — reads to `responses_`, writes to the
-    separate `write_acks_` deque. On read completion, accumulates
-    `latency_` into `Stats::external_read_latency_total` /
-    `external_read_latency_count` so the average can be compared against
-    the DRAMSim3 backend's measured per-request latency.
+  - `evaluate()`: Drains any valid `read_request_.current()` /
+    `write_request_.current()` into `in_flight_` with `cycles_remaining =
+    latency` and invalidates the committed slot via `current_mut()`, then
+    decrements all in-flight countdowns. Routes completed requests to the
+    right channel — reads to `responses_`, writes to the separate
+    `write_acks_` deque. On read completion, accumulates `latency_` into
+    `Stats::external_read_latency_total` / `external_read_latency_count`
+    so the average can be compared against the DRAMSim3 backend's measured
+    per-request latency.
   - `current_has_response()` / `next_has_response()` (alias),
     `get_response()`: read-fill consumption interface.
   - `current_has_write_ack()`, `get_write_ack()`, `write_ack_count()`:
     write-ack consumption interface (separate `write_acks_` deque).
   - `is_idle()`: True only when no requests are in flight, no requests
-    are staged in current_/next_ slots, and neither the response queue
-    nor the write-ack queue holds anything.
+    are staged in `read_request_` / `write_request_` current/next slots,
+    and neither the response queue nor the write-ack queue holds anything.
   - Snapshot helpers: `in_flight_count()`, `response_count()`.
+  - Plain members (annotated): `in_flight_`, `responses_`, `write_acks_`
+    are internal scheduling queues mutated only by the backend's own
+    evaluate (not REGISTERED double-buffered pairs); `latency_` / `stats_`
+    are config / back-pointers.
 
 ### `include/gpu_sim/timing/dramsim3_memory.h` -- `src/timing/dramsim3_memory.cpp`
 
 DRAMSim3-backed external memory model. Selected when
 `SimConfig::memory_backend == "dramsim3"`. Implements the abstract
 `ExternalMemoryInterface` so the cache call sites are unchanged.
+
+Phase 6 (reg.h migration): derives `RegisteredStage`. The REGISTERED
+request slots `Reg<PendingMemoryRequest> read_request_` and
+`write_request_` are enrolled via `register_state(...)`; `commit()` calls
+`commit_all()` then explicitly clears the staged slot via
+`set_next(PendingMemoryRequest{})`. Opts out of the seed phase (same
+memoryless-consumer rationale as `FixedLatencyMemory` and
+`L1Cache::load_cmd_`/`store_cmd_`): `evaluate()` consumes the committed
+slot and invalidates it in-place via the documented `current_mut()`
+escape hatch. The DRAM-scheduling internals (`request_fifo_`,
+`write_chunks_in_fifo_`, `responses_`, `write_acks_`,
+`pending_write_acks_`, `read_assembly_`, `read_chunk_to_mshr_`) are
+plain internal scheduling state — NOT REGISTERED double-buffered pairs —
+and stay plain. Sim-instrumentation counters (`fabric_cycle_`,
+`dram_ticks_`, `phase_`, `max_response_queue_`, `max_write_ack_queue_`)
+are annotated `// sim-instrumentation`; config (const after construction)
+fields are annotated `// config`.
+
+`request_fifo_` is the Phase-6 analogue of Phase 3's
+`addr_gen_fifo_` `RegFifo` exception (commit `bed4043`): the producer
+(`submit_read` / `submit_write`, invoked at the top of `evaluate()` to
+drain `current_*_request_`, and called directly by tests) and the
+consumer (the `while (phase_ >= 1.0)` DRAM-tick loop later in the same
+`evaluate()`) co-occur within a single `evaluate()`. `RegFifo`'s
+commit-time pop-then-push would defer the staged push until after
+`evaluate()` returns, denying the consumer this cycle's just-submitted
+chunks (a real cycle-of-latency behavior change). The plain
+`std::deque<PendingChunk>` + explicit `write_chunks_in_fifo_` occupancy
+counter encodes the in-evaluate producer→consumer pattern with no
+behavior change.
 
 - **`DRAMSim3Memory(SimConfig, Stats&)`**: Loads the DRAMSim3 `.ini` at
   `cfg.dramsim3_config_path`, sets `chunks_per_line = cache_line_size_bytes

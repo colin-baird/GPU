@@ -1,0 +1,344 @@
+[
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o -c /workspace/sim/src/config.cpp",
+  "file": "/workspace/sim/src/config.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/config.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o -c /workspace/sim/src/decoder.cpp",
+  "file": "/workspace/sim/src/decoder.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/decoder.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/elf_loader.cpp.o -c /workspace/sim/src/elf_loader.cpp",
+  "file": "/workspace/sim/src/elf_loader.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/elf_loader.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.o -c /workspace/sim/src/stats.cpp",
+  "file": "/workspace/sim/src/stats.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/stats.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o -c /workspace/sim/src/functional/alu.cpp",
+  "file": "/workspace/sim/src/functional/alu.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/functional/alu.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o -c /workspace/sim/src/functional/functional_model.cpp",
+  "file": "/workspace/sim/src/functional/functional_model.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/functional/functional_model.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/branch_predictor.cpp.o -c /workspace/sim/src/timing/branch_predictor.cpp",
+  "file": "/workspace/sim/src/timing/branch_predictor.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/branch_predictor.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o -c /workspace/sim/src/timing/fetch_stage.cpp",
+  "file": "/workspace/sim/src/timing/fetch_stage.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/fetch_stage.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o -c /workspace/sim/src/timing/decode_stage.cpp",
+  "file": "/workspace/sim/src/timing/decode_stage.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/decode_stage.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o -c /workspace/sim/src/timing/warp_scheduler.cpp",
+  "file": "/workspace/sim/src/timing/warp_scheduler.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/warp_scheduler.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o -c /workspace/sim/src/timing/operand_collector.cpp",
+  "file": "/workspace/sim/src/timing/operand_collector.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/operand_collector.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o -c /workspace/sim/src/timing/alu_unit.cpp",
+  "file": "/workspace/sim/src/timing/alu_unit.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/alu_unit.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o -c /workspace/sim/src/timing/multiply_unit.cpp",
+  "file": "/workspace/sim/src/timing/multiply_unit.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/multiply_unit.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o -c /workspace/sim/src/timing/divide_unit.cpp",
+  "file": "/workspace/sim/src/timing/divide_unit.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/divide_unit.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o -c /workspace/sim/src/timing/tlookup_unit.cpp",
+  "file": "/workspace/sim/src/timing/tlookup_unit.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/tlookup_unit.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o -c /workspace/sim/src/timing/ldst_unit.cpp",
+  "file": "/workspace/sim/src/timing/ldst_unit.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/ldst_unit.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o -c /workspace/sim/src/timing/writeback_arbiter.cpp",
+  "file": "/workspace/sim/src/timing/writeback_arbiter.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/writeback_arbiter.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o -c /workspace/sim/src/timing/mshr.cpp",
+  "file": "/workspace/sim/src/timing/mshr.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/mshr.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o -c /workspace/sim/src/timing/cache.cpp",
+  "file": "/workspace/sim/src/timing/cache.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/cache.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o -c /workspace/sim/src/timing/coalescing_unit.cpp",
+  "file": "/workspace/sim/src/timing/coalescing_unit.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/coalescing_unit.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/load_gather_buffer.cpp.o -c /workspace/sim/src/timing/load_gather_buffer.cpp",
+  "file": "/workspace/sim/src/timing/load_gather_buffer.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/load_gather_buffer.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o -c /workspace/sim/src/timing/memory_interface.cpp",
+  "file": "/workspace/sim/src/timing/memory_interface.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/memory_interface.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o -c /workspace/sim/src/timing/panic_controller.cpp",
+  "file": "/workspace/sim/src/timing/panic_controller.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/panic_controller.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/timing_trace.cpp.o -c /workspace/sim/src/timing/timing_trace.cpp",
+  "file": "/workspace/sim/src/timing/timing_trace.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/timing_trace.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o -c /workspace/sim/src/timing/timing_model.cpp",
+  "file": "/workspace/sim/src/timing/timing_model.cpp",
+  "output": "sim/CMakeFiles/gpu_sim_lib.dir/src/timing/timing_model.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++  -I/workspace/sim/tests/vendor -std=gnu++17 -o CMakeFiles/catch_main.dir/catch_main.cpp.o -c /workspace/sim/tests/catch_main.cpp",
+  "file": "/workspace/sim/tests/catch_main.cpp",
+  "output": "sim/tests/CMakeFiles/catch_main.dir/catch_main.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_reg.dir/test_reg.cpp.o -c /workspace/sim/tests/test_reg.cpp",
+  "file": "/workspace/sim/tests/test_reg.cpp",
+  "output": "sim/tests/CMakeFiles/test_reg.dir/test_reg.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_decoder.dir/test_decoder.cpp.o -c /workspace/sim/tests/test_decoder.cpp",
+  "file": "/workspace/sim/tests/test_decoder.cpp",
+  "output": "sim/tests/CMakeFiles/test_decoder.dir/test_decoder.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_alu.dir/test_alu.cpp.o -c /workspace/sim/tests/test_alu.cpp",
+  "file": "/workspace/sim/tests/test_alu.cpp",
+  "output": "sim/tests/CMakeFiles/test_alu.dir/test_alu.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_functional.dir/test_functional.cpp.o -c /workspace/sim/tests/test_functional.cpp",
+  "file": "/workspace/sim/tests/test_functional.cpp",
+  "output": "sim/tests/CMakeFiles/test_functional.dir/test_functional.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_scoreboard.dir/test_scoreboard.cpp.o -c /workspace/sim/tests/test_scoreboard.cpp",
+  "file": "/workspace/sim/tests/test_scoreboard.cpp",
+  "output": "sim/tests/CMakeFiles/test_scoreboard.dir/test_scoreboard.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_cache.dir/test_cache.cpp.o -c /workspace/sim/tests/test_cache.cpp",
+  "file": "/workspace/sim/tests/test_cache.cpp",
+  "output": "sim/tests/CMakeFiles/test_cache.dir/test_cache.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_coalescing.dir/test_coalescing.cpp.o -c /workspace/sim/tests/test_coalescing.cpp",
+  "file": "/workspace/sim/tests/test_coalescing.cpp",
+  "output": "sim/tests/CMakeFiles/test_coalescing.dir/test_coalescing.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_warp_scheduler.dir/test_warp_scheduler.cpp.o -c /workspace/sim/tests/test_warp_scheduler.cpp",
+  "file": "/workspace/sim/tests/test_warp_scheduler.cpp",
+  "output": "sim/tests/CMakeFiles/test_warp_scheduler.dir/test_warp_scheduler.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_branch.dir/test_branch.cpp.o -c /workspace/sim/tests/test_branch.cpp",
+  "file": "/workspace/sim/tests/test_branch.cpp",
+  "output": "sim/tests/CMakeFiles/test_branch.dir/test_branch.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_panic.dir/test_panic.cpp.o -c /workspace/sim/tests/test_panic.cpp",
+  "file": "/workspace/sim/tests/test_panic.cpp",
+  "output": "sim/tests/CMakeFiles/test_panic.dir/test_panic.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_integration.dir/test_integration.cpp.o -c /workspace/sim/tests/test_integration.cpp",
+  "file": "/workspace/sim/tests/test_integration.cpp",
+  "output": "sim/tests/CMakeFiles/test_integration.dir/test_integration.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_timing_components.dir/test_timing_components.cpp.o -c /workspace/sim/tests/test_timing_components.cpp",
+  "file": "/workspace/sim/tests/test_timing_components.cpp",
+  "output": "sim/tests/CMakeFiles/test_timing_components.dir/test_timing_components.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_instruction_latency.dir/test_instruction_latency.cpp.o -c /workspace/sim/tests/test_instruction_latency.cpp",
+  "file": "/workspace/sim/tests/test_instruction_latency.cpp",
+  "output": "sim/tests/CMakeFiles/test_instruction_latency.dir/test_instruction_latency.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_load_gather_buffer.dir/test_load_gather_buffer.cpp.o -c /workspace/sim/tests/test_load_gather_buffer.cpp",
+  "file": "/workspace/sim/tests/test_load_gather_buffer.cpp",
+  "output": "sim/tests/CMakeFiles/test_load_gather_buffer.dir/test_load_gather_buffer.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_cache_mshr_merging.dir/test_cache_mshr_merging.cpp.o -c /workspace/sim/tests/test_cache_mshr_merging.cpp",
+  "file": "/workspace/sim/tests/test_cache_mshr_merging.cpp",
+  "output": "sim/tests/CMakeFiles/test_cache_mshr_merging.dir/test_cache_mshr_merging.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/sim/tests",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/sim/tests/vendor -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/test_config.dir/test_config.cpp.o -c /workspace/sim/tests/test_config.cpp",
+  "file": "/workspace/sim/tests/test_config.cpp",
+  "output": "sim/tests/CMakeFiles/test_config.dir/test_config.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/runner",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/runner/include -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/runner_lib.dir/src/backend.cpp.o -c /workspace/runner/src/backend.cpp",
+  "file": "/workspace/runner/src/backend.cpp",
+  "output": "runner/CMakeFiles/runner_lib.dir/src/backend.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/runner",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/runner/include -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/runner_lib.dir/src/backends/perf_sim_backend.cpp.o -c /workspace/runner/src/backends/perf_sim_backend.cpp",
+  "file": "/workspace/runner/src/backends/perf_sim_backend.cpp",
+  "output": "runner/CMakeFiles/runner_lib.dir/src/backends/perf_sim_backend.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/runner",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -I/workspace/runner/include -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gpu_sim.dir/src/main.cpp.o -c /workspace/runner/src/main.cpp",
+  "file": "/workspace/runner/src/main.cpp",
+  "output": "runner/CMakeFiles/gpu_sim.dir/src/main.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/matmul",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DMATMUL_KERNEL_ELF=\\\"/workspace/build_fixed/tests/matmul/matmul_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/matmul_bench.dir/matmul_bench.cpp.o -c /workspace/tests/matmul/matmul_bench.cpp",
+  "file": "/workspace/tests/matmul/matmul_bench.cpp",
+  "output": "tests/matmul/CMakeFiles/matmul_bench.dir/matmul_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/gemv",
+  "command": "/usr/bin/c++ -DGEMV_KERNEL_ELF=\\\"/workspace/build_fixed/tests/gemv/gemv_kernel.elf\\\" -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/gemv_bench.dir/gemv_bench.cpp.o -c /workspace/tests/gemv/gemv_bench.cpp",
+  "file": "/workspace/tests/gemv/gemv_bench.cpp",
+  "output": "tests/gemv/CMakeFiles/gemv_bench.dir/gemv_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/fused_linear_activation",
+  "command": "/usr/bin/c++ -DFUSED_LINEAR_ACTIVATION_KERNEL_ELF=\\\"/workspace/build_fixed/tests/fused_linear_activation/fused_linear_activation_kernel.elf\\\" -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/fused_linear_activation_bench.dir/fused_linear_activation_bench.cpp.o -c /workspace/tests/fused_linear_activation/fused_linear_activation_bench.cpp",
+  "file": "/workspace/tests/fused_linear_activation/fused_linear_activation_bench.cpp",
+  "output": "tests/fused_linear_activation/CMakeFiles/fused_linear_activation_bench.dir/fused_linear_activation_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/softmax_row",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DSOFTMAX_ROW_KERNEL_ELF=\\\"/workspace/build_fixed/tests/softmax_row/softmax_row_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/softmax_row_bench.dir/softmax_row_bench.cpp.o -c /workspace/tests/softmax_row/softmax_row_bench.cpp",
+  "file": "/workspace/tests/softmax_row/softmax_row_bench.cpp",
+  "output": "tests/softmax_row/CMakeFiles/softmax_row_bench.dir/softmax_row_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/embedding_gather",
+  "command": "/usr/bin/c++ -DEMBEDDING_GATHER_KERNEL_ELF=\\\"/workspace/build_fixed/tests/embedding_gather/embedding_gather_kernel.elf\\\" -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/embedding_gather_bench.dir/embedding_gather_bench.cpp.o -c /workspace/tests/embedding_gather/embedding_gather_bench.cpp",
+  "file": "/workspace/tests/embedding_gather/embedding_gather_bench.cpp",
+  "output": "tests/embedding_gather/CMakeFiles/embedding_gather_bench.dir/embedding_gather_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/layernorm_lite",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DLAYERNORM_LITE_KERNEL_ELF=\\\"/workspace/build_fixed/tests/layernorm_lite/layernorm_lite_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/layernorm_lite_bench.dir/layernorm_lite_bench.cpp.o -c /workspace/tests/layernorm_lite/layernorm_lite_bench.cpp",
+  "file": "/workspace/tests/layernorm_lite/layernorm_lite_bench.cpp",
+  "output": "tests/layernorm_lite/CMakeFiles/layernorm_lite_bench.dir/layernorm_lite_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/synthetic/rr_tiebreak",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DRR_TIEBREAK_KERNEL_ELF=\\\"/workspace/build_fixed/tests/synthetic/rr_tiebreak/rr_tiebreak_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/rr_tiebreak_bench.dir/rr_tiebreak_bench.cpp.o -c /workspace/tests/synthetic/rr_tiebreak/rr_tiebreak_bench.cpp",
+  "file": "/workspace/tests/synthetic/rr_tiebreak/rr_tiebreak_bench.cpp",
+  "output": "tests/synthetic/rr_tiebreak/CMakeFiles/rr_tiebreak_bench.dir/rr_tiebreak_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/synthetic/line_boundary_load",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DLBL_KERNEL_ELF=\\\"/workspace/build_fixed/tests/synthetic/line_boundary_load/line_boundary_load_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/line_boundary_load_bench.dir/line_boundary_load_bench.cpp.o -c /workspace/tests/synthetic/line_boundary_load/line_boundary_load_bench.cpp",
+  "file": "/workspace/tests/synthetic/line_boundary_load/line_boundary_load_bench.cpp",
+  "output": "tests/synthetic/line_boundary_load/CMakeFiles/line_boundary_load_bench.dir/line_boundary_load_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/synthetic/mshr_same_line_race",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DMSLR_KERNEL_ELF=\\\"/workspace/build_fixed/tests/synthetic/mshr_same_line_race/mshr_same_line_race_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/mshr_same_line_race_bench.dir/mshr_same_line_race_bench.cpp.o -c /workspace/tests/synthetic/mshr_same_line_race/mshr_same_line_race_bench.cpp",
+  "file": "/workspace/tests/synthetic/mshr_same_line_race/mshr_same_line_race_bench.cpp",
+  "output": "tests/synthetic/mshr_same_line_race/CMakeFiles/mshr_same_line_race_bench.dir/mshr_same_line_race_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/synthetic/jalr_storm",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DJALR_KERNEL_ELF=\\\"/workspace/build_fixed/tests/synthetic/jalr_storm/jalr_storm_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/jalr_storm_bench.dir/jalr_storm_bench.cpp.o -c /workspace/tests/synthetic/jalr_storm/jalr_storm_bench.cpp",
+  "file": "/workspace/tests/synthetic/jalr_storm/jalr_storm_bench.cpp",
+  "output": "tests/synthetic/jalr_storm/CMakeFiles/jalr_storm_bench.dir/jalr_storm_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/synthetic/divide_chain",
+  "command": "/usr/bin/c++ -DDIVCHAIN_KERNEL_ELF=\\\"/workspace/build_fixed/tests/synthetic/divide_chain/divide_chain_kernel.elf\\\" -DGPU_MAX_WARPS=8 -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/divide_chain_bench.dir/divide_chain_bench.cpp.o -c /workspace/tests/synthetic/divide_chain/divide_chain_bench.cpp",
+  "file": "/workspace/tests/synthetic/divide_chain/divide_chain_bench.cpp",
+  "output": "tests/synthetic/divide_chain/CMakeFiles/divide_chain_bench.dir/divide_chain_bench.cpp.o"
+},
+{
+  "directory": "/workspace/build_fixed/tests/synthetic/panic_drain_test",
+  "command": "/usr/bin/c++ -DGPU_MAX_WARPS=8 -DPANIC_DRAIN_TEST_KERNEL_ELF=\\\"/workspace/build_fixed/tests/synthetic/panic_drain_test/panic_drain_test_kernel.elf\\\" -I/workspace/sim/include -std=gnu++17 -o CMakeFiles/panic_drain_test_bench.dir/panic_drain_test_bench.cpp.o -c /workspace/tests/synthetic/panic_drain_test/panic_drain_test_bench.cpp",
+  "file": "/workspace/tests/synthetic/panic_drain_test/panic_drain_test_bench.cpp",
+  "output": "tests/synthetic/panic_drain_test/CMakeFiles/panic_drain_test_bench.dir/panic_drain_test_bench.cpp.o"
+}
+]
