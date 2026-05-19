@@ -33,8 +33,8 @@ WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
     // sized buffer.
     const size_t bitmap_len =
         compute_writeback_bitmap_len(multiply_pipeline_stages_);
-    writeback_bitmap_.current_mut().assign(bitmap_len, std::nullopt);
-    writeback_bitmap_.next_mut().assign(bitmap_len, std::nullopt);
+    writeback_bitmap_.initialize(std::vector<std::optional<ExecUnit>>(
+        bitmap_len, std::nullopt));
     register_state(&rr_pointer_, &unit_busy_, &writeback_bitmap_,
                    &bitmap_head_, &opcoll_cooldown_cycles_, &output_,
                    &diagnostics_);
@@ -341,8 +341,8 @@ void WarpScheduler::reset() {
     reset_all();
     const size_t bitmap_len =
         compute_writeback_bitmap_len(multiply_pipeline_stages_);
-    writeback_bitmap_.current_mut().assign(bitmap_len, std::nullopt);
-    writeback_bitmap_.next_mut().assign(bitmap_len, std::nullopt);
+    writeback_bitmap_.initialize(std::vector<std::optional<ExecUnit>>(
+        bitmap_len, std::nullopt));
     // Phase 10B.0 issue scoreboard. ldst_issued_total_ is cleared in lockstep
     // with LdStUnit::reset()'s fifo_total_pushes_ (both run in the panic-flush
     // cascade) so the (issued - pushed) difference restarts at zero.

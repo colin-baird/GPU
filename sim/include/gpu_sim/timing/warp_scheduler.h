@@ -135,11 +135,11 @@ private:
     uint32_t issue_to_writeback_offset(ExecUnit unit, bool is_vdot8) const;
     size_t bitmap_slot(uint32_t offset) const;
 
-    uint32_t num_warps_;
-    WarpState* warps_;
-    FunctionalModel& func_model_;
-    Stats& stats_;
-    uint32_t multiply_pipeline_stages_;
+    uint32_t num_warps_;                 // config
+    WarpState* warps_;                   // config (back-pointer)
+    FunctionalModel& func_model_;        // config (back-pointer)
+    Stats& stats_;                       // config (back-pointer)
+    uint32_t multiply_pipeline_stages_;  // config
 
     // Wired by TimingModel via set_dependencies(). Tests that only construct a
     // WarpScheduler may leave these null (no scoreboard/branch hazard; the

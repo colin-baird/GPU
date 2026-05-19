@@ -9,11 +9,9 @@ LoadGatherBufferFile::LoadGatherBufferFile(uint32_t num_warps, Stats& stats)
     // uniformly. The constructor sizes the buffers_ vector to num_warps_
     // entries (Reg's default value-initialization leaves it empty); set_next
     // + commit() leaves both current_ and next_ sized (commit copies
-    // current_=next_), matching L1Cache's tags_ / outstanding_writes_
-    // constructor initialization in Phase 5a.
+    // current_=next_). Reg::initialize() sizes both slots in one step.
     register_state(&buffers_, &rr_pointer_, &claim_request_, &has_result_);
-    buffers_.set_next(std::vector<LoadGatherBuffer>(num_warps));
-    buffers_.commit();
+    buffers_.initialize(std::vector<LoadGatherBuffer>(num_warps));
 }
 
 bool LoadGatherBufferFile::current_busy(uint32_t warp_id) const {
@@ -209,11 +207,10 @@ void LoadGatherBufferFile::reset() {
     // Phase 5b: reset_all() value-initializes the Reg's inner storage —
     // buffers_ becomes an empty vector; rr_pointer_, has_result_, and
     // claim_request_ become T{}. Re-size buffers_ back to num_warps_ via the
-    // set_next + commit pattern (commit copies current_=next_, leaving both
-    // sized). Then clear the plain scratch / staging slots by hand.
+    // Re-establish the num_warps_ sizing via Reg::initialize. Then clear the
+    // plain scratch / staging slots by hand.
     reset_all();
-    buffers_.set_next(std::vector<LoadGatherBuffer>(num_warps_));
-    buffers_.commit();
+    buffers_.initialize(std::vector<LoadGatherBuffer>(num_warps_));
     next_port_claimed_ = false;
     next_release_ = GatherReleaseRequest{};
 }

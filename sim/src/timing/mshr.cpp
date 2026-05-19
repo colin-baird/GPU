@@ -9,12 +9,9 @@ MSHRFile::MSHRFile(uint32_t num_entries)
     // entries vector to num_entries_ — Reg's default value-initialization
     // leaves the inner vector empty, so the constructor must explicitly
     // initialize the sizing before any allocate() / free() / current_at() /
-    // next_at() can index it. set_next(...) + commit() leaves both current_
-    // and next_ sized (commit copies current_=next_), matching L1Cache's
-    // tags_ / outstanding_writes_ constructor initialization in Phase 5a.
+    // next_at() can index it. Reg::initialize() sizes both slots in one step.
     register_state(&entries_);
-    entries_.set_next(std::vector<MSHREntry>(num_entries));
-    entries_.commit();
+    entries_.initialize(std::vector<MSHREntry>(num_entries));
 }
 
 int MSHRFile::allocate(const MSHREntry& entry) {
@@ -90,12 +87,9 @@ void MSHRFile::commit() {
 
 void MSHRFile::reset() {
     // Phase 5b: reset_all() value-initializes the Reg's inner vector to empty.
-    // Re-establish the num_entries_ sizing via set_next + commit (commit copies
-    // current_=next_, leaving both sized; Phase 5a pattern with cache tags
-    // and outstanding_writes_).
+    // Re-establish the num_entries_ sizing via Reg::initialize.
     reset_all();
-    entries_.set_next(std::vector<MSHREntry>(num_entries_));
-    entries_.commit();
+    entries_.initialize(std::vector<MSHREntry>(num_entries_));
 }
 
 } // namespace gpu_sim

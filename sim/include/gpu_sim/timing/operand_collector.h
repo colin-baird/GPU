@@ -85,7 +85,7 @@ public:
     }
 
 private:
-    Stats& stats_;
+    Stats& stats_;                       // config (back-pointer)
 
     // Phase 4 (reg.h migration): every cross-cycle field is a Reg<T>. busy_,
     // cycles_remaining_, and instr_ are genuine multi-cycle carry-forward

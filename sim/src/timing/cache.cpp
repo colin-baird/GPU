@@ -34,10 +34,8 @@ L1Cache::L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
     // same sizing through reset_all() + explicit re-sizing, but the
     // constructor needs the vectors initialized to num_sets_ elements before
     // any evaluate()/process_load can index them.
-    tags_.set_next(std::vector<CacheTag>(num_sets_));
-    outstanding_writes_.set_next(std::vector<uint32_t>(num_sets_));
-    tags_.commit();
-    outstanding_writes_.commit();
+    tags_.initialize(std::vector<CacheTag>(num_sets_));
+    outstanding_writes_.initialize(std::vector<uint32_t>(num_sets_));
 }
 
 uint32_t L1Cache::get_set(uint32_t addr) const {
@@ -779,10 +777,8 @@ void L1Cache::reset() {
     // value-initializes the inner vector to empty), and clear the
     // combinational scratch + the MSHR file by hand.
     reset_all();
-    tags_.set_next(std::vector<CacheTag>(num_sets_));
-    tags_.commit();
-    outstanding_writes_.set_next(std::vector<uint32_t>(num_sets_));
-    outstanding_writes_.commit();
+    tags_.initialize(std::vector<CacheTag>(num_sets_));
+    outstanding_writes_.initialize(std::vector<uint32_t>(num_sets_));
     mshrs_.reset();
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;

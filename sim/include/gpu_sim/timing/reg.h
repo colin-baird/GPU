@@ -47,8 +47,9 @@ public:
     // Committed read — the normal cross-cycle / cross-stage read.
     const T& current() const { return current_; }
 
-    // Committed read-write. Narrow escape hatch for the two patterns that
-    // legitimately need a mid-cycle or post-latch mutation of committed state:
+    // Committed read-write. Narrow escape hatch for the five patterns that
+    // legitimately need a mutation of the committed slot outside the normal
+    // staged-write-then-commit flow. Use only at a documented site:
     //   (1) Redirect-flush: a backward control signal (a branch mispredict
     //       resolved this same cycle) forces an upstream stage to invalidate
     //       committed state mid-evaluate() — the flush is the redirect's
@@ -58,6 +59,24 @@ public:
     //       committed deque (e.g. DecodeStage clearing pending_.valid after
     //       the buffer push). Equivalent to a mid-cycle write because no
     //       reader has run since the commit_all() flip.
+    //   (3) Memoryless-consumer mid-evaluate invalidation: a stage whose
+    //       Reg is a single-cycle command slot (the producer must re-stage
+    //       every cycle) clears the committed slot mid-evaluate() after
+    //       consuming it (e.g. L1Cache load_cmd_/store_cmd_; the memory
+    //       interfaces' read_request_/write_request_; LoadGatherBufferFile
+    //       claim_request_). Paired with a tail-of-commit set_next(T{}) to
+    //       re-clear the staged slot and a deliberate seed-phase opt-out
+    //       (this Reg is NOT seeded by tick()'s seed phase).
+    //   (4) Deferred-claim dual-write: a stage's evaluate() applies a
+    //       committed-state claim into BOTH the committed and staged slots
+    //       so a same-cycle reader of the committed view (e.g. coalescing's
+    //       current_busy()) observes the claim immediately, AND the claim
+    //       survives the commit-phase flip (e.g. LoadGatherBufferFile).
+    //   (5) Test-hook dual-write: a test pre-arms state through a public
+    //       hook (test_set_unit_busy / test_reserve_writeback_slot) that
+    //       writes both current_ and next_ so the subsequent evaluate()
+    //       observes the armed value regardless of whether the test calls
+    //       seed_next() in between.
     // Not a normal staged write — ordinary updates stage via set_next() /
     // next_mut() and latch at commit().
     T& current_mut() { return current_; }
@@ -84,6 +103,12 @@ public:
     // Reset BOTH slots so a post-reset evaluate() before the first seed()
     // never observes a stale staged value.
     void reset() override { current_ = T{}; next_ = T{}; }
+
+    // Initialize BOTH slots to the same value — for constructor / reset paths
+    // that need to size a Reg<std::vector<...>> or seed a non-default value
+    // before any evaluate runs. Equivalent to `set_next(value); commit();`
+    // but doesn't require a transient half-state.
+    void initialize(const T& value) { current_ = value; next_ = value; }
 
 private:
     T current_{};

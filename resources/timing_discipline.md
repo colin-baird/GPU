@@ -223,6 +223,20 @@ counters, the monotonic FIFO-occupancy accumulators) — and the
 documented one-shot `ALUUnit::branch_resolved_`. These stay plain
 members, annotated `// sim-instrumentation`, exempt from the lint.
 
+**Memoryless-consumer opt-out.** A `Reg<T>` that models a single-cycle
+command slot — the producer must re-stage every cycle, the consumer
+consumes the committed slot and clears it mid-`evaluate()` via
+`Reg::current_mut()` — must opt out of `tick()`'s seed phase. Auto-seed
+(`next_ = current_`) would re-latch the just-consumed value when the
+producer skipped a cycle. The pattern is: (i) the owning stage has no
+`seed_next()` method and is not in `tick()`'s seed list; (ii)
+`evaluate()` consumes via `current_mut().valid = false` after the
+mid-cycle read; (iii) `commit()` calls `commit_all()` then `set_next(T{})`
+to re-clear the staged slot. Sites: `L1Cache::load_cmd_`/`store_cmd_`
+(Phase 5a), `LoadGatherBufferFile::claim_request_` (Phase 5b),
+`FixedLatencyMemory` / `DRAMSim3Memory` `read_request_`/`write_request_`
+(Phase 6).
+
 ## Postfix design language
 
 After the cycle prefix, every cross-stage accessor falls into one of
