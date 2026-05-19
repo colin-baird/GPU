@@ -28,7 +28,16 @@ WarpScheduler::WarpScheduler(uint32_t num_warps, WarpState* warps,
     if (multiply_pipeline_stages_ == 0) {
         throw std::invalid_argument("multiply_pipeline_stages must be >= 1");
     }
-    writeback_bitmap_.resize(compute_writeback_bitmap_len(multiply_pipeline_stages_));
+    // Size BOTH slots of the bitmap register so seed_all() / commit_all() copy
+    // same-sized vectors and so the in-place mutation in evaluate() addresses a
+    // sized buffer.
+    const size_t bitmap_len =
+        compute_writeback_bitmap_len(multiply_pipeline_stages_);
+    writeback_bitmap_.current_mut().assign(bitmap_len, std::nullopt);
+    writeback_bitmap_.next_mut().assign(bitmap_len, std::nullopt);
+    register_state(&rr_pointer_, &unit_busy_, &writeback_bitmap_,
+                   &bitmap_head_, &opcoll_cooldown_cycles_, &output_,
+                   &diagnostics_);
 }
 
 void WarpScheduler::set_dependencies(Scoreboard* scoreboard,
@@ -67,7 +76,14 @@ uint32_t WarpScheduler::issue_to_writeback_offset(ExecUnit unit, bool is_vdot8) 
 }
 
 size_t WarpScheduler::bitmap_slot(uint32_t offset) const {
-    return (bitmap_head_ + offset) % writeback_bitmap_.size();
+    // Phase 4 (reg.h migration): evaluate() mutates bitmap_head_ in-place at
+    // the top (advance by 1), then calls bitmap_slot() to address the wrap;
+    // the post-advance value is what every in-evaluate caller needs, so read
+    // the staged slot. Cross-stage callers do not exist (this helper is
+    // private). Also called by the test_reserve_writeback_slot hook, where the
+    // pre-evaluate bitmap_head_ is still 0 in both slots — same answer either
+    // way.
+    return (bitmap_head_.next() + offset) % writeback_bitmap_.next().size();
 }
 
 void WarpScheduler::evaluate() {
@@ -85,22 +101,25 @@ void WarpScheduler::evaluate() {
         return;
     }
 
-    next_output_ = std::nullopt;
-    next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+    output_.set_next(std::nullopt);
+    diagnostics_.next_mut().fill(SchedulerIssueOutcome::INACTIVE);
 
     // ---- Top-of-evaluate issue-scoreboard bookkeeping ----------------------
     // Phase 10B.0: the scheduler predicts unit availability from issue history
     // rather than polling its consumers. This bookkeeping runs once per cycle,
     // before the issue gate reads any of it, so a value set on issue at cycle
     // N is checked one lower at N+1 (the decrement-then-check ordering that
-    // makes the countdowns exact).
-    writeback_bitmap_[bitmap_head_] = std::nullopt;   // reserved cycle elapsed
-    bitmap_head_ = (bitmap_head_ + 1) % writeback_bitmap_.size();
-    for (auto& b : unit_busy_) {
+    // makes the countdowns exact). Phase 4 (reg.h migration): seed_all() at
+    // the top of the tick has copied current_* -> next_*, so the in-place
+    // mutations below apply to a freshly-seeded staged value.
+    auto& bitmap_next = writeback_bitmap_.next_mut();
+    bitmap_next[bitmap_head_.next()] = std::nullopt;  // reserved cycle elapsed
+    bitmap_head_.next_mut() = (bitmap_head_.next() + 1) % bitmap_next.size();
+    for (auto& b : unit_busy_.next_mut()) {
         if (b > 0) --b;                                // DIVIDE / TLOOKUP only
     }
-    if (opcoll_cooldown_cycles_ > 0) {
-        --opcoll_cooldown_cycles_;
+    if (opcoll_cooldown_cycles_.next() > 0) {
+        --opcoll_cooldown_cycles_.next_mut();
     }
 
     bool issued = false;
@@ -111,17 +130,17 @@ void WarpScheduler::evaluate() {
     bool has_selected_entry = false;
 
     for (uint32_t i = 0; i < num_warps_; ++i) {
-        uint32_t w = (rr_pointer_ + i) % num_warps_;
+        uint32_t w = (rr_pointer_.next() + i) % num_warps_;
 
         if (!warps_[w].active) {
-            next_diagnostics_[w] = SchedulerIssueOutcome::INACTIVE;
+            diagnostics_.next_mut()[w] = SchedulerIssueOutcome::INACTIVE;
             continue;
         }
         any_active = true;
 
         if (warps_[w].instr_buffer.is_empty()) {
             stats_.warp_stall_buffer_empty[w]++;
-            next_diagnostics_[w] = SchedulerIssueOutcome::BUFFER_EMPTY;
+            diagnostics_.next_mut()[w] = SchedulerIssueOutcome::BUFFER_EMPTY;
             any_buffer_empty = true;
             continue;
         }
@@ -132,7 +151,7 @@ void WarpScheduler::evaluate() {
         // wired (unit-test default): no branch shadow ever in flight.
         if (branch_tracker_ != nullptr && branch_tracker_->current_in_flight(w)) {
             stats_.warp_stall_branch_shadow[w]++;
-            next_diagnostics_[w] = SchedulerIssueOutcome::BRANCH_SHADOW;
+            diagnostics_.next_mut()[w] = SchedulerIssueOutcome::BRANCH_SHADOW;
             continue;
         }
 
@@ -141,7 +160,7 @@ void WarpScheduler::evaluate() {
 
         if (!is_scoreboard_clear(w, decoded)) {
             stats_.warp_stall_scoreboard[w]++;
-            next_diagnostics_[w] = SchedulerIssueOutcome::SCOREBOARD;
+            diagnostics_.next_mut()[w] = SchedulerIssueOutcome::SCOREBOARD;
             continue;
         }
 
@@ -159,11 +178,11 @@ void WarpScheduler::evaluate() {
             // overwrites it, so consecutive LDST issues must be spaced by the
             // addr-gen latency or the second clobbers an in-flight op. The
             // unit_busy_[LDST] countdown enforces that spacing.
-            if (unit_busy_[exec_unit_index(ExecUnit::LDST)] > 0) {
+            if (unit_busy_.next()[exec_unit_index(ExecUnit::LDST)] > 0) {
                 stats_.warp_stall_unit_busy[w]++;
                 stats_.scheduler_unit_busy_stall_cycles[
                     exec_unit_index(ExecUnit::LDST)]++;
-                next_diagnostics_[w] = SchedulerIssueOutcome::UNIT_BUSY_LDST;
+                diagnostics_.next_mut()[w] = SchedulerIssueOutcome::UNIT_BUSY_LDST;
                 continue;
             }
             // (2) FIFO-occupancy accounting: the in-transit population is the
@@ -182,17 +201,17 @@ void WarpScheduler::evaluate() {
             if (fifo_depth != 0 && fifo_size + in_flight + 1 > fifo_depth) {
                 stats_.warp_stall_unit_busy[w]++;
                 stats_.scheduler_ldst_fifo_full_stall_cycles++;
-                next_diagnostics_[w] = SchedulerIssueOutcome::UNIT_BUSY_LDST;
+                diagnostics_.next_mut()[w] = SchedulerIssueOutcome::UNIT_BUSY_LDST;
                 continue;
             }
         } else {
             // Structural hazard: kUnitIterationLatency is 0 for the fully-
             // pipelined ALU / MULTIPLY, so this never blocks them; armed only
             // for the iterative DIVIDE / TLOOKUP.
-            if (unit_busy_[exec_unit_index(target)] > 0) {
+            if (unit_busy_.next()[exec_unit_index(target)] > 0) {
                 stats_.warp_stall_unit_busy[w]++;
                 stats_.scheduler_unit_busy_stall_cycles[exec_unit_index(target)]++;
-                next_diagnostics_[w] = unit_busy_outcome(target);
+                diagnostics_.next_mut()[w] = unit_busy_outcome(target);
                 continue;
             }
             // Phase 10B.3: the interim writeback-result-buffer gate is gone.
@@ -202,11 +221,11 @@ void WarpScheduler::evaluate() {
             // each unit's committed result buffer before issuing.
             // Writeback-port hazard: only instructions that write back reserve
             // a slot, so only they can collide.
-            if (writes_back && writeback_bitmap_[bitmap_slot(offset)]) {
+            if (writes_back && writeback_bitmap_.next()[bitmap_slot(offset)]) {
                 stats_.warp_stall_unit_busy[w]++;
                 stats_.scheduler_writeback_contention_stall_cycles[
                     exec_unit_index(target)]++;
-                next_diagnostics_[w] = unit_busy_outcome(target);
+                diagnostics_.next_mut()[w] = unit_busy_outcome(target);
                 continue;
             }
         }
@@ -215,13 +234,13 @@ void WarpScheduler::evaluate() {
         // (the opcoll is shared by every issue). Drops when opcoll becomes
         // always-1-cycle. Checked after the per-target gates so the per-unit
         // diagnostics above stay precise.
-        if (opcoll_cooldown_cycles_ > 0) {
+        if (opcoll_cooldown_cycles_.next() > 0) {
             stats_.warp_stall_unit_busy[w]++;
-            next_diagnostics_[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
+            diagnostics_.next_mut()[w] = SchedulerIssueOutcome::OPCOLL_BUSY;
             continue;
         }
 
-        next_diagnostics_[w] = SchedulerIssueOutcome::READY_NOT_SELECTED;
+        diagnostics_.next_mut()[w] = SchedulerIssueOutcome::READY_NOT_SELECTED;
 
         if (!issued) {
             issued = true;
@@ -244,7 +263,7 @@ void WarpScheduler::evaluate() {
         out.pc = selected_entry.pc;
         out.trace = func_model_.execute(selected_warp, selected_entry.pc);
         out.prediction = selected_entry.prediction;
-        next_output_ = out;
+        output_.set_next(out);
 
         warps_[selected_warp].instr_buffer.pop();
 
@@ -262,27 +281,27 @@ void WarpScheduler::evaluate() {
             // so the next LDST issue cannot clobber this op mid-addr-gen.
             ldst_issued_total_++;
             if (ldst_iteration_latency_ > 0) {
-                unit_busy_[exec_unit_index(ExecUnit::LDST)] =
+                unit_busy_.next_mut()[exec_unit_index(ExecUnit::LDST)] =
                     ldst_iteration_latency_;
             }
         } else {
             // Arm the structural-hazard countdown for iterative units.
             if (kUnitIterationLatency[exec_unit_index(target)] > 0) {
-                unit_busy_[exec_unit_index(target)] =
+                unit_busy_.next_mut()[exec_unit_index(target)] =
                     kUnitIterationLatency[exec_unit_index(target)];
             }
             // Reserve the writeback slot for fixed-latency ops that write back.
             if (writes_back) {
-                writeback_bitmap_[bitmap_slot(offset)] = target;
+                writeback_bitmap_.next_mut()[bitmap_slot(offset)] = target;
             }
         }
-        opcoll_cooldown_cycles_ = is_vdot8 ? 2 : 1;
+        opcoll_cooldown_cycles_.set_next(is_vdot8 ? 2 : 1);
 
         if (scoreboard_ != nullptr && writes_back) {
             scoreboard_->set_pending(selected_warp, d.rd);
         }
 
-        next_diagnostics_[selected_warp] = SchedulerIssueOutcome::ISSUED;
+        diagnostics_.next_mut()[selected_warp] = SchedulerIssueOutcome::ISSUED;
         stats_.total_instructions_issued++;
         stats_.warp_instructions[selected_warp]++;
 
@@ -297,7 +316,7 @@ void WarpScheduler::evaluate() {
     }
 
     // RR pointer always advances
-    rr_pointer_ = (rr_pointer_ + 1) % num_warps_;
+    rr_pointer_.next_mut() = (rr_pointer_.next() + 1) % num_warps_;
 }
 
 void WarpScheduler::commit() {
@@ -310,24 +329,24 @@ void WarpScheduler::commit() {
     if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
         return;
     }
-    current_output_ = next_output_;
-    current_diagnostics_ = next_diagnostics_;
+    commit_all();
 }
 
 void WarpScheduler::reset() {
-    rr_pointer_ = 0;
-    current_output_ = std::nullopt;
-    next_output_ = std::nullopt;
-    current_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
-    next_diagnostics_.fill(SchedulerIssueOutcome::INACTIVE);
+    // Phase 4 (reg.h migration): reset_all() T{}-initializes every Reg's
+    // current_ and next_ slots — including the writeback_bitmap_ vector,
+    // which goes empty. Re-size and re-fill it with the configured length so
+    // the in-place mutation in evaluate() addresses a sized buffer (matching
+    // the pre-Phase-4 reset that left the vector at construction length).
+    reset_all();
+    const size_t bitmap_len =
+        compute_writeback_bitmap_len(multiply_pipeline_stages_);
+    writeback_bitmap_.current_mut().assign(bitmap_len, std::nullopt);
+    writeback_bitmap_.next_mut().assign(bitmap_len, std::nullopt);
     // Phase 10B.0 issue scoreboard. ldst_issued_total_ is cleared in lockstep
     // with LdStUnit::reset()'s fifo_total_pushes_ (both run in the panic-flush
     // cascade) so the (issued - pushed) difference restarts at zero.
-    unit_busy_.fill(0);
-    std::fill(writeback_bitmap_.begin(), writeback_bitmap_.end(), std::nullopt);
-    bitmap_head_ = 0;
     ldst_issued_total_ = 0;
-    opcoll_cooldown_cycles_ = 0;
 }
 
 void WarpScheduler::flush() {

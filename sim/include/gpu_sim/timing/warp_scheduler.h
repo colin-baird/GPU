@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_sim/timing/pipeline_stage.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/timing/warp_state.h"
 #include "gpu_sim/timing/scoreboard.h"
 #include "gpu_sim/timing/branch_shadow_tracker.h"
@@ -50,12 +51,21 @@ enum class SchedulerIssueOutcome {
     ISSUED
 };
 
-class WarpScheduler : public PipelineStage {
+class WarpScheduler : public PipelineStage, public RegisteredStage {
 public:
     WarpScheduler(uint32_t num_warps, WarpState* warps,
                   FunctionalModel& func_model, Stats& stats,
                   uint32_t multiply_pipeline_stages = kMulPipelineStages);
 
+    // Phase 4 (reg.h migration): seed all registered state at the top of the
+    // tick. TimingModel::tick() now calls scheduler_->seed_next() alongside the
+    // other stages. Pre-Phase-4 the scheduler had no seed_next() and relied on
+    // the post-commit equality (next == current) carrying its in-place-mutated
+    // registers forward; seed_all() re-establishes that equality explicitly and
+    // is therefore byte-identical for every register on a non-stalled cycle.
+    // On a writeback-stall cycle evaluate() early-returns (no decrements) and
+    // commit() is gated (no flip), so seed_all() simply re-runs idempotently.
+    void seed_next() { seed_all(); }
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -95,19 +105,28 @@ public:
     //  - test_reserve_writeback_slot claims a writeback-bitmap entry at
     //    (bitmap_head_ + offset), so the gate refuses a fixed-latency op whose
     //    predicted writeback cycle collides with the reservation.
+    // Phase 4 (reg.h migration): these are armed pre-evaluate, and the tests
+    // do NOT call scheduler->seed_next() before evaluate() — so we write into
+    // BOTH the committed and the staged slot. That preserves the pre-Phase-4
+    // single-buffered semantics regardless of whether the caller also seeds:
+    // if seed_all() runs, it copies current -> next (no-op given dual-write);
+    // if it does not, next already holds the test value. evaluate()'s in-place
+    // mutation then reads back the armed value via next() exactly as before.
     void test_set_unit_busy(ExecUnit unit, uint32_t cycles) {
-        unit_busy_[exec_unit_index(unit)] = cycles;
+        unit_busy_.current_mut()[exec_unit_index(unit)] = cycles;
+        unit_busy_.next_mut()[exec_unit_index(unit)] = cycles;
     }
     void test_reserve_writeback_slot(ExecUnit unit, uint32_t offset) {
-        writeback_bitmap_[bitmap_slot(offset)] = unit;
+        writeback_bitmap_.current_mut()[bitmap_slot(offset)] = unit;
+        writeback_bitmap_.next_mut()[bitmap_slot(offset)] = unit;
     }
 
     // Phase 10B.2: REGISTERED scheduler->opcoll output. current_output()
     // returns the committed slot; the OperandCollector pulls it at the top of
     // its evaluate(). evaluate() continues to write next_output_.
-    const std::optional<IssueOutput>& current_output() const { return current_output_; }
+    const std::optional<IssueOutput>& current_output() const { return output_.current(); }
     const std::array<SchedulerIssueOutcome, MAX_WARPS>& current_diagnostics() const {
-        return current_diagnostics_;
+        return diagnostics_.current();
     }
 
 private:
@@ -122,8 +141,6 @@ private:
     Stats& stats_;
     uint32_t multiply_pipeline_stages_;
 
-    uint32_t rr_pointer_ = 0;
-
     // Wired by TimingModel via set_dependencies(). Tests that only construct a
     // WarpScheduler may leave these null (no scoreboard/branch hazard; the
     // LDST FIFO gate treats an absent ldst_ as an empty FIFO).
@@ -136,6 +153,23 @@ private:
     WritebackArbiter* wb_arbiter_ = nullptr;
 
     // ---- Phase 10B.0 issue scoreboard --------------------------------------
+    // Phase 4 (reg.h migration): every cross-cycle register is a Reg<T>. The
+    // in-place-mutated countdowns and bookkeeping below were single-buffered
+    // pre-Phase-4; their faithful Reg translation is `next_mut()` to apply the
+    // top-of-evaluate mutation (decrement, advance, reserve) and `next()` to
+    // read back the post-mutation value during the same evaluate() — which is
+    // what every issue gate already does (e.g. `if (unit_busy_[i] > 0)` is
+    // read AFTER the top-of-evaluate `unit_busy_[i]--`). seed_all() at the
+    // top of the tick copies current -> next so the in-place mutation is
+    // applied to a freshly-seeded value, then commit_all() at end-of-cycle
+    // latches the result; on a writeback-stall cycle the early-returned
+    // evaluate() does not mutate next and the gated commit_all() does not
+    // flip, so the cycle is genuinely frozen.
+
+    // Round-robin warp pointer. Advances one slot per non-frozen cycle at the
+    // end of evaluate(); the issue scan begins at (rr_pointer + i) % num_warps.
+    Reg<uint32_t> rr_pointer_;
+
     // Per-unit structural-hazard countdown. Set to the unit's iteration
     // latency when an op is issued to it; decremented once per non-frozen
     // cycle at the top of evaluate(); issue to that unit is blocked while > 0.
@@ -150,7 +184,7 @@ private:
     // addr-gen latency to prevent that. (Pre-10B.0 this was enforced by the
     // now-removed ldst->current_busy() poll; the FIFO-occupancy gate alone
     // models FIFO capacity, not the single addr-gen slot.)
-    std::array<uint32_t, kExecUnitCount> unit_busy_{};
+    Reg<std::array<uint32_t, kExecUnitCount>> unit_busy_;
 
     // LDST address-generation iteration latency, ceil(WARP_SIZE /
     // num_ldst_units). Captured from the wired LdSt unit in set_dependencies()
@@ -158,7 +192,7 @@ private:
     // latencies are compile-time constants in kUnitIterationLatency). 0 when no
     // LdSt unit is wired (unit-test default) — LDST issue then has no addr-gen
     // structural gate, matching the empty-FIFO default.
-    uint32_t ldst_iteration_latency_ = 0;
+    uint32_t ldst_iteration_latency_ = 0;  // config
 
     // Writeback-slot bitmap — the binding fixed-latency writeback schedule. A
     // circular array sized from the configured fixed-latency offsets; each
@@ -167,25 +201,24 @@ private:
     // (bitmap_head_ + offset); the gate refuses any fixed-latency op whose
     // predicted writeback cycle is already claimed. bitmap_head_ advances one
     // slot per non-frozen cycle.
-    std::vector<std::optional<ExecUnit>> writeback_bitmap_;
-    uint32_t bitmap_head_ = 0;
+    Reg<std::vector<std::optional<ExecUnit>>> writeback_bitmap_;
+    Reg<uint32_t> bitmap_head_;
 
     // LDST FIFO-occupancy accounting: a scheduler-side monotonic count of ops
     // ever issued to LDST. The in-transit population is the difference
-    // (ldst_issued_total_ - ldst_->current_fifo_total_pushes()).
-    uint32_t ldst_issued_total_ = 0;
+    // (ldst_issued_total_ - ldst_->current_fifo_total_pushes()). Plain
+    // uint32_t: monotonic accumulator, not a clocked hardware register.
+    uint32_t ldst_issued_total_ = 0;  // sim-instrumentation
 
     // Interim operand-collector cooldown. The opcoll takes 2 cycles for VDOT8
     // and 1 cycle for everything else; set on issue and decremented at the top
     // of evaluate(). A cooldown of 1 (every non-VDOT8 op) clears by the next
     // cycle and permits a fresh issue every cycle; a cooldown of 2 (VDOT8)
     // blocks exactly one cycle. Drops out when opcoll becomes always-1-cycle.
-    uint32_t opcoll_cooldown_cycles_ = 0;
+    Reg<uint32_t> opcoll_cooldown_cycles_;
 
-    std::optional<IssueOutput> current_output_;
-    std::optional<IssueOutput> next_output_;
-    std::array<SchedulerIssueOutcome, MAX_WARPS> current_diagnostics_{};
-    std::array<SchedulerIssueOutcome, MAX_WARPS> next_diagnostics_{};
+    Reg<std::optional<IssueOutput>> output_;
+    Reg<std::array<SchedulerIssueOutcome, MAX_WARPS>> diagnostics_;
 };
 
 } // namespace gpu_sim

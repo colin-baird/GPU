@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_sim/timing/pipeline_stage.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/timing/warp_scheduler.h"
 #include "gpu_sim/timing/branch_shadow_tracker.h"
 #include "gpu_sim/stats.h"
@@ -18,9 +19,11 @@ struct DispatchInput {
     BranchPrediction prediction;
 };
 
-class OperandCollector : public PipelineStage {
+class OperandCollector : public PipelineStage, public RegisteredStage {
 public:
-    explicit OperandCollector(Stats& stats) : stats_(stats) {}
+    explicit OperandCollector(Stats& stats) : stats_(stats) {
+        register_state(&busy_, &cycles_remaining_, &instr_, &output_);
+    }
 
     // Back-pressure discipline (REGISTERED + back-pressure direction):
     // current_busy() is a const accessor reading only committed
@@ -31,17 +34,15 @@ public:
     // opcoll_cooldown_cycles_ countdown. current_busy() is retained for the
     // panic-drain query (TimingModel::execution_units_drained) and post-commit
     // observers (pipeline_drained / trace_cycle / unit tests).
-    bool current_busy() const { return current_busy_; }
+    bool current_busy() const { return busy_.current(); }
 
-    // Phase 10B.0.5: explicit double-buffering. seed_next() copies the
-    // carry-forward fields current_* -> next_* at the top of the tick.
-    // busy_/cycles_remaining_/instr_ are genuine carry-forward — evaluate()
-    // decrements cycles_remaining and a VDOT8's instr_ is still being
-    // collected on its second opcoll cycle (the scheduler has stopped
-    // presenting it by then). next_output_ is NOT seeded — evaluate() sets it
-    // to nullopt at its top and recomputes it from scratch. Called at the top
-    // of TimingModel::tick() alongside the units' seed_next().
-    void seed_next();
+    // Phase 10B.0.5 / Phase 4 (reg.h migration): explicit double-buffering via
+    // seed_all(). Pre-Phase-4 the hand-rolled seed_next() copied busy_ /
+    // cycles_remaining_ / instr_ but NOT output_ (evaluate() resets output_
+    // to nullopt at its top); seed_all() now seeds output_ as well, which is
+    // byte-identical because evaluate() unconditionally re-stages output_ at
+    // its top (`output_.set_next(std::nullopt);`) before any conditional write.
+    void seed_next() { seed_all(); }
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -69,45 +70,38 @@ public:
     // the committed slot; each execution unit pulls it at the top of its own
     // evaluate() and self-selects by decoded.target_unit. evaluate() continues
     // to write next_output_.
-    const std::optional<DispatchInput>& current_output() const { return current_output_; }
+    const std::optional<DispatchInput>& current_output() const { return output_.current(); }
 
     // Read by build_cycle_snapshot() / record_cycle_trace(), which run after
     // every stage's commit(). They observe committed end-of-cycle state.
-    bool busy() const { return current_busy_; }
-    uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
+    bool busy() const { return busy_.current(); }
+    uint32_t current_cycles_remaining() const { return cycles_remaining_.current(); }
     std::optional<uint32_t> resident_warp() const {
-        if (!current_busy_) return std::nullopt;
-        return current_instr_.warp_id;
+        if (!busy_.current()) return std::nullopt;
+        return instr_.current().warp_id;
     }
     const IssueOutput* current_instruction() const {
-        return current_busy_ ? &current_instr_ : nullptr;
+        return busy_.current() ? &instr_.current() : nullptr;
     }
 
 private:
     Stats& stats_;
 
-    // Cross-cycle (REGISTERED) state: busy bit, countdown, and the in-flight
-    // IssueOutput. accept() writes only next_*; evaluate() consumes next_*
-    // (which equals current_* after commit() unless accept() just overrode
-    // it); commit() flips next_* -> current_*.
-    bool current_busy_ = false;
-    bool next_busy_ = false;
-    uint32_t current_cycles_remaining_ = 0;
-    uint32_t next_cycles_remaining_ = 0;
-    IssueOutput current_instr_{};
-    IssueOutput next_instr_{};
-
-    // Same-tick COMBINATIONAL output payload. next_output_ is what evaluate()
-    // produces and downstream stages read this cycle; current_output_ is the
-    // committed copy used by post-commit observers (branch_redirect tracing).
-    std::optional<DispatchInput> current_output_;
-    std::optional<DispatchInput> next_output_;
+    // Phase 4 (reg.h migration): every cross-cycle field is a Reg<T>. busy_,
+    // cycles_remaining_, and instr_ are genuine multi-cycle carry-forward
+    // (a VDOT8 stays in opcoll for two cycles). output_ is the REGISTERED
+    // opcoll->unit slot: evaluate() unconditionally re-stages it at the top
+    // (`set_next(std::nullopt)`), so seeding it is byte-identical.
+    Reg<bool> busy_;
+    Reg<uint32_t> cycles_remaining_;
+    Reg<IssueOutput> instr_;
+    Reg<std::optional<DispatchInput>> output_;
 
     // Phase 10B.0.5: per-cycle scratch flag for Stats relocation. evaluate()
     // assigns it fresh (the busy condition); commit() consumes it to
     // increment operand_collector_busy_cycles, so a re-evaluated stalled cycle
     // does not double-count.
-    bool busy_this_cycle_ = false;
+    bool busy_this_cycle_ = false;  // scratch
 
     // Phase 10B.1/10B.2 back-pointers. nullptr-tolerant for unit tests.
     WarpScheduler* scheduler_ = nullptr;

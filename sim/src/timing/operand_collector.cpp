@@ -7,22 +7,17 @@ void OperandCollector::accept(const IssueOutput& issue) {
     // Phase 2 discipline: writes only into next_* slots. The scheduler's
     // pre-evaluate current_busy() check (which reads current_busy_) gates
     // calling accept() so we never overwrite an in-flight instruction.
-    next_busy_ = true;
-    next_instr_ = issue;
+    busy_.set_next(true);
+    instr_.set_next(issue);
     // 2 cycles for 3-operand (VDOT8), 1 cycle for everything else.
-    next_cycles_remaining_ = (issue.decoded.num_src_regs == 3) ? 2 : 1;
-}
-
-void OperandCollector::seed_next() {
-    // Phase 10B.0.5: re-establish the carry-forward fields in next_* at the
-    // top of the tick. next_output_ is NOT seeded — evaluate() resets it.
-    next_busy_ = current_busy_;
-    next_cycles_remaining_ = current_cycles_remaining_;
-    next_instr_ = current_instr_;
+    cycles_remaining_.set_next((issue.decoded.num_src_regs == 3) ? 2 : 1);
 }
 
 void OperandCollector::evaluate() {
-    next_output_ = std::nullopt;
+    // Phase 4 (reg.h migration): output_ is unconditionally re-staged here
+    // every cycle, so seeding it via seed_all() is byte-identical (the seeded
+    // value is immediately overwritten before any conditional read).
+    output_.set_next(std::nullopt);
 
     // Phase 10B.2: REGISTERED scheduler->opcoll edge via the pull model. The
     // opcoll reads the scheduler's committed output at the top of evaluate()
@@ -34,7 +29,7 @@ void OperandCollector::evaluate() {
     // a belt-and-braces invariant — a busy opcoll never overwrites an in-flight
     // instruction. scheduler_ is null in isolated unit tests, which drive
     // accept() directly.
-    if (scheduler_ != nullptr && !next_busy_) {
+    if (scheduler_ != nullptr && !busy_.next()) {
         const auto& issued = scheduler_->current_output();
         if (issued) {
             accept(*issued);
@@ -48,20 +43,20 @@ void OperandCollector::evaluate() {
     // arrival), next_* now holds the freshly-issued payload.
     // Phase 10B.0.5: assign the per-cycle busy flag fresh;
     // operand_collector_busy_cycles is incremented at commit() gated on it.
-    busy_this_cycle_ = next_busy_;
-    if (!next_busy_) return;
+    busy_this_cycle_ = busy_.next();
+    if (!busy_.next()) return;
 
-    next_cycles_remaining_--;
+    cycles_remaining_.next_mut()--;
 
-    if (next_cycles_remaining_ == 0) {
+    if (cycles_remaining_.next() == 0) {
         DispatchInput out;
-        out.decoded = next_instr_.decoded;
-        out.trace = next_instr_.trace;
-        out.warp_id = next_instr_.warp_id;
-        out.pc = next_instr_.pc;
-        out.prediction = next_instr_.prediction;
-        next_output_ = out;
-        next_busy_ = false;
+        out.decoded = instr_.next().decoded;
+        out.trace = instr_.next().trace;
+        out.warp_id = instr_.next().warp_id;
+        out.pc = instr_.next().pc;
+        out.prediction = instr_.next().prediction;
+        output_.set_next(out);
+        busy_.set_next(false);
     }
 }
 
@@ -84,21 +79,11 @@ void OperandCollector::commit() {
         busy_this_cycle_ = false;
     }
 
-    // Flip next_* -> current_* for every double-buffered field. seed_next()
-    // re-establishes next_* == current_* at the top of the next tick.
-    current_busy_ = next_busy_;
-    current_cycles_remaining_ = next_cycles_remaining_;
-    current_instr_ = next_instr_;
-    current_output_ = next_output_;
+    commit_all();
 }
 
 void OperandCollector::reset() {
-    current_busy_ = false;
-    next_busy_ = false;
-    current_cycles_remaining_ = 0;
-    next_cycles_remaining_ = 0;
-    current_output_ = std::nullopt;
-    next_output_ = std::nullopt;
+    reset_all();
     busy_this_cycle_ = false;
 }
 

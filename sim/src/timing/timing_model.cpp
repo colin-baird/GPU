@@ -402,6 +402,16 @@ bool TimingModel::tick() {
     // commit() already left next_* == current_*), so it is byte-identical; the
     // writeback stall (10B.3) relies on it to genuinely freeze a stalled
     // stage. Units with no carry-forward state (ALUUnit) have an empty body.
+    // Phase 4 (reg.h migration): WarpScheduler joins the seed_next() set —
+    // every in-place-mutated scheduler register (rr_pointer_, unit_busy_,
+    // bitmap_head_, writeback_bitmap_, opcoll_cooldown_cycles_) is now a
+    // Reg<T> whose mutation in evaluate() applies to next_; seed_all() at the
+    // top of the tick re-establishes next_ = current_ so the mutation
+    // observes the prior-cycle committed value, byte-identical to the
+    // pre-Phase-4 single-buffered semantics. On a writeback-stall cycle
+    // evaluate() early-returns and commit_all() is gated, so seed_next()
+    // simply re-runs idempotently next tick.
+    scheduler_->seed_next();
     opcoll_->seed_next();
     alu_->seed_next();
     mul_->seed_next();
@@ -415,9 +425,8 @@ bool TimingModel::tick() {
     // genuinely committed state, making the fetch->decode READY/STALL edge
     // sweep-order-independent. Byte-identical under the current (unchanged)
     // evaluate sweep order; the prerequisite for Phase 10D's reversal.
-    // FetchStage and WarpScheduler already expose only committed state via
-    // their current_output_ / current_diagnostics_ double-buffered registers,
-    // so they need no seed_next() of their own.
+    // FetchStage already exposes only committed state via its current_output_
+    // double-buffered register, so it needs no seed_next() of its own.
     decode_->seed_next();
 
     // Phase 10D: seed the gather buffer's double-buffered fill presentation.
