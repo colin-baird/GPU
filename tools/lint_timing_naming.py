@@ -161,6 +161,17 @@ TIMING_MODULES: set[str] = {
     "QueuedWritebackSource",
 }
 
+# Helper buffers owned *inside* a pipeline module — not stages themselves,
+# and explicitly out of scope for the cross-stage accessor convention (see
+# the TIMING_MODULES doc above). A `next_*` accessor on one of these is a
+# write handle into the helper's own REGISTERED double-buffer (e.g.
+# `MSHRFile::next_at`), driven by the owning module's evaluate; it is an
+# intra-module registered-pair write, not a cross-*stage* back-pressure
+# edge, so the cross-module-read layer skips it.
+INTERNAL_HELPER_CLASSES: set[str] = {
+    "MSHRFile",
+}
+
 # Methods exempt from the prefix rule. Each entry below was verified to
 # suppress at least one finding on a TIMING_MODULES class — non-const
 # lifecycle methods (evaluate / commit / reset / flush / accept etc.)
@@ -752,6 +763,12 @@ def _classify_cross_module_read(
     `reader_raw` and append a finding iff it is a violation."""
     producer = _normalize_module(producer_raw)
     reader = _normalize_module(reader_raw)
+
+    # A `next_*` accessor on an internal helper buffer (MSHRFile, ...) is a
+    # registered-pair write handle internal to the owning pipeline module,
+    # not a cross-stage edge — out of scope for this layer.
+    if producer is None and producer_raw in INTERNAL_HELPER_CLASSES:
+        return
 
     # The producer must be a known pipeline module — every `next_*`
     # accessor in the timing model lives on one. If it does not

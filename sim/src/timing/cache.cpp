@@ -45,15 +45,23 @@ bool L1Cache::outstanding_writes_at_cap() const {
     return current_outstanding_writes_total_ >= max_outstanding_writes_;
 }
 
-void L1Cache::queue_write_through(uint32_t line_addr) {
-    // Single enqueue wrapper. Callers must confirm admission (write-buffer
-    // depth AND the outstanding-write cap) before calling this. Both
-    // counters are bumped into next_ — a queued write-through pins its set
-    // and consumes one outstanding-write credit until its ack returns.
-    write_buffer_.push_back(line_addr);
+bool L1Cache::queue_write_through(uint32_t line_addr) {
+    // Single, fallible enqueue wrapper. The write buffer has one enqueue port
+    // per cycle: if it is already claimed, refuse without staging anything.
+    if (next_write_buffer_port_claimed_) {
+        stats_.write_buffer_port_conflict_cycles++;
+        return false;
+    }
+    // Claim the port and stage the enqueue (applied to write_buffer_ at
+    // commit). Both outstanding-write counters are bumped into next_ — a
+    // queued write-through pins its set and consumes one outstanding-write
+    // credit until its ack returns.
+    next_write_buffer_port_claimed_ = true;
+    next_write_buffer_push_ = line_addr;
     uint32_t set = get_set(line_addr * line_size_);
     ++next_outstanding_writes_[set];
     ++next_outstanding_writes_total_;
+    return true;
 }
 
 bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
@@ -152,7 +160,7 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
 
     if (tail_idx >= 0) {
         // Secondary: inherit the primary's external fetch. Link to the tail.
-        mshrs_.at(static_cast<uint32_t>(tail_idx)).next_in_chain =
+        mshrs_.next_at(static_cast<uint32_t>(tail_idx)).next_in_chain =
             static_cast<uint32_t>(mshr_idx);
         stats_.mshr_merged_loads++;
     } else {
@@ -191,9 +199,14 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
             stall_reason_ = CacheStallReason::WRITE_BUFFER_FULL;
             return false;
         }
+        if (!queue_write_through(line_addr)) {
+            // Write-buffer enqueue port already claimed this cycle (by an
+            // earlier FILL or secondary drain). Retry next cycle — no
+            // stalled_/stall_reason_, consistent with the fill-conflict retry.
+            return false;
+        }
         stats_.cache_hits++;
         stats_.store_hits++;
-        queue_write_through(line_addr);
         return true;
     }
 
@@ -250,7 +263,7 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     next_last_miss_event_.merged_secondary = (tail_idx >= 0);
 
     if (tail_idx >= 0) {
-        mshrs_.at(static_cast<uint32_t>(tail_idx)).next_in_chain =
+        mshrs_.next_at(static_cast<uint32_t>(tail_idx)).next_in_chain =
             static_cast<uint32_t>(mshr_idx);
         stats_.mshr_merged_stores++;
     } else {
@@ -262,7 +275,7 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
 }
 
 bool L1Cache::complete_fill(const MemoryResponse& resp) {
-    auto& mshr = mshrs_.at(resp.mshr_id);
+    const auto& mshr = mshrs_.current_at(resp.mshr_id);
     assert(!mshr.is_secondary && "fill response must complete a primary MSHR");
 
     // Install line in cache
@@ -295,7 +308,7 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // Count the full chain length at fill time for tracing.
     uint32_t chain_length = 1;
     for (uint32_t nxt = mshr.next_in_chain; nxt != MSHREntry::INVALID_MSHR;
-         nxt = mshrs_.at(nxt).next_in_chain) {
+         nxt = mshrs_.current_at(nxt).next_in_chain) {
         chain_length++;
     }
 
@@ -314,10 +327,16 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
             return false;
         }
 
+        // Probe the fallible write-buffer enqueue BEFORE installing the tag,
+        // so a port-busy refusal leaves no partial state — the fill simply
+        // stays in pending_fill_ and is retried next cycle. (In tick order
+        // FILL runs first, so the port is normally free here.)
+        if (!queue_write_through(mshr.cache_line_addr)) {
+            return false;
+        }
         next_tags_[set].valid = true;
         next_tags_[set].tag = get_tag(addr);
         next_tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
-        queue_write_through(mshr.cache_line_addr);
     } else {
         // Load miss fill: deposit lane values into the owning warp's gather
         // buffer. FILL runs first in the tick (cache.handle_responses is
@@ -402,7 +421,7 @@ void L1Cache::drain_secondary_chain_head() {
     // The head resides on a pinned, matching tag (the primary installed it).
     const uint32_t n = mshrs_.num_entries();
     for (uint32_t i = 0; i < n; ++i) {
-        auto& cand = mshrs_.at(i);
+        const auto& cand = mshrs_.current_at(i);
         if (!cand.valid || !cand.is_secondary) continue;
 
         uint32_t line_addr = cand.cache_line_addr;
@@ -425,7 +444,7 @@ void L1Cache::drain_secondary_chain_head() {
         bool is_head = true;
         for (uint32_t j = 0; j < n; ++j) {
             if (j == i) continue;
-            const auto& other = mshrs_.at(j);
+            const auto& other = mshrs_.current_at(j);
             if (!other.valid) continue;
             if (other.cache_line_addr != line_addr) continue;
             if (other.next_in_chain == i) {
@@ -442,7 +461,12 @@ void L1Cache::drain_secondary_chain_head() {
                 // leave pinned, retry next cycle. No stall-counter bump.
                 return;
             }
-            queue_write_through(line_addr);
+            // Probe the fallible enqueue before any side effect (MSHR free,
+            // pin clear). If the write-buffer port was claimed this cycle by
+            // the FILL, leave the secondary pinned and retry next cycle.
+            if (!queue_write_through(line_addr)) {
+                return;
+            }
             stats_.secondary_drain_cycles++;
             next_last_drain_event_.valid = true;
             next_last_drain_event_.warp_id = cand.warp_id;
@@ -494,10 +518,12 @@ void L1Cache::drain_write_buffer() {
     // next cycle. The timing model tracks tags only — functional data is
     // unaffected — but skipping the stall check would lose the write,
     // mis-count external_memory_writes, and leave the line never observed by
-    // the memory model.
+    // the memory model. write_buffer_ is a registered FIFO: the pop is staged
+    // here and applied by commit(), so the entry submitted this cycle is not
+    // removed from write_buffer_ until the cycle boundary.
     if (!write_buffer_.empty() && !mem_if_.next_request_stall()) {
         mem_if_.set_next_write_request(write_buffer_.front());
-        write_buffer_.pop_front();
+        next_write_buffer_pop_ = true;
     }
 }
 
@@ -524,6 +550,8 @@ void L1Cache::evaluate() {
     // increment next_; the write-ack consumer decrements next_.
     next_outstanding_writes_ = current_outstanding_writes_;
     next_outstanding_writes_total_ = current_outstanding_writes_total_;
+    // REGISTERED MSHR file: seed its next-state from committed state.
+    mshrs_.seed_next();
 
     // Phase 7 + M3: FILL > secondary > HIT priority encoded by tick order.
     // handle_responses() (FILL) runs first; drain_secondary_chain_head()
@@ -623,12 +651,24 @@ void L1Cache::commit() {
     // trace events). stalled_ / stall_reason_ / fill_installed_set_ are
     // COMBINATIONAL same-tick scratch (single slot, reset at top of
     // evaluate, observed mid-tick), so they are not flipped here. The tag
-    // array is now a REGISTERED next/current pair flipped below. Remaining
-    // internal hardware state (mshrs_, write_buffer_) is direct-mutated
-    // synchronously — see resources/timing_discipline.md row 10. The
-    // gather-extract port-claim flag is owned by LoadGatherBufferFile
+    // array, the MSHR file, and the write buffer are all REGISTERED and are
+    // flipped / applied below — see resources/timing_discipline.md row 10.
+    // The gather-extract port-claim flag is owned by LoadGatherBufferFile
     // (separate REGISTERED pair).
     current_tags_ = next_tags_;
+    mshrs_.commit();
+    // Registered write-buffer FIFO: apply the staged ops. Pop first, then
+    // push, so a same-cycle drain+enqueue nets to no depth change. Then
+    // clear the staging slots and release the enqueue port for next cycle.
+    if (next_write_buffer_pop_) {
+        write_buffer_.pop_front();
+    }
+    if (next_write_buffer_push_.has_value()) {
+        write_buffer_.push_back(*next_write_buffer_push_);
+    }
+    next_write_buffer_pop_ = false;
+    next_write_buffer_push_.reset();
+    next_write_buffer_port_claimed_ = false;
     current_pending_fill_ = next_pending_fill_;
     current_outstanding_writes_ = next_outstanding_writes_;
     current_outstanding_writes_total_ = next_outstanding_writes_total_;
@@ -665,7 +705,7 @@ bool L1Cache::is_idle() const {
 uint32_t L1Cache::active_mshr_count() const {
     uint32_t count = 0;
     for (uint32_t i = 0; i < mshrs_.num_entries(); ++i) {
-        if (mshrs_.at(i).valid) {
+        if (mshrs_.current_at(i).valid) {
             count++;
         }
     }
@@ -675,8 +715,8 @@ uint32_t L1Cache::active_mshr_count() const {
 std::vector<uint32_t> L1Cache::active_mshr_warps() const {
     std::vector<uint32_t> warps;
     for (uint32_t i = 0; i < mshrs_.num_entries(); ++i) {
-        if (mshrs_.at(i).valid) {
-            warps.push_back(mshrs_.at(i).warp_id);
+        if (mshrs_.current_at(i).valid) {
+            warps.push_back(mshrs_.current_at(i).warp_id);
         }
     }
     return warps;
@@ -691,6 +731,9 @@ void L1Cache::reset() {
     next_tags_ = current_tags_;
     mshrs_.reset();
     write_buffer_.clear();
+    next_write_buffer_port_claimed_ = false;
+    next_write_buffer_push_.reset();
+    next_write_buffer_pop_ = false;
     std::fill(current_outstanding_writes_.begin(), current_outstanding_writes_.end(), 0u);
     std::fill(next_outstanding_writes_.begin(), next_outstanding_writes_.end(), 0u);
     current_outstanding_writes_total_ = 0;
@@ -725,7 +768,7 @@ uint32_t L1Cache::pinned_line_count() const {
 uint32_t L1Cache::secondary_mshr_count() const {
     uint32_t count = 0;
     for (uint32_t i = 0; i < mshrs_.num_entries(); ++i) {
-        const auto& m = mshrs_.at(i);
+        const auto& m = mshrs_.current_at(i);
         if (m.valid && m.is_secondary) count++;
     }
     return count;

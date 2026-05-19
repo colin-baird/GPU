@@ -32,7 +32,15 @@ struct CacheFixture {
     // in_flight_. Insert that commit at the head so callers can keep
     // the pre-Phase-M5 process_load/process_store + tick_mem(MEM_LATENCY)
     // pattern.
+    //
+    // registered-mshr-write-buffer: an MSHR allocated by a preceding
+    // process_load/process_store lives in next_entries_ until cache.commit().
+    // tick_mem is always the cycle boundary after the issuing access, so
+    // commit the cache here too — this latches the MSHR into current_entries_
+    // before the fill's complete_fill reads it via current_at(). The commit
+    // is idempotent after an explicit cache.commit() at the same boundary.
     void tick_mem(uint32_t cycles) {
+        cache.commit();
         mem_if.commit();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
@@ -93,6 +101,9 @@ TEST_CASE("Cache: coalesced load hit populates all 32 gather slots", "[cache]") 
     REQUIRE(f.stats.load_misses == 1);
     REQUIRE_FALSE(f.gather_file.current_has_result()); // still waiting on fill
 
+    // The MSHR allocated by process_load lands in next_entries_; commit it so
+    // complete_fill (via handle_responses) reads it from current_entries_.
+    f.cache.commit();
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
     // Phase M4: has_result is REGISTERED; the just-completed FILL staged
@@ -131,15 +142,22 @@ TEST_CASE("Cache: load miss allocates single MSHR and fill lands in gather buffe
 
     f.claim(/*warp_id=*/0, /*dest_reg=*/5);
     REQUIRE(f.cache.process_load(256, 0, FULL_MASK, results, 1, 0, 0));
-    REQUIRE(f.cache.active_mshr_count() == 1);
     REQUIRE(f.stats.load_misses == 1);
     REQUIRE(f.stats.external_memory_reads == 1);
     REQUIRE_FALSE(f.gather_file.current_has_result());
+
+    // Commit so the just-allocated MSHR is visible in current_entries_ to
+    // active_mshr_count() and to complete_fill below.
+    f.cache.commit();
+    REQUIRE(f.cache.active_mshr_count() == 1);
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
     // Phase M4: latch staged has_result via commit before observing.
     f.gather_file.commit();
+    // The fill staged the MSHR free into next_entries_; commit applies it
+    // before active_mshr_count() reads current_entries_.
+    f.cache.commit();
 
     // Fill releases the MSHR and deposits the full line into the gather buffer.
     REQUIRE(f.cache.active_mshr_count() == 0);
@@ -168,6 +186,9 @@ TEST_CASE("Cache: store hit pushes line into write buffer", "[cache]") {
     // Store to the same line hits. Stores never touch the gather buffer.
     REQUIRE(f.cache.process_store(0, 0, 2, 0, 0));
     REQUIRE(f.stats.store_hits == 1);
+    // The write-through is staged into the registered write buffer; commit
+    // applies the enqueue before write_buffer_size() observes it.
+    f.cache.commit();
     REQUIRE(f.cache.write_buffer_size() == 1);
     REQUIRE_FALSE(f.gather_file.current_busy(0));
 }
@@ -178,10 +199,16 @@ TEST_CASE("Cache: store miss allocates MSHR (write-allocate)", "[cache]") {
     REQUIRE(f.cache.process_store(1, 0, 1, 0, 0));
     REQUIRE(f.stats.store_misses == 1);
     REQUIRE(f.stats.external_memory_reads == 1);
+    // Commit so the store-miss MSHR is visible in current_entries_ before the
+    // count is observed and before complete_fill reads it.
+    f.cache.commit();
     REQUIRE(f.cache.active_mshr_count() == 1);
 
     f.tick_mem(MEM_LATENCY);
     f.cache.handle_responses();
+    // The fill's write-through is staged; commit applies the MSHR free and
+    // the write-buffer enqueue before they are observed.
+    f.cache.commit();
 
     // After fill, the allocated line should be in the write buffer; no
     // writeback should appear in the gather file.
@@ -194,12 +221,15 @@ TEST_CASE("Cache: MSHR exhaustion returns false and signals stall", "[cache]") {
     CacheFixture f;
     auto results = make_results();
 
-    // Fill all MSHRs with load misses on distinct lines.
+    // Fill all MSHRs with load misses on distinct lines. Each allocation
+    // lands in next_entries_; commit between iterations so the following
+    // allocate() scans current_entries_ and sees the slot already taken.
     for (uint32_t i = 0; i < NUM_MSHRS; ++i) {
         uint32_t addr = i * LINE_SIZE * 100;
         f.claim(i % NUM_WARPS, static_cast<uint8_t>(i + 1));
         REQUIRE(f.cache.process_load(addr, i % NUM_WARPS, FULL_MASK, results,
                                      1, 0, 0));
+        f.cache.commit();
     }
 
     // Next miss should fail because all MSHRs are occupied. The process_load
@@ -218,11 +248,13 @@ TEST_CASE("Cache: MSHR stall clears once a fill completes", "[cache]") {
     CacheFixture f;
     auto results = make_results();
 
+    // Commit between allocations so each scans the committed current_entries_.
     for (uint32_t i = 0; i < NUM_MSHRS; ++i) {
         uint32_t addr = i * LINE_SIZE * 100;
         f.claim(i % NUM_WARPS, static_cast<uint8_t>(i + 1));
         REQUIRE(f.cache.process_load(addr, i % NUM_WARPS, FULL_MASK, results,
                                      1, 0, 0));
+        f.cache.commit();
     }
 
     // Retry load sees the stall. No claim needed: process_load rejects on
@@ -316,9 +348,12 @@ TEST_CASE("Cache: write buffer full stalls store hits", "[cache]") {
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
-    // Fill the write buffer with hits to line 0.
+    // Fill the write buffer with hits to line 0. The write buffer has a
+    // single enqueue port per cycle, so commit between stores to apply each
+    // staged enqueue before the next store claims the port.
     for (uint32_t i = 0; i < WB_DEPTH; ++i) {
         REQUIRE(f.cache.process_store(0, 0, 1, 0, 0));
+        f.cache.commit();
     }
 
     REQUIRE_FALSE(f.cache.process_store(0, 0, 1, 0, 0));
@@ -343,8 +378,11 @@ TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") 
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
+    // Single enqueue port per cycle: commit between stores so each staged
+    // write-through enqueue lands before the next store.
     for (uint32_t i = 0; i < WB_DEPTH; ++i) {
         REQUIRE(f.cache.process_store(0, 0, 1, 0, 0));
+        f.cache.commit();
     }
 
     // Issue a store miss; the line fetch will complete, but the fill cannot
@@ -361,7 +399,13 @@ TEST_CASE("Cache: store-miss fill stalls when write buffer is full", "[cache]") 
     // the pre-Phase-9 test is dropped since handle_responses now writes
     // next_pending_fill_ and a second call in the same cycle would re-run
     // complete_fill against the not-yet-flipped current_pending_fill_.
+    //
+    // registered-mshr-write-buffer: drain_write_buffer() only STAGES the pop;
+    // commit() applies it. The pop must land before the fill retry runs, else
+    // evaluate() still sees the buffer full. So commit the staged pop first,
+    // then evaluate the fill retry against the now-drained buffer.
     f.cache.drain_write_buffer();
+    f.cache.commit();
     f.cache.evaluate();
     f.cache.commit();
     REQUIRE_FALSE(f.cache.next_stalled());
@@ -450,6 +494,9 @@ TEST_CASE("Cache: store racing a same-set fill is retried then hits", "[cache]")
     f.cache.evaluate();
     REQUIRE(f.cache.next_cmd_ready());
     REQUIRE(f.stats.store_hits == 1);
+    // The retried store hit stages its write-through; commit applies the
+    // enqueue before write_buffer_size() observes it.
+    f.cache.commit();
     REQUIRE(f.cache.write_buffer_size() == 1);
     REQUIRE(f.stats.fill_conflict_retry_cycles == 1);  // no spurious retry
 }
@@ -893,8 +940,13 @@ TEST_CASE("Cache: chain pin hands off to the write-ack pin", "[cache]") {
     const uint32_t line_b = num_sets;
 
     // Store-miss to A (primary) + store to A (secondary): a dependent chain.
+    // commit between them so the secondary's find_chain_tail scans the
+    // committed current_entries_ and sees the primary (in production the two
+    // accesses are always >= 1 cycle apart with a commit between).
     REQUIRE(f.cache.process_store(line_a, 0, 1, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.process_store(line_a, 0, 2, 0, 0));
+    f.cache.commit();
     REQUIRE(f.stats.mshr_merged_stores == 1);
 
     // Deliver the fill. complete_fill installs A, sets the chain pin, and
@@ -974,4 +1026,100 @@ TEST_CASE("Cache: the outstanding-write cap refuses enqueue and throttles",
     }
     REQUIRE(cache.is_idle());
     REQUIRE(cache.process_store(0, 0, 100, 0, 0));
+}
+
+// ----------------------------------------------------------------------------
+// registered-mshr-write-buffer.md Part B: the write buffer is a REGISTERED,
+// single-enqueue-port FIFO mutated only at commit().
+// ----------------------------------------------------------------------------
+
+TEST_CASE("Cache: the write buffer is not fall-through", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+
+    // Install line 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Cycle T: a store hit stages a write-through. The registered FIFO is not
+    // mutated until commit, so write_buffer_size() still reads 0, and a
+    // same-cycle drain_write_buffer sees the committed (empty) buffer and
+    // submits nothing.
+    REQUIRE(f.cache.process_store(0, 0, 2, 0, 0));
+    REQUIRE(f.cache.write_buffer_size() == 0);
+    f.cache.drain_write_buffer();
+    REQUIRE(f.stats.external_memory_writes == 0);   // nothing submitted at T
+    f.end_cycle();   // commit: the staged enqueue lands now
+
+    // Cycle T+1: the entry is in the buffer and is submittable — not before.
+    REQUIRE(f.cache.write_buffer_size() == 1);
+    f.cache.drain_write_buffer();
+    REQUIRE(f.stats.external_memory_writes == 1);
+}
+
+TEST_CASE("Cache: write buffer has a single enqueue port — FILL beats HIT",
+          "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;            // set 0
+    const uint32_t line_b = 1;            // set 1 — distinct set, no conflict
+    (void)num_sets;
+
+    // Install line A (set 0) so a later store to it is a hit.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Store-miss to line B (set 1): allocates a write-allocate MSHR.
+    REQUIRE(f.cache.process_store(line_b, 0, 2, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+
+    // One evaluate where B's store-miss fill (FILL) and a staged store hit to
+    // A (HIT) both want to enqueue a write-through. The single enqueue port
+    // goes to the FILL by tick order; the HIT is refused and retried.
+    auto port_conflicts_before = f.stats.write_buffer_port_conflict_cycles;
+    f.cache.set_next_store_cmd(line_a, 0, 3, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE_FALSE(f.cache.next_cmd_ready());   // HIT lost the enqueue port
+    REQUIRE(f.stats.write_buffer_port_conflict_cycles == port_conflicts_before + 1);
+    f.end_cycle();
+    // The FILL's write-through (line B) is the one that entered the buffer.
+    REQUIRE(f.cache.write_buffer_size() == 1);
+
+    // Retry: next cycle the port is free, so the store hit succeeds.
+    f.cache.set_next_store_cmd(line_a, 0, 4, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.store_hits == 1);
+}
+
+TEST_CASE("Cache: terminates with the registered MSHR file", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    f.cache.commit();   // latch the allocated MSHR into committed state
+    REQUIRE_FALSE(f.cache.is_idle());   // an active MSHR keeps the cache busy
+
+    f.tick_mem(MEM_LATENCY);
+    for (uint32_t i = 0; i < 200 && !f.cache.is_idle(); ++i) {
+        f.pump();
+        if (f.gather_file.current_has_result()) {
+            (void)f.gather_file.consume_result();
+        }
+    }
+    REQUIRE(f.cache.is_idle());   // registered MSHR file drains cleanly
 }

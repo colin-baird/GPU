@@ -37,7 +37,15 @@ struct MergeFixture {
     // first evaluate() drains current_ into in_flight_. Without this, a
     // request staged by process_load/process_store stays in next_ and
     // never reaches in_flight_, so no fill ever returns.
+    //
+    // registered-mshr-write-buffer: an MSHR allocated by a preceding
+    // process_load/process_store lives in next_entries_ until cache.commit().
+    // tick_mem is the cycle boundary after the issuing access, so commit the
+    // cache here too — this latches the MSHR/write-buffer staging into the
+    // committed state that complete_fill reads. Idempotent after an explicit
+    // cache.commit() at the same boundary.
     void tick_mem(uint32_t cycles) {
+        cache.commit();
         mem_if.commit();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
@@ -81,11 +89,15 @@ TEST_CASE("MSHR merging: load secondary behind store-miss primary serializes (RA
     REQUIRE(f.cache.process_store(/*line_addr=*/0, /*warp=*/0, 1, 0, 0));
     REQUIRE(f.stats.store_misses == 1);
     REQUIRE(f.stats.external_memory_reads == 1);
+    // Commit so the primary MSHR lands in current_entries_: the secondary's
+    // find_chain_tail and active_mshr_count() both scan committed state.
+    f.cache.commit();
     REQUIRE(f.cache.active_mshr_count() == 1);
 
     // Load to the same line before the fill: allocates as secondary.
     f.claim(/*warp=*/0, /*dest_reg=*/5);
     REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/0, FULL_MASK, results, 2, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.active_mshr_count() == 2);
     REQUIRE(f.stats.external_memory_reads == 1); // no second external read
     REQUIRE(f.stats.mshr_merged_loads == 1);
@@ -96,15 +108,18 @@ TEST_CASE("MSHR merging: load secondary behind store-miss primary serializes (RA
 
     // Deliver the fill: primary retires, tag installed and pinned.
     f.tick_mem(MEM_LATENCY);
-    f.cache.evaluate(); // handle_responses + drain_secondary_chain_head
+    f.cache.evaluate(); // handle_responses retires the store primary
     f.cache.commit();
     REQUIRE(f.cache.current_last_fill_event().valid);
     REQUIRE(f.cache.current_last_fill_event().is_store == true);
     REQUIRE(f.cache.current_last_fill_event().chain_length_at_fill == 2);
-    // Within one evaluate(): handle_responses retires the store primary (which
-    // does not consume the gather extraction port), then
-    // drain_secondary_chain_head drains the load secondary in the same cycle.
-    // Both complete atomically from the observer's view.
+    // registered-mshr-write-buffer: the primary's MSHR free lands in
+    // next_entries_, so within the fill cycle drain_secondary_chain_head
+    // still sees the primary valid in current_entries_ and treats the
+    // secondary as non-head. The secondary therefore drains the FOLLOWING
+    // cycle, once the primary's free has been committed.
+    f.cache.evaluate(); // drain_secondary_chain_head drains the load secondary
+    f.cache.commit();
     f.gather_file.commit();
     REQUIRE(f.gather_file.current_has_result());
     REQUIRE(f.stats.secondary_drain_cycles == 1);
@@ -131,13 +146,17 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     MergeFixture f;
     auto results = make_results(1234);
 
-    // Store A (primary).
+    // Store A (primary). commit between chain accesses so each later
+    // allocation's find_chain_tail scans the committed current_entries_.
     REQUIRE(f.cache.process_store(0, 0, 1, 0, 0));
+    f.cache.commit();
     // Load B (secondary).
     f.claim(0, 3);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 2, 0, 0));
+    f.cache.commit();
     // Store C (secondary).
     REQUIRE(f.cache.process_store(0, 0, 3, 0, 0));
+    f.cache.commit();
 
     REQUIRE(f.stats.external_memory_reads == 1);
     REQUIRE(f.stats.mshr_merged_loads == 1);
@@ -153,11 +172,14 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     f.cache.commit();
     REQUIRE(f.cache.current_last_fill_event().is_store);
     REQUIRE(f.cache.current_last_fill_event().chain_length_at_fill == 3);
-    // Store primary pushes one wb entry; store-fill does NOT use gather
-    // extract port, so load-secondary B can drain in the same evaluate().
+    // Store primary pushes one wb entry.
     REQUIRE(f.cache.write_buffer_size() == wb_before + 1);
-    // Load secondary drained in the same cycle (store fill did not claim the
-    // extraction port), so B is written into warp 0's gather buffer.
+
+    // Cycle N+1: registered-mshr-write-buffer — drain_secondary_chain_head
+    // treats B as the chain head only once the primary A's free is committed,
+    // so the load secondary B drains the cycle AFTER the primary fill.
+    f.cache.evaluate();
+    f.cache.commit();
     f.gather_file.commit();
     REQUIRE(f.gather_file.current_has_result());
     REQUIRE(f.stats.secondary_drain_cycles == 1);
@@ -169,11 +191,14 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     REQUIRE(wbB.dest_reg == 3);
     f.end_cycle();
 
-    // Next cycle: drain store C.
+    // Cycle N+2: drain store C — head only after B's free committed. The
+    // drain frees C's MSHR into next_entries_; commit before
+    // active_mshr_count() reads current_entries_.
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.stats.secondary_drain_cycles == 2);
     REQUIRE(f.cache.active_mshr_count() == 0);
-    f.end_cycle();
+    f.gather_file.commit();
 
     // Plan 2 (write-ack pinning): store A's fill and store C's drain each
     // queued a write-through for line 0, so set 0 stays write-ack-pinned
@@ -205,10 +230,14 @@ TEST_CASE("MSHR merging: cross-warp same-line loads share one external read",
     auto r0 = make_results(100);
     auto r1 = make_results(200);
 
+    // commit between the two accesses so the secondary's find_chain_tail
+    // scans the committed primary in current_entries_.
     f.claim(0, 4);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r0, 1, 0, 0));
+    f.cache.commit();
     f.claim(1, 9);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r1, 2, 0, 0));
+    f.cache.commit();
 
     REQUIRE(f.stats.external_memory_reads == 1);
     REQUIRE(f.stats.mshr_merged_loads == 1);
@@ -218,6 +247,7 @@ TEST_CASE("MSHR merging: cross-warp same-line loads share one external read",
     // Cycle: primary load fill -> warp 0 gets values; FILL marks extraction
     // port used, so the warp-1 secondary defers.
     f.cache.evaluate();
+    f.cache.commit();   // latch the fill's MSHR free into current_entries_
     f.gather_file.commit();
     REQUIRE(f.gather_file.current_has_result()); // warp 0 ready
     REQUIRE(f.cache.active_mshr_count() == 1);
@@ -230,6 +260,7 @@ TEST_CASE("MSHR merging: cross-warp same-line loads share one external read",
 
     // Next cycle: secondary drains into warp 1.
     f.cache.evaluate();
+    f.cache.commit();   // latch the secondary drain's MSHR free
     f.gather_file.commit();
     REQUIRE(f.gather_file.current_has_result());
     WritebackEntry wb1 = f.gather_file.consume_result();
@@ -247,9 +278,11 @@ TEST_CASE("MSHR merging: different-tag miss into pinned set stalls LINE_PINNED",
     MergeFixture f;
     auto r = make_results();
 
-    // Build a chain on line L=0: primary load + secondary load.
+    // Build a chain on line L=0: primary load + secondary load. commit
+    // between so the secondary's find_chain_tail sees the committed primary.
     f.claim(0, 1);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r, 1, 0, 0));
+    f.cache.commit();
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r, 2, 0, 0));
 
@@ -314,17 +347,24 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     // a second primary on a different line. Without this commit +
     // evaluate, P2's set_next_read_request would overwrite P1's
     // staging slot and only P2 would reach memory.
+    // registered-mshr-write-buffer: also commit the cache so P1's MSHR is in
+    // current_entries_ — S1's find_chain_tail and P2's allocate both scan it.
+    f.cache.commit();
     f.mem_if.commit();
     f.mem_if.evaluate();
     // S1: load secondary on same line L=0, different warp.
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r, 2, 0, 0));
+    // Commit so S1's MSHR is committed before P2's allocate picks a slot
+    // (otherwise P2 would reuse S1's not-yet-committed next_entries_ slot).
+    f.cache.commit();
     // P2: load miss on line L' (different tag, same set 0). Allocated BEFORE
     // P1's fill -> at this point set 0 is not yet valid/pinned, so P2 is
     // accepted and becomes a primary (not in L's chain).
     uint32_t Lprime_line = NUM_SETS;
     f.claim(2, 3);
     REQUIRE(f.cache.process_load(Lprime_line * LINE_SIZE, 2, FULL_MASK, r, 3, 0, 0));
+    f.cache.commit();
 
     REQUIRE(f.stats.external_memory_reads == 2); // P1 and P2 only
     REQUIRE(f.cache.active_mshr_count() == 3);
@@ -404,38 +444,51 @@ TEST_CASE("MSHR merging: secondary-store drain stalls on write-buffer full",
 
     // Fill write buffer to WB_DEPTH-1 with hit stores (leave one slot free so
     // the primary store-miss fill will succeed but its secondary cannot).
+    // Single enqueue port per cycle: commit between stores so each staged
+    // write-through enqueue lands before the next store.
     for (uint32_t i = 0; i < WB_DEPTH - 1; ++i) {
         REQUIRE(f.cache.process_store(0, 0, 2 + i, 0, 0));
+        f.cache.commit();
     }
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);
 
-    // Primary store miss to a new line (set 1).
+    // Primary store miss to a new line (set 1). commit between primary and
+    // secondary so the secondary's find_chain_tail sees the committed primary.
     REQUIRE(f.cache.process_store(1, 0, 20, 0, 0));
+    f.cache.commit();
     // Secondary store to same new line -> becomes secondary.
     REQUIRE(f.cache.process_store(1, 0, 21, 0, 0));
+    f.cache.commit();
     REQUIRE(f.stats.mshr_merged_stores == 1);
 
     f.tick_mem(MEM_LATENCY);
     // Cycle: primary retires -> pushes to WB (now full), pin set. Secondary
     // wants to drain but WB is full -> stalls, pin remains.
     f.cache.evaluate();
+    f.cache.commit();   // apply the fill's staged WB push + MSHR free
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
     REQUIRE(f.cache.active_mshr_count() == 1); // secondary still there
     auto drains_before = f.stats.secondary_drain_cycles;
 
-    f.end_cycle();
+    f.gather_file.commit();
     // Try again with WB still full -> still stalls.
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before);
     REQUIRE(f.cache.active_mshr_count() == 1);
-    f.end_cycle();
+    f.gather_file.commit();
 
-    // Drain one WB entry.
+    // Drain one WB entry. drain_write_buffer() only STAGES the pop; commit
+    // applies it before write_buffer_size() observes the freed slot and
+    // before the secondary drain retry sees room in the buffer.
     f.cache.drain_write_buffer();
+    f.cache.commit();
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);
 
-    // Next evaluate: secondary drains.
+    // Next evaluate: secondary drains. commit applies its staged WB push and
+    // MSHR free before they are observed.
     f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
     REQUIRE(f.cache.active_mshr_count() == 0);
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
@@ -456,14 +509,19 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     // Phase M5: drain P1 (line 0) into in_flight_ before issuing P3 on
     // a different line below; otherwise P3's set_next_read_request would
     // overwrite P1's staging slot.
+    // registered-mshr-write-buffer: also commit the cache so P1's MSHR is in
+    // current_entries_ for the secondary's find_chain_tail / P3's allocate.
+    f.cache.commit();
     f.mem_if.commit();
     f.mem_if.evaluate();
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, rA, 2, 0, 0));
+    f.cache.commit();
 
     // Independent primary load on a different line (set 1).
     f.claim(2, 3);
     REQUIRE(f.cache.process_load(LINE_SIZE, 2, FULL_MASK, rB, 3, 0, 0));
+    f.cache.commit();
 
     REQUIRE(f.stats.external_memory_reads == 2);
     REQUIRE(f.cache.active_mshr_count() == 3);
@@ -497,6 +555,7 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
 
     // Cycle C: no more FILLs pending -> secondary finally drains.
     f.cache.evaluate();
+    f.cache.commit();   // latch the secondary drain's MSHR free
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
     f.gather_file.commit();
     REQUIRE(f.gather_file.current_has_result());
@@ -513,10 +572,14 @@ TEST_CASE("MSHR merging: exhaustion via 4 same-line misses stalls a new line",
     MergeFixture f;
     auto r = make_results();
 
-    // 4 same-line loads across 4 warps: 1 primary + 3 secondaries.
+    // 4 same-line loads across 4 warps: 1 primary + 3 secondaries. commit
+    // between accesses so each later allocation's find_chain_tail / allocate
+    // scans the committed current_entries_ (else each becomes a fresh
+    // primary, allocating a duplicate external read).
     for (uint32_t w = 0; w < NUM_MSHRS; ++w) {
         f.claim(w, static_cast<uint8_t>(w + 1));
         REQUIRE(f.cache.process_load(0, w, FULL_MASK, r, 1 + w, 0, 0));
+        f.cache.commit();
     }
     REQUIRE(f.stats.external_memory_reads == 1);
     REQUIRE(f.stats.mshr_merged_loads == 3);
@@ -541,6 +604,7 @@ TEST_CASE("MSHR merging: exhaustion via 4 same-line misses stalls a new line",
     // way, at least the primary retires.
     f.tick_mem(MEM_LATENCY);
     f.cache.evaluate();
+    f.cache.commit();   // latch the fill's primary MSHR free
     REQUIRE(f.cache.active_mshr_count() <= 3);
     // Drain all pending results until gather file empty.
     f.gather_file.commit();
@@ -568,13 +632,17 @@ TEST_CASE("MSHR merging: reset() clears pinned tags, MSHRs, and port state",
     MergeFixture f;
     auto r = make_results();
 
-    // Build a chain: primary + 2 secondaries on line 0.
+    // Build a chain: primary + 2 secondaries on line 0. commit between
+    // accesses so each secondary's find_chain_tail sees the committed chain.
     f.claim(0, 1);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r, 1, 0, 0));
+    f.cache.commit();
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r, 2, 0, 0));
+    f.cache.commit();
     f.claim(2, 3);
     REQUIRE(f.cache.process_load(0, 2, FULL_MASK, r, 3, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.active_mshr_count() == 3);
     REQUIRE(f.cache.write_buffer_size() == 0);
 
@@ -611,9 +679,11 @@ TEST_CASE("MSHR merging: primary and secondary loads produce distinct writebacks
     MergeFixture f;
     auto r = make_results(4242);
 
-    // Warp A (primary) dest_reg 11, warp B (secondary) dest_reg 22.
+    // Warp A (primary) dest_reg 11, warp B (secondary) dest_reg 22. commit
+    // between so the secondary's find_chain_tail sees the committed primary.
     f.claim(0, 11);
     REQUIRE(f.cache.process_load(0, 0, FULL_MASK, r, 1, 0, 0));
+    f.cache.commit();
     f.claim(1, 22);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r, 2, 0, 0));
 
@@ -664,13 +734,17 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     auto load_results = make_results(5000);
 
     // Cycle 0: store miss (primary) and subsequent load (secondary), same warp.
+    // commit between so the primary is committed for the secondary's
+    // find_chain_tail and for active_mshr_count() reads.
     REQUIRE(f.cache.process_store(/*line_addr=*/0, /*warp=*/0, /*issue_cycle=*/1, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.active_mshr_count() == 1);
     REQUIRE(f.stats.external_memory_reads == 1);
 
     f.claim(/*warp=*/0, /*dest_reg=*/7);
     REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/0, FULL_MASK, load_results,
                                  /*issue_cycle=*/2, 0, 0));
+    f.cache.commit();
     REQUIRE(f.stats.mshr_merged_loads == 1);
     REQUIRE(f.stats.external_memory_reads == 1); // no second external fetch
     REQUIRE(f.cache.active_mshr_count() == 2);
@@ -706,6 +780,12 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     REQUIRE(f.cache.current_last_fill_event().valid);
     REQUIRE(f.cache.current_last_fill_event().is_store);
     REQUIRE(f.cache.current_last_fill_event().chain_length_at_fill == 2);
+
+    // registered-mshr-write-buffer: the store primary's MSHR free lands in
+    // next_entries_, so the load secondary is treated as the chain head and
+    // drains only the FOLLOWING cycle, once the free is committed.
+    f.cache.evaluate();
+    f.cache.commit();
     REQUIRE(f.stats.secondary_drain_cycles == 1);
     REQUIRE(f.cache.active_mshr_count() == 0);
 
@@ -760,10 +840,13 @@ TEST_CASE("MSHR merging: secondary drain wins gather-extract port over HIT",
 
     // Step 2: Build a primary+secondary load chain on line L0 (set 0) between
     // two DIFFERENT warps, so warp-0's gather buffer stays free for the hit.
+    // commit between so the secondary's find_chain_tail sees the primary.
     f.claim(/*warp=*/1, /*dest_reg=*/4);
     REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/1, FULL_MASK, r, 2, 0, 0));
+    f.cache.commit();
     f.claim(/*warp=*/2, /*dest_reg=*/5);
     REQUIRE(f.cache.process_load(/*addr=*/0, /*warp=*/2, FULL_MASK, r, 3, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.active_mshr_count() == 2);
     REQUIRE(f.stats.external_memory_reads == 2); // L1 + L0
 
@@ -866,25 +949,31 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
-    // Fill write buffer to WB_DEPTH-1 with hit stores.
+    // Fill write buffer to WB_DEPTH-1 with hit stores. Single enqueue port
+    // per cycle: commit between stores so each staged enqueue lands.
     for (uint32_t i = 0; i < WB_DEPTH - 1; ++i) {
         REQUIRE(f.cache.process_store(0, 0, 2 + i, 0, 0));
+        f.cache.commit();
     }
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);
 
     // Primary store miss to a new line on set 1 + secondary store to it.
+    // commit between so the secondary's find_chain_tail sees the primary.
     REQUIRE(f.cache.process_store(1, 0, 20, 0, 0));
+    f.cache.commit();
     REQUIRE(f.cache.process_store(1, 0, 21, 0, 0));
+    f.cache.commit();
     REQUIRE(f.stats.mshr_merged_stores == 1);
 
     f.tick_mem(MEM_LATENCY);
 
     // Cycle: primary retires -> WB now full; secondary stalls, pin remains.
     f.cache.evaluate();
+    f.cache.commit();   // apply the fill's staged WB push + MSHR free
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
     REQUIRE(f.cache.active_mshr_count() == 1);
     auto drains_before = f.stats.secondary_drain_cycles;
-    f.end_cycle();
+    f.gather_file.commit();
     // Registered tag array: the pin installed by complete_fill this cycle
     // is observable via pinned_line_count() (a current_tags_ reader) only
     // after commit() — end_cycle() flips next_tags_ → current_tags_.
@@ -914,11 +1003,18 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     REQUIRE(f.cache.pinned_line_count() == 1);                // pin intact
     f.mem_if.evaluate();
     f.cache.drain_write_buffer();
+    // End of cycle 1: commit applies the secondary-drain stall (no-op), the
+    // staged write-buffer pop from drain_write_buffer(), and the mem request.
+    f.cache.commit();
+    f.mem_if.commit();
+    f.gather_file.commit();
+    // registered-mshr-write-buffer: the pop is applied now, so the freed slot
+    // is observable.
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);     // one freed
-    f.end_cycle();
 
     // Cycle 2: WB started with a free slot; secondary drain succeeds.
     f.cache.evaluate();
+    f.cache.commit();   // apply the secondary drain's MSHR free + WB push
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
     REQUIRE(f.cache.active_mshr_count() == 0); // secondary retired
     // WB grew by 1 (secondary pushed its line) but also loses any mem_if
@@ -928,4 +1024,63 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     // Registered tag array: drain_secondary_chain_head clears the pin into
     // next_tags_; pinned_line_count() (current_tags_) sees it after commit.
     REQUIRE(f.cache.pinned_line_count() == 0); // pin cleared
+}
+
+// ----------------------------------------------------------------------------
+// Case 14: registered-mshr-write-buffer Part A — direct MSHRFile tests.
+//          The MSHR file is double-buffered: allocate/free mutate
+//          next_entries_, readers scan current_entries_, commit() flips.
+// ----------------------------------------------------------------------------
+TEST_CASE("MSHRFile: a slot freed this cycle is not reusable until next cycle",
+          "[cache][mshr]") {
+    MSHRFile mshrs(2);
+    MSHREntry e;
+    e.cache_line_addr = 100;
+
+    int i0 = mshrs.allocate(e);
+    REQUIRE(i0 == 0);
+    mshrs.commit();
+    REQUIRE(mshrs.has_active());
+
+    // Free slot 0 this cycle (clears next_entries_[0]).
+    mshrs.seed_next();
+    mshrs.free(0);
+    // allocate() scans current_entries_, where slot 0 still reads valid — so
+    // a same-cycle allocation must NOT reuse slot 0.
+    int i1 = mshrs.allocate(e);
+    REQUIRE(i1 == 1);
+    mshrs.commit();
+
+    // Next cycle: slot 0's free is committed, so it is now reusable.
+    mshrs.seed_next();
+    REQUIRE(mshrs.has_free());
+    int i2 = mshrs.allocate(e);
+    REQUIRE(i2 == 0);
+}
+
+TEST_CASE("MSHRFile: a chain tail freed this cycle stays visible until commit",
+          "[cache][mshr]") {
+    MSHRFile mshrs(3);
+    MSHREntry p;
+    p.cache_line_addr = 50;
+
+    int pi = mshrs.allocate(p);
+    REQUIRE(pi == 0);
+    mshrs.commit();
+    REQUIRE(mshrs.find_chain_tail(50) == 0);
+
+    // Free the primary this cycle.
+    mshrs.seed_next();
+    mshrs.free(0);
+    // find_chain_tail scans current_entries_ — the just-freed primary is
+    // still a valid chain tail this cycle. (registered-tag-array.md Step 4's
+    // universal fill-conflict retry is what keeps this from being a hazard:
+    // no command reaches find_chain_tail in a cycle a primary is freed.)
+    REQUIRE(mshrs.find_chain_tail(50) == 0);
+    mshrs.commit();
+
+    // Next cycle: the free is committed; the line has no chain tail.
+    mshrs.seed_next();
+    REQUIRE(mshrs.find_chain_tail(50) == -1);
+    REQUIRE(mshrs.has_free());
 }

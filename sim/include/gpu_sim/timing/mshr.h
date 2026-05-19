@@ -37,34 +37,46 @@ struct MSHREntry {
     bool is_secondary = false;
 };
 
+// Registered (double-buffered) MSHR file. Readers scan the committed
+// `current_entries_`; writers (allocate / free / chain-link) mutate
+// `next_entries_`; `commit()` flips. A slot freed this cycle is therefore
+// not reusable until the next cycle, and a chain tail freed this cycle is
+// still visible to a same-cycle `find_chain_tail`. The L1 cache drives
+// `seed_next()` / `commit()` from its own evaluate-top / commit hooks.
 class MSHRFile {
 public:
     explicit MSHRFile(uint32_t num_entries);
 
-    // Returns MSHR index, or -1 if no free entry
+    // Returns MSHR index, or -1 if no free entry. Scans current_entries_ for
+    // the free slot, writes the entry into next_entries_ (registered).
     int allocate(const MSHREntry& entry);
 
-    // Free an MSHR entry
+    // Free an MSHR entry — clears the valid bit in next_entries_.
     void free(uint32_t index);
 
-    // Access by index
-    MSHREntry& at(uint32_t index) { return entries_[index]; }
-    const MSHREntry& at(uint32_t index) const { return entries_[index]; }
+    // Access by index. current_at: committed read (REGISTERED). next_at:
+    // mutable write into the next-state slot (e.g. a chain-link write).
+    const MSHREntry& current_at(uint32_t index) const { return current_entries_[index]; }
+    MSHREntry& next_at(uint32_t index) { return next_entries_[index]; }
 
     bool has_free() const;
     bool has_active() const;
 
-    // Linear scan over valid entries matching `line_addr`. Returns the MSHR
-    // index of the chain tail (the entry whose `next_in_chain == INVALID_MSHR`)
-    // for this line, or -1 if no MSHR currently holds this line.
+    // Linear scan over valid committed entries matching `line_addr`. Returns
+    // the MSHR index of the chain tail (the entry whose `next_in_chain ==
+    // INVALID_MSHR`) for this line, or -1 if no MSHR currently holds it.
     int find_chain_tail(uint32_t line_addr) const;
     uint32_t num_entries() const { return num_entries_; }
 
+    // Double-buffer lifecycle, driven by L1Cache.
+    void seed_next();   // next_entries_ = current_entries_ (top of tick)
+    void commit();      // current_entries_ = next_entries_ (cycle boundary)
     void reset();
 
 private:
     uint32_t num_entries_;
-    std::vector<MSHREntry> entries_;
+    std::vector<MSHREntry> current_entries_;
+    std::vector<MSHREntry> next_entries_;
 };
 
 } // namespace gpu_sim

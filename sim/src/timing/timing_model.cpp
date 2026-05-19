@@ -811,7 +811,7 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     }
 
     for (uint32_t i = 0; i < cache_->mshrs().num_entries(); ++i) {
-        const auto& entry = cache_->mshrs().at(i);
+        const auto& entry = cache_->mshrs().current_at(i);
         if (!entry.valid) {
             continue;
         }
@@ -821,7 +821,7 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     }
 
     if (cache_->current_pending_fill().valid) {
-        const auto& entry = cache_->mshrs().at(cache_->current_pending_fill().response.mshr_id);
+        const auto& entry = cache_->mshrs().current_at(cache_->current_pending_fill().response.mshr_id);
         WarpRestReason reason = entry.is_store ? WarpRestReason::WAIT_L1_WRITE_BUFFER
                                                : WarpRestReason::WAIT_MEMORY_RESPONSE;
         WarpTraceState state = entry.is_store ? WarpTraceState::AT_REST

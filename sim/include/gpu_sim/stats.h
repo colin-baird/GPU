@@ -89,6 +89,9 @@ struct Stats {
     // Cycles a write-through enqueue was refused because the global
     // outstanding-write cap (max_outstanding_writes) was reached.
     uint64_t write_throttle_stall_cycles = 0;
+    // Cycles a write-through enqueue was refused because the single
+    // write-buffer enqueue port was already claimed this cycle.
+    uint64_t write_buffer_port_conflict_cycles = 0;
 
     // Writeback. Phase 10B.3: fixed_writeback_preempted_cycles counts cycles a
     // fixed-latency writeback was held off because a variable-latency load

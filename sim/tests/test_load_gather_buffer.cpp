@@ -167,10 +167,15 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // evaluate between issues drains the previous request into
     // in_flight_ before the next set_next_read_request would overwrite
     // the staging slot.
+    // registered-mshr-write-buffer: each miss allocates an MSHR into
+    // next_entries_; cache.commit() between issues flips it into
+    // current_entries_ so the next allocate() scans a consistent file and
+    // picks a fresh free slot (without it every allocate would reuse slot 0).
     for (uint32_t lane = 1; lane < WARP_SIZE; ++lane) {
         uint32_t addr = static_cast<uint32_t>(lane) * LINE_SIZE * 100;
         uint32_t mask = 1u << lane;
         REQUIRE(cache.process_load(addr, 0, mask, values, 1, 0, 0));
+        cache.commit();
         mem_if.commit();
         mem_if.evaluate();
         gather_file.commit();

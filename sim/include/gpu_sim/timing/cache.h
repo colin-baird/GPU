@@ -8,6 +8,7 @@
 #include "gpu_sim/stats.h"
 #include <vector>
 #include <deque>
+#include <optional>
 
 namespace gpu_sim {
 
@@ -197,11 +198,15 @@ private:
     // True when the global enqueued-but-unacked write-through count is at the
     // max_outstanding_writes ceiling. Reads the REGISTERED current_ scalar.
     bool outstanding_writes_at_cap() const;
-    // Single wrapper for all write-buffer enqueues: pushes the line into the
-    // write buffer and bumps the per-set and global outstanding-write
-    // counters (both into next_). Callers must confirm admission (write-
-    // buffer depth AND outstanding_writes_at_cap()) before invoking it.
-    void queue_write_through(uint32_t line_addr);
+    // Single, fallible wrapper for all write-buffer enqueues. The write
+    // buffer has one enqueue port per cycle: the first caller claims it and
+    // stages the push (applied at commit()) plus the per-set / global
+    // outstanding-write counter increments, returning true; a later caller
+    // this cycle finds the port claimed and returns false without staging
+    // anything. Callers must confirm admission (write-buffer depth AND
+    // outstanding_writes_at_cap()) before invoking it, and must perform any
+    // tag install / MSHR free / pin clear only on a true return.
+    bool queue_write_through(uint32_t line_addr);
 
     uint32_t cache_size_;
     uint32_t line_size_;
@@ -214,7 +219,17 @@ private:
     std::vector<CacheTag> current_tags_;
     std::vector<CacheTag> next_tags_;
     MSHRFile mshrs_;
-    std::deque<uint32_t> write_buffer_;  // Queue of line addresses to write back
+    // REGISTERED, single-enqueue-port FIFO of line addresses to write back.
+    // write_buffer_ is mutated ONLY by commit(): evaluate-phase reads see the
+    // committed deque. next_write_buffer_port_claimed_ is the per-cycle
+    // enqueue-port claim (first writer wins; cleared at commit, modeled on
+    // LoadGatherBufferFile's port-claim flag). next_write_buffer_push_ holds
+    // the <=1 staged enqueue; next_write_buffer_pop_ the staged drain. commit()
+    // applies pop-then-push and clears all three.
+    std::deque<uint32_t> write_buffer_;
+    bool next_write_buffer_port_claimed_ = false;
+    std::optional<uint32_t> next_write_buffer_push_;
+    bool next_write_buffer_pop_ = false;
     uint32_t write_buffer_depth_;
     uint32_t max_outstanding_writes_;
     ExternalMemoryInterface& mem_if_;
