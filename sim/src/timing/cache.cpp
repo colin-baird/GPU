@@ -428,14 +428,22 @@ void L1Cache::drain_secondary_chain_head() {
         uint32_t addr = line_addr * line_size_;
         uint32_t set = get_set(addr);
         uint32_t tag = get_tag(addr);
-        // drain_secondary_chain_head is part of the in-evaluate fill/drain
-        // machinery: it must see complete_fill's same-cycle install, so it
-        // reads (and writes) next_tags_. Reading current_tags_ here would
-        // delay every chain drain by a cycle — a shift plan 1 does not
-        // predict. (registered-tag-array.md Step 2 omits this read site;
-        // Step 3 routes its pin-clear write to next_tags_.)
-        if (!next_tags_[set].valid || next_tags_[set].tag != tag ||
-            !next_tags_[set].pinned) {
+        // Registered tag array: read current_tags_, like every other tag
+        // reader (registered-tag-array.md Step 2). The pin-clear further
+        // down is the write side and targets next_tags_ (Step 3).
+        //
+        // A secondary of the line whose primary fills THIS cycle cannot
+        // drain in the fill cycle regardless of which slot is read: the
+        // registered MSHR file keeps the primary valid in current_entries_
+        // until commit, so the head-detection scan below never sees a
+        // secondary become the chain head until the primary is
+        // committed-free (T+1). next_tags_ here would therefore observe
+        // complete_fill's same-cycle install but the drain is gated anyway —
+        // reading current_tags_ is observationally identical and is the
+        // discipline-correct choice (no same-cycle read of a registered
+        // next_ write).
+        if (!current_tags_[set].valid || current_tags_[set].tag != tag ||
+            !current_tags_[set].pinned) {
             continue;
         }
 

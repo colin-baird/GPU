@@ -11,6 +11,13 @@ int MSHRFile::allocate(const MSHREntry& entry) {
     // Scan committed state for a free slot: a slot freed this cycle (cleared
     // in next_entries_) still reads valid in current_entries_, so it is not
     // reused until the next cycle — the registered-file semantics.
+    //
+    // INVARIANT: at most one allocate() per tick. The scan reads
+    // current_entries_ but the write lands in next_entries_, so two
+    // allocate() calls in one tick would both select the same slot and the
+    // second would clobber the first. This holds because L1Cache processes
+    // at most one command (one process_load / process_store) per evaluate();
+    // a future multi-command path would have to arbitrate allocations.
     for (uint32_t i = 0; i < num_entries_; ++i) {
         if (!current_entries_[i].valid) {
             next_entries_[i] = entry;
