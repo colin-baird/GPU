@@ -6,9 +6,28 @@ violations of the rules documented in
 `/resources/cpp_coding_standard.md` § Cross-stage accessor naming and
 `/resources/timing_discipline.md`.
 
-Five checks run in order. The first four are header-naming checks; the
-fifth is a libclang-driven static-analysis pass over the `.cpp`
-translation units.
+Seven checks run in order. The first six are header-checks; the seventh
+is a libclang-driven static-analysis pass over the `.cpp` translation
+units.
+
+The two state-shape rules introduced with the `reg.h` migration (final
+phase of `project-plans/shiny-meandering-pine.md`):
+
+  *No raw current_/next_ field pair* — if a class declares both
+  `current_<NAME>_` and `next_<NAME>_` as member fields, the lint
+  rejects the pair and points at the canonical primitives in
+  `sim/include/gpu_sim/timing/reg.h`. Lone `next_<NAME>_` (e.g.
+  `LdStUnit::next_push_` documented staging slot, `MSHREntry::next_in_chain`
+  struct link) and lone `current_<NAME>_` are intentionally legal.
+
+  *Every Reg<>/RegFifo<> member must be enrolled* — every
+  `Reg<>` / `RegFifo<>` member of a `RegisteredStage`-derived class
+  must appear in a `register_state(&<NAME>, ...)` call (in the header's
+  inline constructor body OR the corresponding `.cpp` constructor). A
+  Reg/RegFifo member whose owning class does NOT derive
+  `RegisteredStage` is also flagged (the mixin is mandatory for
+  registers). `Wire<>` is exempt: a `Wire` is not a `RegBase`, has no
+  committed twin, and is reset/driven inline by its producer.
 
   *Prefix layer* — every public const member function returning `bool`,
   `std::optional<…>`, a payload struct, or a payload reference must
@@ -326,6 +345,8 @@ class ClassInfo:
     # (name, line, return_type, access)
     fields: list[tuple[str, int, str, str]] = field(default_factory=list)
     # (name, line, type, access)
+    bases: list[str] = field(default_factory=list)
+    # base class names captured from the class header line
 
 
 # Regex to capture a public const accessor's signature. Captures:
@@ -370,8 +391,44 @@ FIELD_RE = re.compile(
     re.VERBOSE,
 )
 
-# Class/struct opener.
+# Class/struct opener. Captures the class name; the caller filters out
+# forward declarations (`class Foo;` — no `{` or inheritance `:`) so
+# they don't shadow the real definition that follows.
 CLASS_OPEN_RE = re.compile(r"^\s*(?:class|struct)\s+([A-Za-z_]\w*)\b")
+
+# Inheritance list parse: captures the base names from a class header
+# line (`class Foo : public Bar, protected Baz {`). We tolerate
+# trailing `{` or end-of-line (multi-line inheritance list).
+INHERITANCE_RE = re.compile(
+    r":\s*((?:(?:public|protected|private|virtual)\s+)*"
+    r"[A-Za-z_:][\w:]*"
+    r"(?:\s*,\s*(?:(?:public|protected|private|virtual)\s+)*"
+    r"[A-Za-z_:][\w:]*)*)"
+)
+
+
+def _extract_bases(header_line: str) -> list[str]:
+    """Return the base class names listed on a class header line.
+
+    Strips access-specifier keywords (`public`, `protected`, `private`,
+    `virtual`) and namespace qualifications, leaving just the leaf
+    type name (`RegisteredStage` from `public gpu_sim::RegisteredStage`).
+    """
+    m = INHERITANCE_RE.search(header_line)
+    if not m:
+        return []
+    bases: list[str] = []
+    for chunk in m.group(1).split(","):
+        chunk = chunk.strip()
+        # Strip leading access / virtual keywords.
+        chunk = re.sub(
+            r"^(?:(?:public|protected|private|virtual)\s+)+", "", chunk
+        )
+        # Strip namespace qualification.
+        chunk = chunk.split("::")[-1]
+        if chunk:
+            bases.append(chunk)
+    return bases
 
 
 def _strip_comments(text: str) -> str:
@@ -404,15 +461,37 @@ def _parse_header(path: Path) -> list[ClassInfo]:
         # Skip preprocessor and pure comment lines for class detection.
         compact = _strip_comments(raw)
 
-        # Track class entry.
+        # Track class entry. Skip pure forward declarations
+        # (`class Foo;`) — they have no `{` and no inheritance `:` on the
+        # line and would otherwise shadow the real definition that
+        # follows in the same header (e.g. `class WritebackArbiter;`
+        # at the top of alu_unit.h before `class ALUUnit { ... };`).
+        #
+        # We parse ALL classes (not only TIMING_MODULES) so the
+        # state-shape checks can inspect Reg-bearing helper classes
+        # like MSHRFile. The existing prefix/postfix/polarity/field-
+        # shape checks filter by TIMING_MODULES on their own.
         if cls is None:
             m = CLASS_OPEN_RE.match(compact)
-            if m and m.group(1) in TIMING_MODULES:
-                cls = ClassInfo(name=m.group(1), start_line=i + 1)
-                cls_brace_open = None
-                # Default access depends on keyword.
-                kw = compact.split()[0]
-                access = "public" if kw == "struct" else "private"
+            if m:
+                is_forward_decl = ("{" not in compact
+                                   and ":" not in compact
+                                   and compact.rstrip().endswith(";"))
+                if not is_forward_decl:
+                    cls = ClassInfo(name=m.group(1), start_line=i + 1)
+                    cls_brace_open = None
+                    # Default access depends on keyword.
+                    kw = compact.split()[0]
+                    access = "public" if kw == "struct" else "private"
+                    # Capture base classes — header line may continue
+                    # onto subsequent lines until the opening brace, so
+                    # join until we see `{`.
+                    header_chunk = compact
+                    j = i
+                    while "{" not in header_chunk and j + 1 < len(lines):
+                        j += 1
+                        header_chunk += " " + _strip_comments(lines[j])
+                    cls.bases = _extract_bases(header_chunk)
         # Track brace depth & access transitions inside an open class.
         if cls is not None:
             opens = compact.count("{")
@@ -611,6 +690,176 @@ def _check_field_shape(cls: ClassInfo, header: list[str], path: Path,
             ))
 
 
+# Detect Reg<...> / RegFifo<...> type spellings on a field declaration.
+# Matches the leading word of the field type string captured by FIELD_RE.
+_REG_TYPE_RE = re.compile(r"\bReg\s*<")
+_REGFIFO_TYPE_RE = re.compile(r"\bRegFifo\s*<")
+
+
+def _is_reg_field(type_: str) -> bool:
+    """Return True iff the field's type is a Reg<T> or RegFifo<T>."""
+    return bool(_REG_TYPE_RE.search(type_) or _REGFIFO_TYPE_RE.search(type_))
+
+
+def _check_no_raw_current_next_pair(
+    cls: ClassInfo, header: list[str], path: Path,
+    findings: list[Finding],
+) -> None:
+    """State-shape rule (1): raw `current_X_` / `next_X_` field pair is
+    forbidden.
+
+    If a class declares both `current_<NAME>_` and `next_<NAME>_` as
+    member fields, this is the pre-`Reg<T>` hand-rolled double buffer
+    that the migration replaced. Use `Reg<T>` (clock-edge register),
+    `RegFifo<T>` (commit-disciplined FIFO), or `Wire<T>` (combinational
+    backward signal) — see `sim/include/gpu_sim/timing/reg.h`.
+
+    Lone `next_<NAME>_` is intentionally legal: it is the documented
+    staging-slot pattern (`LdStUnit::next_push_`) or a struct chain-link
+    field (`MSHREntry::next_in_chain`). Lone `current_<NAME>_` is also
+    legal — no current sites in the tree, but it would be unusual rather
+    than wrong.
+    """
+    currents: dict[str, tuple[int, str]] = {}  # base name -> (line, access)
+    nexts: set[str] = set()
+    for (name, line, _type, access) in cls.fields:
+        if name.startswith("current_") and name.endswith("_"):
+            base = name[len("current_"):-1]
+            if base:
+                currents[base] = (line, access)
+        elif name.startswith("next_") and name.endswith("_"):
+            base = name[len("next_"):-1]
+            if base:
+                nexts.add(base)
+    for base, (line, _access) in currents.items():
+        if base not in nexts:
+            continue
+        if _allowed_on_line(header[line - 1]):
+            continue
+        findings.append(Finding(
+            file=path, line=line, rule="state-shape",
+            message=(
+                f"{cls.name}::current_{base}_ / next_{base}_ — raw "
+                f"current_/next_ field pair is forbidden; use "
+                f"`Reg<T> {base}_` (or `RegFifo<T>` for a commit-"
+                f"disciplined FIFO, `Wire<T>` for a combinational "
+                f"backward signal). See "
+                f"sim/include/gpu_sim/timing/reg.h."
+            ),
+        ))
+
+
+# Class-body `register_state(&a, &b, ...)` call. Captures the argument
+# list between the parentheses; the caller pulls out the `&name`
+# identifiers. We tolerate a multi-line argument list (the cache's
+# `register_state(...)` spans three lines).
+_REGISTER_STATE_CALL_RE = re.compile(
+    r"register_state\s*\(([^;]*?)\)\s*;", re.DOTALL
+)
+_REGISTER_STATE_ARG_RE = re.compile(r"&\s*([A-Za-z_]\w*)")
+
+
+def _collect_register_state_args(text: str) -> set[str]:
+    """Return the union of `&name` identifiers from every
+    `register_state(...)` call in `text`. Strips // and /* */
+    comments first so a commented-out `// register_state(&foo_);`
+    does not satisfy enrollment."""
+    text = _strip_comments(text)
+    args: set[str] = set()
+    for call_match in _REGISTER_STATE_CALL_RE.finditer(text):
+        for arg_match in _REGISTER_STATE_ARG_RE.finditer(call_match.group(1)):
+            args.add(arg_match.group(1))
+    return args
+
+
+def _header_to_cpp_path(header_path: Path) -> Path | None:
+    """Map a timing header path to its corresponding `.cpp` source.
+
+    `sim/include/gpu_sim/timing/<X>.h` -> `sim/src/timing/<X>.cpp`.
+    Returns `None` if the `.cpp` does not exist (header-only class).
+    """
+    parts = list(header_path.parts)
+    try:
+        idx = parts.index("include")
+    except ValueError:
+        return None
+    # Replace `.../include/gpu_sim/timing/<X>.h` with
+    # `.../src/timing/<X>.cpp`.
+    if idx + 3 >= len(parts):
+        return None
+    if parts[idx + 1] != "gpu_sim" or parts[idx + 2] != "timing":
+        return None
+    new_parts = (parts[:idx] + ["src", "timing"]
+                 + [parts[idx + 3].replace(".h", ".cpp")])
+    cpp = Path(*new_parts)
+    return cpp if cpp.exists() else None
+
+
+def _check_reg_members_enrolled(
+    cls: ClassInfo, header: list[str], path: Path,
+    findings: list[Finding],
+) -> None:
+    """State-shape rule (2): every Reg<>/RegFifo<> member must be
+    enrolled via `register_state(&<NAME>, ...)`.
+
+    A class with Reg / RegFifo members MUST also derive
+    `RegisteredStage` so the mixin's `seed_all()` / `commit_all()` /
+    `reset_all()` loops drive them. The enrollment call may live in
+    the header (inline constructor body) or in the corresponding
+    `.cpp` constructor; we look at the union of both.
+
+    `Wire<>` is NOT subject to this rule. A `Wire` is not a `RegBase`,
+    has no committed twin, and is reset/driven inline by its producer
+    — registering it would be a category error.
+    """
+    reg_fields = [
+        (name, line, type_) for (name, line, type_, _access) in cls.fields
+        if _is_reg_field(type_)
+    ]
+    if not reg_fields:
+        return
+
+    # Union of `register_state(&...)` arguments from the header and the
+    # corresponding `.cpp` (if it exists). The header may carry an
+    # inline constructor body (e.g. Scoreboard, MultiplyUnit); the
+    # `.cpp` carries out-of-line constructor bodies.
+    enrolled = _collect_register_state_args("\n".join(header))
+    cpp_path = _header_to_cpp_path(path)
+    if cpp_path is not None:
+        enrolled |= _collect_register_state_args(cpp_path.read_text())
+
+    derives_registered_stage = "RegisteredStage" in cls.bases
+
+    for (name, line, type_) in reg_fields:
+        if _allowed_on_line(header[line - 1]):
+            continue
+        if not derives_registered_stage:
+            findings.append(Finding(
+                file=path, line=line, rule="state-shape",
+                message=(
+                    f"{cls.name}::{name} — Reg<T> / RegFifo<T> member "
+                    f"lives in a class that does not derive "
+                    f"`RegisteredStage`; add `public RegisteredStage` "
+                    f"to the class header and enroll the member via "
+                    f"register_state(&{name}, ...) in the constructor "
+                    f"body so seed_all() / commit_all() / reset_all() "
+                    f"drive it."
+                ),
+            ))
+            continue
+        if name not in enrolled:
+            findings.append(Finding(
+                file=path, line=line, rule="state-shape",
+                message=(
+                    f"{cls.name}::{name} — Reg<T> / RegFifo<T> member "
+                    f"is not enrolled via register_state(); add it to "
+                    f"a register_state(&{name}, ...) call in the "
+                    f"constructor body so seed_all() / commit_all() / "
+                    f"reset_all() drive it."
+                ),
+            ))
+
+
 def lint_header(path: Path) -> list[Finding]:
     """Lint a single header file and return findings."""
     findings: list[Finding] = []
@@ -618,10 +867,19 @@ def lint_header(path: Path) -> list[Finding]:
     lines = text.splitlines()
     classes = _parse_header(path)
     for cls in classes:
-        _check_prefix(cls, lines, path, findings)
-        _check_postfix(cls, lines, path, findings)
-        _check_polarity(cls, lines, path, findings)
-        _check_field_shape(cls, lines, path, findings)
+        # Existing prefix/postfix/polarity/field-shape checks are
+        # scoped to the pipeline-module set.
+        if cls.name in TIMING_MODULES:
+            _check_prefix(cls, lines, path, findings)
+            _check_postfix(cls, lines, path, findings)
+            _check_polarity(cls, lines, path, findings)
+            _check_field_shape(cls, lines, path, findings)
+        # State-shape checks (raw current_/next_ pair forbidden; every
+        # Reg / RegFifo member must be enrolled via register_state)
+        # apply to every class that holds state, including Reg-bearing
+        # helper classes like MSHRFile.
+        _check_no_raw_current_next_pair(cls, lines, path, findings)
+        _check_reg_members_enrolled(cls, lines, path, findings)
     return findings
 
 

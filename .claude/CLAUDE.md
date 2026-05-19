@@ -28,6 +28,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Untested Changes Log:** [/UNTESTED.md](/UNTESTED.md) — tracker for changes that passed regression but lack targeted test coverage
 - **Onboarding Guide:** [/resources/onboarding.md](/resources/onboarding.md) — introduction to the project, codebase map, build/test/run instructions, and workflow overview for new contributors
 - **Refactor Workflow:** [/resources/refactor_workflow.md](/resources/refactor_workflow.md) — phased checklist for behavior-preserving multi-step refactors (regression-as-contract, consolidation review, no test-authoring round). Distinct from `multi-agent-workflow`, which is shaped for feature additions.
+- **Reg Fidelity Audit:** [/project-plans/reg-fidelity-audit.md](/project-plans/reg-fidelity-audit.md) — follow-up checklist enumerating every cross-stage / latch-point `Reg::next()` read in the timing model, each to be classified as a legitimate intra-stage staged read or a genuine same-cycle hazard to convert to `current()`. Produced by the `reg.h` migration's final phase; the audit itself is a separate task.
 
 ## Project Structure
 

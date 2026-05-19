@@ -145,45 +145,48 @@ Closing braces get `// namespace gpu_sim` comments.
 **Member ordering in classes**:
 
 ```cpp
-class WarpScheduler : public PipelineStage {
+class WarpScheduler : public PipelineStage, public RegisteredStage {
 public:
-    // Type aliases
-    using UnitReadyFn = std::function<bool(ExecUnit)>;
-
     // Constructor
     WarpScheduler(uint32_t num_warps, WarpState* warps, Scoreboard& scoreboard,
                   FunctionalModel& func_model, Stats& stats);
 
     // Public interface (grouped by purpose)
+    void seed_next() override;
     void evaluate() override;
     void commit() override;
     void reset() override;
 
-    void set_opcoll_free(bool free) { opcoll_free_ = free; }
-    void set_unit_ready_fn(UnitReadyFn fn) { unit_ready_fn_ = std::move(fn); }
-
-    std::optional<IssueOutput>& output() { return next_output_; }
-    const std::optional<IssueOutput>& current_output() const { return current_output_; }
+    // Cross-stage / cross-cycle read of the committed slot (REGISTERED
+    // forward edge to OperandCollector).
+    const std::optional<IssueOutput>& current_output() const {
+        return output_.current();
+    }
 
 private:
     // Private helpers
     bool is_scoreboard_clear(WarpId warp, const DecodedInstruction& d) const;
 
-    // State (dependencies first, then owned state)
-    uint32_t num_warps_;
-    WarpState* warps_;
-    Scoreboard& scoreboard_;
-    FunctionalModel& func_model_;
-    Stats& stats_;
+    // Dependencies (config / back-pointers) first
+    uint32_t num_warps_;           // config
+    WarpState* warps_;             // config (back-pointer)
+    Scoreboard& scoreboard_;       // config (back-pointer)
+    FunctionalModel& func_model_;  // config (back-pointer)
+    Stats& stats_;                 // config (back-pointer)
 
-    uint32_t rr_pointer_ = 0;
-    bool opcoll_free_ = true;
-    UnitReadyFn unit_ready_fn_;
-
-    std::optional<IssueOutput> current_output_;
-    std::optional<IssueOutput> next_output_;
+    // State primitives — every state-holding member is exactly one of
+    // Reg<T> (clock-edge register), RegFifo<T> (commit-disciplined FIFO),
+    // or Wire<T> (combinational backward signal). Plain members must be
+    // annotated `// config`, `// sim-instrumentation`, or `// scratch`.
+    Reg<uint32_t> rr_pointer_;
+    Reg<std::optional<IssueOutput>> output_;
 };
 ```
+
+Hand-rolling a raw `current_X_` / `next_X_` field pair is forbidden — the
+lint (`tools/lint_timing_naming.py`) rejects it. See `reg.h` for the
+primitive APIs and the discipline contract in
+`/resources/timing_discipline.md` § State primitives.
 
 **Member ordering in structs**: Group related fields. Use in-class default initializers:
 

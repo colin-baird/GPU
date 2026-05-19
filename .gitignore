@@ -2,6 +2,7 @@
 /build/
 /build-codex/
 /build-review/
+/build_fixed/
 /sim/build/
 /runner/build/
 /tests/riscv-isa/build/
