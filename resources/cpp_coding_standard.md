@@ -538,6 +538,38 @@ ALU, whose execution slot is recomputed fresh each tick) implements
 `seed_next()` as an empty body — the interface still carries it for
 uniformity. Only fields that span a cycle boundary are seeded.
 
+### State primitives — `Reg<T>` / `RegFifo<T>` / `Wire<T>`
+
+The `current_*` / `next_*` / `seed_next()` / `commit()` shape above is
+hand-rolled per stage. New state does **not** hand-roll it — it uses the
+typed primitives in `sim/include/gpu_sim/timing/reg.h`, which make the
+discipline structural:
+
+- **`Reg<T>`** — a clock-edge register. `current()` is the committed
+  read; `set_next()` / `next_mut()` stage the new value; `commit()`
+  latches it; `seed()` re-establishes `next_ = current_`. The canonical
+  encoding of a REGISTERED field.
+- **`RegFifo<T>`** — a registered FIFO: `evaluate()` stages a push / pop
+  intent, `commit()` applies pop-then-push, `seed()` is a no-op.
+- **`Wire<T>`** — a COMBINATIONAL backward signal: `drive()` asserts,
+  `value()` reads, `reset()` (top of the producer's `evaluate()`)
+  de-asserts. No committed twin, no `commit()` — it is not a register.
+
+A class owning registers derives `RegisteredStage` and calls
+`register_state(&r1, &r2, ...)` once in its constructor body;
+`seed_all()` / `commit_all()` / `reset_all()` then drive every
+registered primitive, so a newly added field cannot be forgotten by
+`seed_next()` / `commit()`. A `commit()`-gated stall wraps the whole
+`commit_all()` — a stalled stage freezes every register together.
+
+**Every state-holding member of a timing-model class is exactly one of
+`Reg<T>`, `RegFifo<T>`, `Wire<T>`, or a plain member that is config
+(const after construction) or sim-instrumentation (an observational
+counter, annotated `// sim-instrumentation`).** A raw `current_*` /
+`next_*` field pair is a lint error; new REGISTERED state must be a
+`Reg<T>`. The accessor naming rules above still apply: a stage's public
+`current_*()` / `next_*()` accessors forward to the underlying primitive.
+
 ### `Stats` increments belong in `commit()`
 
 `Stats` counters are a non-hardware simulation artifact, not pipeline
@@ -560,10 +592,10 @@ body never runs on a stalled cycle and its increments stay safely in
 - **No combinational-forward edges.** A `next_*` cross-module read must
   flow backward (upstream reader). A forward `next_*` read collapses
   pipeline depth and is a hard violation.
-- **Use the `Scoreboard` pattern
-  (`sim/include/gpu_sim/timing/scoreboard.h`) as the canonical REGISTERED
-  reference.** New next/current pairs reuse its
-  `current_[]` / `next_[]` / `seed_next()` / `commit()` shape verbatim.
+- **New REGISTERED state uses the `reg.h` primitives** (`Reg<T>` /
+  `RegFifo<T>` / `Wire<T>` + `RegisteredStage`); see "State primitives"
+  above. Do not hand-roll a `current_*` / `next_*` field pair — the lint
+  rejects it.
 - **Pre-evaluate setters that latch live state from another stage**
   (e.g. `set_opcoll_free`, `set_decode_pending_warp`, `set_units_drained`,
   `set_unit_ready_fn`) are forbidden. Expose the signal as a

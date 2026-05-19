@@ -174,6 +174,27 @@ Top-level functional execution engine.
 
 ## Timing Model
 
+### `include/gpu_sim/timing/reg.h`
+
+State primitives for the timing model. Header-only. Make the
+double-buffer / combinational discipline structural so a same-cycle-visible
+mutation cannot be written by accident.
+
+- **`Reg<T>`**: a clock-edge register. `current()` committed read;
+  `set_next()` / `next_mut()` stage the new value; `commit()` latches
+  `next -> current`; `seed()` re-establishes `next_ = current_`.
+- **`RegFifo<T>`**: a commit-disciplined FIFO. `stage_push()` / `stage_pop()`
+  stage intents; `commit()` applies pop-then-push; `seed()` is a no-op;
+  single enqueue-port claim via `claim_port()` / `port_claimed()`.
+- **`Wire<T>`**: a combinational backward signal. `drive()` asserts,
+  `value()` reads, `reset()` de-asserts. No committed twin, no `commit()`.
+- **`RegBase`**: non-template base so heterogeneous registers share a list.
+- **`RegisteredStage`**: mixin holding the register list; `register_state()`
+  (called once in the owner's constructor body) enrolls each primitive;
+  `seed_all()` / `commit_all()` / `reset_all()` drive them uniformly.
+
+See `resources/timing_discipline.md` § State primitives.
+
 ### `include/gpu_sim/timing/pipeline_stage.h`
 
 Abstract base for pipeline stages. Header-only.
@@ -571,6 +592,7 @@ All tests use Catch2 v2.13.10 (single-header at `tests/vendor/catch.hpp`). Run f
 
 | File | Cases | Focus |
 |------|-------|-------|
+| `test_reg.cpp` | 13 | State primitives (`reg.h`): `Reg<T>` staged-vs-committed isolation, seed idempotence, stalled-cycle re-run, `next_mut` in-place mutation, reset; `RegFifo<T>` staged push/pop ordering, port claim; `Wire<T>` drive/reset; `RegisteredStage` uniform seed/commit/reset and gated-commit freeze. |
 | `test_decoder.cpp` | 27 | Every RV32IM + VDOT8 + TLOOKUP + ECALL/EBREAK/CSR encoding, including unsupported CSR/FENCE forms. |
 | `test_alu.cpp` | 30 | All ALU ops, MUL/DIV edge cases (overflow, div-by-zero), VDOT8 byte patterns, branch conditions. |
 | `test_functional.cpp` | 16 | End-to-end functional model: ADDI chains, x0 discard, load/store, branches, ECALL/EBREAK, CSR, VDOT8, TLOOKUP, kernel args, multi-warp independence. |

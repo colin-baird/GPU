@@ -181,6 +181,42 @@ sequenced first in the evaluate sweep, so the five units, the operand
 collector (in their `commit()`), and the scheduler (in its `evaluate()`)
 all read this cycle's fresh value.
 
+## State primitives (`reg.h`)
+
+The classifications above are *encoded* by three typed primitives in
+`sim/include/gpu_sim/timing/reg.h`. They make the discipline structural:
+a same-cycle-visible mutation cannot be written by accident.
+
+| Classification | Primitive | Encoding |
+|----------------|-----------|----------|
+| REGISTERED (`current_*`) | `Reg<T>` | `current()` committed read; `set_next()`/`next_mut()` stage; `commit()` latches; `seed()` re-establishes `next_ = current_` |
+| REGISTERED FIFO | `RegFifo<T>` | `current()` committed deque; `stage_push()`/`stage_pop()` stage intents; `commit()` applies pop-then-push; `seed()` is a no-op |
+| COMBINATIONAL backward (`next_*`) | `Wire<T>` | `drive()` asserts; `value()` reads; `reset()` (top of producer's `evaluate()`) de-asserts. No committed twin, no `commit()` |
+
+A class owning registers derives `RegisteredStage` and calls
+`register_state(&r1, &r2, ...)` once in its constructor body.
+`seed_all()` / `commit_all()` / `reset_all()` then drive every
+registered primitive — a newly added field cannot be forgotten. A
+`commit()`-gated stall wraps the **whole** `commit_all()`: a stalled
+stage freezes every register together, and the unconditional
+`seed_all()` (run in `tick()`'s seed phase) keeps the stalled
+re-evaluation idempotent.
+
+`Reg::current()` is the only cross-stage / cross-cycle read.
+`Reg::next()` is an *intra-stage* staged read (a producer reading back a
+value it staged earlier this `evaluate()`); a cross-module `next()` read
+is the forbidden combinational-forward edge and is lint-enforced. A
+stage's public `current_*()` / `next_*()` accessors forward to the
+underlying primitive, so the accessor surface and naming rules below are
+unchanged.
+
+**Deliberate non-registers.** Two kinds of state are *not* wrapped:
+*sim-instrumentation* — observational counters with no clocked-hardware
+meaning (e.g. `dramsim3` `fabric_cycle_` / `dram_ticks_` / peak-queue
+counters, the monotonic FIFO-occupancy accumulators) — and the
+documented one-shot `ALUUnit::branch_resolved_`. These stay plain
+members, annotated `// sim-instrumentation`, exempt from the lint.
+
 ## Postfix design language
 
 After the cycle prefix, every cross-stage accessor falls into one of
