@@ -29,9 +29,9 @@ public:
     // Phase 10B.0.5: LdSt is a full seed_next participant. Address generation
     // is multi-cycle — while an addr-gen op is in flight evaluate() consumes
     // busy_/cycles_remaining_/pending_entry_ from the prior cycle — so these
-    // are genuine carry-forward. Phase 3: seed_all() seeds those three Regs;
-    // the addr_gen_fifo_ RegFifo's seed() is a no-op (the committed deque is
-    // the only state), so the call is equivalent to today's per-field seeding.
+    // are genuine carry-forward. Phase 3: seed_all() re-establishes them at
+    // tick top. addr_gen_fifo_ / next_push_ are plain deque + optional and not
+    // part of the RegisteredStage list (see public-section comment below).
     void seed_next() override { seed_all(); }
     void evaluate() override;
     void commit() override;

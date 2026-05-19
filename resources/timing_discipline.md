@@ -370,51 +370,62 @@ buffer.
 
 ## Reference implementation
 
-`Scoreboard` (`sim/include/gpu_sim/timing/scoreboard.h`) is the gold
-standard for the REGISTERED pattern. Every new next/current pair in the
-timing model should follow this shape verbatim:
+`Scoreboard` (`sim/include/gpu_sim/timing/scoreboard.h`) is the canonical
+example of the REGISTERED pattern expressed via the `reg.h` primitives:
+the whole per-warp bit array lives in a single `Reg<ScoreboardBits>`,
+the class derives `RegisteredStage` and enrolls that register via
+`register_state(&bits_)`, and `seed_next()` / `commit()` / `reset()`
+delegate to `seed_all()` / `commit_all()` / `reset_all()`.
 
 ```cpp
-class Scoreboard {
+struct ScoreboardBits {
+    bool pending[MAX_WARPS][NUM_REGS] = {};
+};
+
+class Scoreboard : public RegisteredStage {
 public:
-    // Reads of committed state.
+    Scoreboard() { register_state(&bits_); reset(); }
+
+    void reset() { reset_all(); }
+
     bool current_pending(WarpId warp, RegIndex reg) const {
         if (reg == 0) return false;
-        return current_[warp][reg];
+        return bits_.current().pending[warp][reg];
     }
-
-    // Writes go to next_ only.
     void set_pending(WarpId warp, RegIndex reg) {
         if (reg == 0) return;
-        next_[warp][reg] = true;
+        bits_.next_mut().pending[warp][reg] = true;
     }
     void clear_pending(WarpId warp, RegIndex reg) {
         if (reg == 0) return;
-        next_[warp][reg] = false;
+        bits_.next_mut().pending[warp][reg] = false;
     }
 
-    void seed_next() { std::memcpy(next_, current_, sizeof(next_)); }
-    void commit()    { std::memcpy(current_, next_, sizeof(current_)); }
+    void seed_next() { seed_all(); }
+    void commit()    { commit_all(); }
 
 private:
-    bool current_[MAX_WARPS][NUM_REGS];
-    bool next_[MAX_WARPS][NUM_REGS];
+    Reg<ScoreboardBits> bits_;
 };
 ```
 
 Key invariants:
 
-- All reads return `current_*`.
-- All writes go to `next_*`.
-- `seed_next()` is called at the top of every cycle before any writes,
-  so unmodified bits carry forward.
-- `commit()` is the sole operation that flips state.
+- All cross-cycle / cross-stage reads use `Reg::current()`.
+- All staged writes use `Reg::set_next()` / `Reg::next_mut()`.
+- `seed_next()` (via `seed_all()`) re-establishes `next_ = current_` at
+  the top of every cycle so a stalled re-evaluated cycle is idempotent.
+- `commit()` (via `commit_all()`) is the sole operation that flips state.
 
-`FetchStage::next_output_`/`current_output_` and
-`WarpScheduler::next_diagnostics_`/`current_diagnostics_` are existing
-precedents for double-buffering an `std::optional` payload and a
-fixed-size array, respectively. New REGISTERED signals introduced by the
-phasing below reuse those idioms.
+Other shapes the primitives cover: `Reg<std::optional<…>>` for payload
+slots (`FetchStage::output_`, `DecodeStage::pending_`,
+`WarpScheduler::output_`); `Reg<std::array<…, MAX_WARPS>>` for per-warp
+arrays (`BranchShadowTracker::shadow_`); `Reg<std::deque<…>>` for
+pipelined stages (`MultiplyUnit::pipeline_`). Commit-disciplined FIFOs
+whose push and pop live in *one* owning stage use `RegFifo<T>`;
+combinational backward signals use `Wire<T>`. Hand-rolling a raw
+`current_*` / `next_*` field pair is a lint error
+(`tools/lint_timing_naming.py`).
 
 ## New module checklist
 
@@ -457,7 +468,7 @@ it.
 | 2 | `DecodeStage::current_pending_warp()` | `FetchStage::evaluate` (direct accessor read; the `set_decode_pending_warp` setter has been deleted) | optional warp id of decode's pending entry | **REGISTERED** | back-pressure | same tick order as row 1; fetch holds a `DecodeStage*` wired by `TimingModel` | compliant (Phase 3) | 3 |
 | 3 | `OperandCollector::current_busy()` (`const` accessor reading `current_busy_`) | panic-drain query only (`execution_units_drained()`, row 14) — **no longer read by `WarpScheduler`** | `bool` opcoll-busy flag | **REGISTERED** | back-pressure | Phase 10B.0 removed the scheduler's `opcoll_->current_busy()` issue-gating poll; the scheduler now predicts operand-collector occupancy internally via the `opcoll_cooldown_cycles_` countdown. `current_busy()` survives only for the panic-drain query (row 14). | compliant (Phase 10B.0) | 4, 10B.0 |
 | 4 | `LdStUnit::current_fifo_size()` / `current_fifo_total_pushes()` (REGISTERED committed-state accessors); each other `ExecutionUnit::current_busy()` | `WarpScheduler::evaluate` reads the LdSt FIFO accessors for the event-driven LDST FIFO-occupancy issue gate; the per-unit `current_busy()` poll is **no longer read by the scheduler** (panic-drain query only, row 14) | LDST FIFO-occupancy counters / per-unit busy bit | **REGISTERED** | back-pressure | Phase 10B.0 removed the scheduler's `unit->current_busy()` issue-gating poll; the scheduler now predicts unit availability internally via the `unit_busy_[]` iteration-latency countdown and the binding writeback bitmap. The only surviving scheduler→unit cross-stage read is the REGISTERED LDST FIFO-occupancy accounting; each unit's `current_busy()` survives only for the panic-drain query (row 14). | compliant (Phase 10B.0) | 4, 10B.0 |
-| 5 | `WarpScheduler::evaluate` writes `branch_tracker_.note_branch_issued(w)` (next_); `ALUUnit::evaluate` writes `note_resolved_correctly(w)` (next_) on correct prediction (branch resolution moved into the ALU in Phase 10A); `FetchStage::evaluate` writes `note_redirect_applied(w)` (next_) when applying a redirect | `WarpScheduler::evaluate` reads `branch_tracker_.current_in_flight(w)` (current_) | per-warp branch-shadow bit | **REGISTERED** per-warp `current_`/`next_` pair via `BranchShadowTracker` (Scoreboard pattern) | forward-data (writers publish, scheduler reads) | tick-order: `branch_tracker_.seed_next` -> writers in evaluates -> commits -> `branch_tracker_.commit` | compliant (Phase 10A) | 5, 10A |
+| 5 | `WarpScheduler::evaluate` writes `branch_tracker_.note_branch_issued(w)` (next_); `ALUUnit::evaluate` writes `note_resolved_correctly(w)` (next_) on correct prediction (branch resolution moved into the ALU in Phase 10A); `FetchStage::evaluate` writes `note_redirect_applied(w)` (next_) when applying a redirect | `WarpScheduler::evaluate` reads `branch_tracker_.current_in_flight(w)` (current_) | per-warp branch-shadow bit | **REGISTERED** per-warp shadow bit array held in a single `Reg<std::array<bool, MAX_WARPS>>` inside `BranchShadowTracker` (the `reg.h` primitive replaces the prior hand-rolled `current_`/`next_` pair) | forward-data (writers publish, scheduler reads) | tick-order: `branch_tracker_.seed_next` -> writers in evaluates -> commits -> `branch_tracker_.commit` | compliant (Phase 10A) | 5, 10A |
 | 6 | `OperandCollector::accept()` writes only `next_busy_`/`next_cycles_remaining_`/`next_instr_` | `OperandCollector::evaluate` (reads `next_*` after the prior commit, so equal to committed values until accept overrides) and `OperandCollector::current_busy()` (reads `current_busy_`) | opcoll busy/cycles/instr | **REGISTERED** next/current | (internal) | `accept()` only mutates `next_*`; `commit()` flips next/current for busy, cycles_remaining, instr, and output | compliant (Phase 2) | 2 |
 | 7 | each of `ALUUnit`/`MultiplyUnit`/`DivideUnit`/`TLookupUnit`/`LdStUnit` produces a result into its double-buffered `next_result_buffer_`; `LoadGatherBufferFile` is also registered as a writeback source via `wb_arbiter_->add_source`. The opcoll→unit edge is the pull model: each unit's `evaluate()` reads `opcoll_->current_output()` and self-selects by `target_unit` (Phase 10B.1); the scheduler→opcoll edge is the same pull model (10B.2) | `WritebackArbiter::evaluate` reads each source's `current_has_result()` (committed); `consume_result()` is a **pure read** that mutates nothing | per-unit `pending_input_`, `pipeline_`/iterative counters, `result_buffer_` (all `next_*`/`current_*` double-buffered) | **REGISTERED** on every edge of the issue/execute path: `scheduler→opcoll`, `opcoll→unit`, `unit→wb_arbiter`. 10B.1/10B.2/10B.3 each registered one of these, adding one cycle of pipeline depth apiece — see `compute_issue_to_writeback_offset()` in `execution_unit.h`; the scheduler passes the configured multiply depth so the bitmap remains exact for non-default `multiply_pipeline_stages` | forward-data | every unit's `commit()` flips `next_*→current_*` for all double-buffered fields (gated by the writeback stall, row 16); `accept()` writes only `next_*`; `consume_result()` mutates nothing | compliant (Phase 10B.1–10B.3) | 1, 10B.1, 10B.2, 10B.3 |
 | 8 | `WritebackArbiter::evaluate` writes scoreboard via `scoreboard_.clear_pending()` (releases destinations); `WarpScheduler::evaluate` writes via `scoreboard_.set_pending()` (claims destinations on issue) | scheduler's `evaluate()` reads scoreboard via `current_pending()` (current_) for issue gating | scoreboard pending bits | **REGISTERED** | forward-data | `Scoreboard` already exposes `next_*`/`current_*`, so `set_pending` / `clear_pending` only write `next_` | compliant | none |

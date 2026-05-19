@@ -47,11 +47,19 @@ public:
     // Committed read — the normal cross-cycle / cross-stage read.
     const T& current() const { return current_; }
 
-    // Committed read-write. For the redirect-flush pattern only: a backward
-    // control signal (a branch mispredict resolved this same cycle) forces an
-    // upstream stage to invalidate committed state mid-evaluate() — the flush
-    // is the redirect's same-cycle effect. Not a normal staged write; ordinary
-    // state updates stage via set_next() / next_mut() and latch at commit().
+    // Committed read-write. Narrow escape hatch for the two patterns that
+    // legitimately need a mid-cycle or post-latch mutation of committed state:
+    //   (1) Redirect-flush: a backward control signal (a branch mispredict
+    //       resolved this same cycle) forces an upstream stage to invalidate
+    //       committed state mid-evaluate() — the flush is the redirect's
+    //       same-cycle effect (e.g. FetchStage clearing current_output_).
+    //   (2) Post-commit consumed-mark: a stage's commit() applies its
+    //       pop-then-push, then marks the now-consumed slot invalid in the
+    //       committed deque (e.g. DecodeStage clearing pending_.valid after
+    //       the buffer push). Equivalent to a mid-cycle write because no
+    //       reader has run since the commit_all() flip.
+    // Not a normal staged write — ordinary updates stage via set_next() /
+    // next_mut() and latch at commit().
     T& current_mut() { return current_; }
 
     // Staged read. INTRA-STAGE self-reads only: a producer reading back a

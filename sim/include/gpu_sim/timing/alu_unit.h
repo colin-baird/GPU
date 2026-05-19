@@ -48,7 +48,8 @@ public:
     // iterative units). Phase 3: the Reg<T>s here are committed and reset but
     // never seeded; this is faithful because evaluate() re-stages every cycle
     // (result_buffer_ unconditionally at the top; has_pending_/pending_input_
-    // via accept() then cleared at line that ends `next_has_pending_=false`).
+    // via accept() then cleared by has_pending_.set_next(false) at the bottom
+    // of the dispatch branch).
     // See the classification criterion in the phase-10 plan.
     void seed_next() override {}
     void evaluate() override;
@@ -132,7 +133,7 @@ private:
     Reg<bool> has_pending_;
     Reg<DispatchInput> pending_input_;
     // Phase 10B.0.5: not double-buffered. accept() writes it and evaluate()
-    // reads it within the same tick (into next_result_buffer_.issue_cycle);
+    // reads it within the same tick (into result_buffer_.next_mut().issue_cycle);
     // no consumer ever reads a prior committed value, so it carries no
     // cross-cycle information for a 1-cycle ALU and needs no Reg wrapper.
     uint64_t pending_cycle_ = 0;         // scratch (single-tick latch)

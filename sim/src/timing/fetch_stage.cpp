@@ -66,10 +66,10 @@ void FetchStage::evaluate() {
     // buffer once *all* upstream in-flight instructions targeting that warp
     // commit. Two slots can already hold an instruction destined for w:
     //   1. decode.pending_  — will push at end of this cycle.
-    //   2. fetch.current_output_ — held in the fetch→decode register; decode
-    //      will pull it next cycle and push it the cycle after.
+    //   2. fetch.output_ (committed) — held in the fetch→decode register;
+    //      decode will pull it next cycle and push it the cycle after.
     // The new pick adds a third push, so the eligibility check must reserve
-    // a slot for each of the three. Missing the current_output_ term causes
+    // a slot for each of the three. Missing the committed-output term causes
     // head-of-line decode stalls when the scheduler is backend-bound (e.g.
     // LDST saturated): fetch picks the same warp twice in a row, the second
     // push fails, decode goes pending, and fetch backpressures every cycle
