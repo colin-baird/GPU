@@ -65,11 +65,13 @@ struct GatherReleaseRequest {
 //
 // Phase 5b (reg.h migration): all of buffers_, claim_request_, has_result_,
 // and rr_pointer_ are Reg<T>. The file also holds two non-register slots —
-// next_port_claimed_ (combinational, intra-tick port arbitration; pre-Phase-7
-// flavor of cache.next_cmd_ready_) and next_release_ (an evaluate-staging
-// slot with no committed twin, applied at commit). Phase 7 will decide
-// whether next_port_claimed_ migrates to a Wire<bool>; that is out of scope
-// here.
+// next_port_claimed_ (combinational, intra-tick port arbitration; Phase 7:
+// Wire<bool>, intra-class — written and read inside the class via
+// try_write()/commit(); same shape as cache.next_cmd_ready_ except the
+// reset point is the OWNER'S commit() rather than evaluate(), preserving
+// the pre-Phase-7 behavior exactly) and next_release_ (an evaluate-staging
+// slot with no committed twin, applied at commit — stays plain because it
+// carries a payload, not a level-asserted signal).
 class LoadGatherBufferFile : public ExecutionUnit, public RegisteredStage {
 public:
     enum class GatherWriteSource { HIT, FILL };
@@ -154,10 +156,16 @@ private:
     // extraction port (§5.3 Port model: FILL > secondary > HIT). Writers
     // (cache.handle_responses, cache.drain_secondary_chain_head,
     // cache.process_load HIT path) all funnel through try_write(); the first
-    // writer in a tick wins by reading next_port_claimed_, and the others
-    // bail. commit() clears the flag at end-of-cycle so the next tick starts
-    // unclaimed.
-    bool next_port_claimed_ = false;  // combinational, intra-tick port claim (Phase 7 -> Wire<bool>)
+    // writer in a tick wins by reading next_port_claimed_.value(), and the
+    // others bail. commit() resets it at end-of-cycle so the next tick starts
+    // unclaimed. Phase 7: wrapped as Wire<bool>. Intra-class signal — not
+    // cross-stage, so no public next_*() accessor; readers (try_write) read
+    // wire_.value() directly. Reset point is the OWNER'S commit() (not the
+    // top of evaluate as the cross-stage Wire pattern dictates) — this is
+    // faithful to the pre-Phase-7 reset timing and necessary because the
+    // claim must persist across the whole tick (FILL/secondary/HIT all run
+    // within one tick), only clearing at the cycle boundary.
+    Wire<bool> next_port_claimed_;
 
     // Phase M2 + 5b: REGISTERED claim-request slot. claim() writes
     // claim_request_.next_mut(); commit() flips next -> current; evaluate()

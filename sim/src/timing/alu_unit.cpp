@@ -35,9 +35,15 @@ void ALUUnit::evaluate() {
 
     // Phase 10E: the redirect is a COMBINATIONAL-backward transient. Reset it
     // at the top of every evaluate() so a stalled re-run, or a cycle with no
-    // mispredict, asserts nothing. The test-only override (if set) seeds it;
-    // a real resolved branch below may overwrite it.
-    next_redirect_ = redirect_override_ ? *redirect_override_ : RedirectRequest{};
+    // mispredict, asserts nothing. The test-only override (if set) drives it;
+    // a real resolved branch below may overwrite it via another drive().
+    // Phase 7: backed by Wire<RedirectRequest>. reset() de-asserts (default-
+    // constructed empty RedirectRequest); drive() asserts the override or the
+    // resolved redirect.
+    next_redirect_.reset();
+    if (redirect_override_) {
+        next_redirect_.drive(*redirect_override_);
+    }
 
     // Phase 10B.0.5: assign the per-cycle scratch flag fresh every cycle so a
     // re-evaluated stalled cycle recomputes it from scratch. commit()
@@ -105,9 +111,14 @@ void ALUUnit::evaluate() {
             }
             if (mispredicted) {
                 // Assert the combinational-backward redirect this cycle.
-                next_redirect_.valid = true;
-                next_redirect_.warp_id = in.warp_id;
-                next_redirect_.target_pc = actual_target;
+                // Phase 7: full-value drive() into the Wire (the prior
+                // field-by-field mutation on a plain struct is equivalent —
+                // .valid started false from the reset above).
+                RedirectRequest req;
+                req.valid = true;
+                req.warp_id = in.warp_id;
+                req.target_pc = actual_target;
+                next_redirect_.drive(req);
                 stats_.branch_mispredictions++;
                 stats_.branch_flushes++;
             } else if (branch_tracker_) {
@@ -155,7 +166,9 @@ void ALUUnit::commit() {
 
 void ALUUnit::reset() {
     reset_all();
-    next_redirect_ = RedirectRequest{};
+    // Phase 7: Wire<RedirectRequest> de-asserts via reset() (default empty
+    // RedirectRequest) — equivalent to the prior `= RedirectRequest{}` clear.
+    next_redirect_.reset();
     redirect_override_.reset();
     branch_resolved_ = false;
     pending_cycle_ = 0;

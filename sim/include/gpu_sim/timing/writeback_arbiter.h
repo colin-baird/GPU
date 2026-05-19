@@ -3,6 +3,7 @@
 #include "gpu_sim/timing/pipeline_stage.h"
 #include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/timing/scoreboard.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/stats.h"
 #include <vector>
 #include <optional>
@@ -42,8 +43,9 @@ public:
     // top of evaluate() (early-return) and also gates commit(). The arbiter
     // is sequenced FIRST in the evaluate sweep so the signal is readable
     // same-cycle by every consumer. COMBINATIONAL backward, `next_` prefix
-    // per the cross-stage accessor naming discipline.
-    bool next_writeback_stall() const { return writeback_stall_; }
+    // per the cross-stage accessor naming discipline. Phase 7: backed by
+    // Wire<bool>; this accessor is a one-line forwarder to wire_.value().
+    bool next_writeback_stall() const { return writeback_stall_.value(); }
 
 private:
     // Counts fixed-latency sources presenting a result this cycle. The
@@ -60,7 +62,11 @@ private:
 
     std::optional<WritebackEntry> committed_;
     std::optional<WritebackEntry> pending_commit_;
-    bool writeback_stall_ = false;
+    // Phase 7: COMBINATIONAL-backward writeback stall, wrapped as Wire<bool>.
+    // drive(true) on a load-vs-fixed preempt; reset() at the top of every
+    // evaluate() and from reset(). Not enrolled via register_state (Wire is
+    // not a RegBase). Consumers read via next_writeback_stall().
+    Wire<bool> writeback_stall_;
 };
 
 } // namespace gpu_sim

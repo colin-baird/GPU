@@ -79,10 +79,11 @@ public:
     // next_redirect() at the top of their own evaluate() — the back-to-front
     // sweep (Phase 10D) runs the ALU before the frontend, so the read sees
     // this tick's fresh transient. The redirect is a backward control signal
-    // (Principle 6): there is no current_* slot and no commit() flip. Will
-    // become a Wire<T> in a later phase of the reg.h migration.
+    // (Principle 6): there is no current_* slot and no commit() flip. Phase 7
+    // (reg.h migration): the underlying storage is a Wire<RedirectRequest>;
+    // this accessor is a one-line forwarder to wire_.value().
     const RedirectRequest& next_redirect() const {
-        return next_redirect_;
+        return next_redirect_.value();
     }
 
     // Test hook: explicit override of the redirect signal, used by tests that
@@ -149,10 +150,11 @@ private:
     // slot, reset at the top of evaluate() and asserted on a mispredicted
     // branch the same cycle; there is no current_* twin and no commit()
     // flip. FetchStage / DecodeStage read it via next_redirect() at the top
-    // of their own evaluate() (back-to-front sweep: ALU runs first). Will
-    // become a Wire<T> in a later phase of the reg.h migration; Phase 3
-    // leaves it as a plain transient.
-    RedirectRequest next_redirect_{};
+    // of their own evaluate() (back-to-front sweep: ALU runs first). Phase 7
+    // (reg.h migration): wrapped as Wire<RedirectRequest> — drive()/reset()
+    // in evaluate(); reset() also fires from reset(). Not enrolled via
+    // register_state (Wire is not a RegBase).
+    Wire<RedirectRequest> next_redirect_;
     // Test-only override; when set, evaluate() reads it into next_redirect_.
     std::optional<RedirectRequest> redirect_override_;
 

@@ -53,10 +53,11 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
     // cache.handle_responses, then secondary via drain_secondary_chain_head,
     // then HIT via coalescing.evaluate -> cache.process_load). The first
     // writer wins; subsequent same-tick writers see the updated `next_*` and
-    // bail out. `commit()` clears the flag at end of cycle.
+    // bail out. `commit()` resets the wire at end of cycle.
     // The port is a single shared resource (spec §5.3 Port model: one
     // line-to-gather-buffer extraction per cycle, FILL > secondary > HIT).
-    if (next_port_claimed_) {
+    // Phase 7 (reg.h migration): backed by Wire<bool>.
+    if (next_port_claimed_.value()) {
         // FILL > secondary > HIT priority; a false return is always either
         // the HIT path losing to an earlier FILL/secondary in the same cycle,
         // or a secondary losing to a prior FILL. Two FILLs in one cycle
@@ -81,7 +82,7 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
             buf.slot_valid[i] = true;
         }
     }
-    next_port_claimed_ = true;
+    next_port_claimed_.drive(true);
     return true;
 }
 
@@ -147,8 +148,12 @@ void LoadGatherBufferFile::evaluate() {
 }
 
 void LoadGatherBufferFile::commit() {
-    // Clear the port-claim flag so the next tick starts with the port free.
-    next_port_claimed_ = false;
+    // Reset the port-claim wire so the next tick starts with the port free.
+    // Phase 7: this stays in commit() (not at the top of evaluate as the
+    // cross-stage Wire pattern dictates) — the claim must persist across
+    // the whole tick (FILL/secondary/HIT all run within one tick), only
+    // clearing at the cycle boundary. Preserves pre-Phase-7 timing exactly.
+    next_port_claimed_.reset();
 
     // Phase 10D: apply the REGISTERED buffer release staged by
     // consume_result() this cycle. This is the commit-phase effect that
@@ -211,7 +216,9 @@ void LoadGatherBufferFile::reset() {
     // plain scratch / staging slots by hand.
     reset_all();
     buffers_.initialize(std::vector<LoadGatherBuffer>(num_warps_));
-    next_port_claimed_ = false;
+    // Phase 7: Wire<bool>::reset() de-asserts (default false) — equivalent
+    // to the prior `= false` clear.
+    next_port_claimed_.reset();
     next_release_ = GatherReleaseRequest{};
 }
 

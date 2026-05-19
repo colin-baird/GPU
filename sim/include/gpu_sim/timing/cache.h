@@ -134,8 +134,8 @@ public:
     // committed slot. Tick order has cache.evaluate before coalescing.evaluate
     // so the producer reads ready combinationally after cache has set it.
     // The throughput guarantee "1 cmd/cycle when ready" is enforced by an
-    // assert in evaluate.
-    bool next_cmd_ready() const { return next_cmd_ready_; }  // combinational, Phase 7 -> Wire<T>
+    // assert in evaluate. Phase 7: backed by Wire<bool> — one-line forwarder.
+    bool next_cmd_ready() const { return next_cmd_ready_.value(); }
 
     // Generic resource-exhaustion accessor for trace classification only.
     // Returns the structural reason the LDST FIFO head warp is waiting on
@@ -165,8 +165,10 @@ public:
     // this cycle's stall outcome. Models a same-cycle backpressure handshake
     // where the cache's stall signal is combinationally driven from
     // registered tag / write-buffer / pending_fill state.
-    bool next_stalled() const { return stalled_; }                     // combinational, Phase 7 -> Wire<T>
-    CacheStallReason next_stall_reason() const { return stall_reason_; }  // combinational, Phase 7 -> Wire<T>
+    // Phase 7: backed by Wire<bool> / Wire<CacheStallReason> — one-line
+    // forwarders to wire_.value().
+    bool next_stalled() const { return stalled_.value(); }
+    CacheStallReason next_stall_reason() const { return stall_reason_.value(); }
     //
     // REGISTERED (next/current pair flipped by commit()). Trace recording
     // runs at end-of-tick after cache.commit(); reads return committed
@@ -237,9 +239,12 @@ private:
     // observed mid-tick by CoalescingUnit::evaluate. No next/current pair —
     // coalescing reads this cycle's value to make a same-cycle bail
     // decision (single-cycle backpressure path; tags_/write_buffer_/
-    // pending_fill_ all source from registered state).
-    bool stalled_ = false;                                       // scratch (combinational, intra-tick), Phase 7 -> Wire<T>
-    CacheStallReason stall_reason_ = CacheStallReason::NONE;     // scratch (combinational, intra-tick), Phase 7 -> Wire<T>
+    // pending_fill_ all source from registered state). Phase 7 (reg.h
+    // migration): wrapped as Wire<bool> / Wire<CacheStallReason>. drive()
+    // asserts; reset() de-asserts (default false / NONE). Not enrolled via
+    // register_state (Wire is not a RegBase).
+    Wire<bool> stalled_;
+    Wire<CacheStallReason> stall_reason_;
     // COMBINATIONAL same-tick scratch: the set a successful (non-deferred)
     // complete_fill installed into this cycle, or -1 if none. Produced by
     // complete_fill, consumed later in the same tick by process_load /
@@ -248,8 +253,12 @@ private:
     // at commit(): its lifetime is exactly one tick, so it must not leak
     // past the tick boundary. The commit() reset is redundant in production
     // (evaluate()'s top-of-tick reset governs) but makes the field's
-    // same-tick lifetime explicit for the direct-API test path.
-    int32_t fill_installed_set_ = -1;                            // scratch (combinational, intra-tick)
+    // same-tick lifetime explicit for the direct-API test path. Phase 7
+    // (reg.h migration): wrapped as Wire<int32_t> with a non-default value of
+    // -1 (reset() restores the -1 default). Intra-class signal — no public
+    // accessor; readers (process_load/process_store) read wire_.value()
+    // directly.
+    Wire<int32_t> fill_installed_set_{-1};
     // REGISTERED deferred-fill carrier.
     Reg<PendingCacheFill> pending_fill_;
     // Write-ack pin state, REGISTERED. outstanding_writes_[set] counts
@@ -296,8 +305,9 @@ private:
     // Phase M3 (valid/ready): consumer-side ready signal. Reset to false
     // at top of evaluate; set true by evaluate when a cmd from the committed
     // slot was processed and accepted. Read combinationally by coalescing
-    // later in the same tick. COMBINATIONAL same-tick scratch.
-    bool next_cmd_ready_ = false;  // scratch (combinational, intra-tick), Phase 7 -> Wire<T>
+    // later in the same tick. COMBINATIONAL same-tick scratch. Phase 7:
+    // wrapped as Wire<bool>; default false; drive(true) on accepted cmd.
+    Wire<bool> next_cmd_ready_;
 };
 
 } // namespace gpu_sim

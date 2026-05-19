@@ -93,7 +93,7 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     // loads (not just stores) closes the orphaned-secondary hang — a load
     // miss in the fill cycle would chain onto the line's just-freed lone
     // primary. See registered-tag-array.md Step 4.
-    if (fill_installed_set_ == static_cast<int32_t>(set)) {
+    if (fill_installed_set_.value() == static_cast<int32_t>(set)) {
         stats_.fill_conflict_retry_cycles++;
         return false;
     }
@@ -129,8 +129,8 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         } else {
             stats_.write_ack_pin_stall_cycles++;
         }
-        stalled_ = true;
-        stall_reason_ = CacheStallReason::LINE_PINNED;
+        stalled_.drive(true);
+        stall_reason_.drive(CacheStallReason::LINE_PINNED);
         auto& pin_ev = last_pin_stall_event_.next_mut();
         pin_ev.valid = true;
         pin_ev.warp_id = warp_id;
@@ -142,8 +142,8 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
 
     if (!mshrs_.has_free()) {
         stats_.mshr_stall_cycles++;
-        stalled_ = true;
-        stall_reason_ = CacheStallReason::MSHR_FULL;
+        stalled_.drive(true);
+        stall_reason_.drive(CacheStallReason::MSHR_FULL);
         return false;
     }
 
@@ -198,7 +198,7 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     // this cycle is rejected and re-staged. Precedes every tag read, MSHR
     // access, side effect, and trace event. See registered-tag-array.md
     // Step 4.
-    if (fill_installed_set_ == static_cast<int32_t>(set)) {
+    if (fill_installed_set_.value() == static_cast<int32_t>(set)) {
         stats_.fill_conflict_retry_cycles++;
         return false;
     }
@@ -214,8 +214,8 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
             } else {
                 stats_.write_throttle_stall_cycles++;
             }
-            stalled_ = true;
-            stall_reason_ = CacheStallReason::WRITE_BUFFER_FULL;
+            stalled_.drive(true);
+            stall_reason_.drive(CacheStallReason::WRITE_BUFFER_FULL);
             return false;
         }
         if (!queue_write_through(line_addr)) {
@@ -238,8 +238,8 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         } else {
             stats_.write_ack_pin_stall_cycles++;
         }
-        stalled_ = true;
-        stall_reason_ = CacheStallReason::LINE_PINNED;
+        stalled_.drive(true);
+        stall_reason_.drive(CacheStallReason::LINE_PINNED);
         auto& pin_ev = last_pin_stall_event_.next_mut();
         pin_ev.valid = true;
         pin_ev.warp_id = warp_id;
@@ -251,8 +251,8 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
 
     if (!mshrs_.has_free()) {
         stats_.mshr_stall_cycles++;
-        stalled_ = true;
-        stall_reason_ = CacheStallReason::MSHR_FULL;
+        stalled_.drive(true);
+        stall_reason_.drive(CacheStallReason::MSHR_FULL);
         return false;
     }
 
@@ -345,8 +345,8 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
             } else {
                 stats_.write_throttle_stall_cycles++;
             }
-            stalled_ = true;
-            stall_reason_ = CacheStallReason::WRITE_BUFFER_FULL;
+            stalled_.drive(true);
+            stall_reason_.drive(CacheStallReason::WRITE_BUFFER_FULL);
             return false;
         }
 
@@ -380,7 +380,7 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // Successful (non-deferred) install: record the set so a command racing
     // this fill to the same set is rejected and retried (fill-conflict
     // retry). The write-buffer-full early return above does not reach here.
-    fill_installed_set_ = static_cast<int32_t>(set);
+    fill_installed_set_.drive(static_cast<int32_t>(set));
 
     auto& fill_ev = last_fill_event_.next_mut();
     fill_ev.valid = true;
@@ -577,9 +577,14 @@ void L1Cache::evaluate() {
     // auto-seed would re-latch the consumed cmd when coalescing did not
     // re-stage). The other registered fields are seeded by hand, faithful
     // to the pre-migration code.
-    stalled_ = false;
-    stall_reason_ = CacheStallReason::NONE;
-    fill_installed_set_ = -1;
+    //
+    // Phase 7: stalled_ / stall_reason_ / fill_installed_set_ are Wire<T>;
+    // reset() at the top of evaluate de-asserts them (default false /
+    // CacheStallReason::NONE / -1) — equivalent to today's `= false` /
+    // `= NONE` / `= -1` clear.
+    stalled_.reset();
+    stall_reason_.reset();
+    fill_installed_set_.reset();
     // Trace events: only the .valid flag matters when un-asserted. Seed the
     // whole struct from current (faithful to a Reg<T>'s auto-seed semantics)
     // then clear .valid. Faithful to pre-migration: only .valid was assigned;
@@ -621,7 +626,10 @@ void L1Cache::evaluate() {
     // reads later in the same tick to decide advance vs re-stage). On
     // failure, the cmd is dropped; coalescing's processing_/current_entry_
     // state holds the source data and re-stages next cycle.
-    next_cmd_ready_ = false;
+    // Phase 7: next_cmd_ready_ is Wire<bool> — reset to default false; later
+    // drive(true) on an accepted cmd. Coalescing reads via next_cmd_ready()
+    // later in the same tick.
+    next_cmd_ready_.reset();
     int processed_count = 0;
     if (load_cmd_.current().valid) {
         const auto& lc = load_cmd_.current();
@@ -631,7 +639,7 @@ void L1Cache::evaluate() {
         // contract. Faithful to today's `current_load_cmd_.valid = false`.
         load_cmd_.current_mut().valid = false;
         if (ok) {
-            next_cmd_ready_ = true;
+            next_cmd_ready_.drive(true);
             ++processed_count;
         }
     }
@@ -641,7 +649,7 @@ void L1Cache::evaluate() {
                                 sc.raw_instruction);
         store_cmd_.current_mut().valid = false;
         if (ok) {
-            next_cmd_ready_ = true;
+            next_cmd_ready_.drive(true);
             ++processed_count;
         }
     }
@@ -703,12 +711,12 @@ CacheStallReason L1Cache::next_cmd_stall_reason() const {
 
 void L1Cache::commit() {
     // Phase 9: flip the REGISTERED observable state. stalled_ /
-    // stall_reason_ / fill_installed_set_ are COMBINATIONAL same-tick scratch
-    // (single slot, reset at top of evaluate, observed mid-tick), so they
-    // are not flipped here. The tag array, the MSHR file, and the
-    // write-buffer FIFO are all REGISTERED — see resources/timing_discipline.md
-    // row 10. The gather-extract port-claim flag is owned by
-    // LoadGatherBufferFile (separate REGISTERED pair).
+    // stall_reason_ / next_cmd_ready_ / fill_installed_set_ are Wire<T>
+    // (Phase 7) — all COMBINATIONAL same-tick (no current/next pair, no
+    // commit() flip; reset at top of evaluate(), observed mid-tick). The tag
+    // array, the MSHR file, and the write-buffer FIFO are all REGISTERED —
+    // see resources/timing_discipline.md row 10. The gather-extract
+    // port-claim flag is owned by LoadGatherBufferFile (now a Wire<bool>).
     //
     // Phase 5a: commit_all() drives every enrolled Reg (tags_, pending_fill_,
     // outstanding_writes_, outstanding_writes_total_, the four last_*_event_,
@@ -728,10 +736,11 @@ void L1Cache::commit() {
     // holds the source data and re-stages on a hold.
     load_cmd_.set_next(LoadCommand{});
     store_cmd_.set_next(StoreCommand{});
-    // fill_installed_set_ is COMBINATIONAL same-tick scratch — clear it at
-    // the tick boundary so it cannot leak into the next tick. evaluate()
-    // also clears it at the top of the tick (the production path).
-    fill_installed_set_ = -1;
+    // fill_installed_set_ is COMBINATIONAL same-tick scratch (Wire<int32_t>,
+    // default -1) — reset it at the tick boundary so it cannot leak into the
+    // next tick. evaluate() also resets it at the top of the tick (the
+    // production path); the dual reset is preserved exactly.
+    fill_installed_set_.reset();
 }
 
 bool L1Cache::is_idle() const {
@@ -780,10 +789,13 @@ void L1Cache::reset() {
     tags_.initialize(std::vector<CacheTag>(num_sets_));
     outstanding_writes_.initialize(std::vector<uint32_t>(num_sets_));
     mshrs_.reset();
-    stalled_ = false;
-    stall_reason_ = CacheStallReason::NONE;
-    fill_installed_set_ = -1;
-    next_cmd_ready_ = false;
+    // Phase 7: Wire<T>::reset() de-asserts each combinational-backward signal
+    // (default false / CacheStallReason::NONE / false / -1) — equivalent to
+    // the prior `= false` / `= NONE` / `= -1` clears.
+    stalled_.reset();
+    stall_reason_.reset();
+    next_cmd_ready_.reset();
+    fill_installed_set_.reset();
 }
 
 uint32_t L1Cache::pinned_line_count() const {

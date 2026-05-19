@@ -46,7 +46,8 @@ void WritebackArbiter::evaluate() {
     // is a pure read. The arbiter is sequenced FIRST in the evaluate sweep so
     // next_writeback_stall() is readable same-cycle by every consumer.
     pending_commit_ = std::nullopt;
-    writeback_stall_ = false;  // reset every evaluate
+    // Phase 7: Wire<bool> de-asserts via reset() at the top of every evaluate.
+    writeback_stall_.reset();
 
     // The scheduler's binding writeback bitmap (10B.0) guarantees at most one
     // fixed-latency source presents a result on any cycle. Assert it — a trip
@@ -76,7 +77,7 @@ void WritebackArbiter::evaluate() {
         // preempted. Assert the combinational-backward stall so it (and every
         // other issue/execute stage) freezes for the cycle.
         if (fixed != nullptr) {
-            writeback_stall_ = true;
+            writeback_stall_.drive(true);
             stats_.fixed_writeback_preempted_cycles++;
         }
     } else if (fixed != nullptr) {
@@ -124,7 +125,9 @@ uint32_t WritebackArbiter::ready_source_count() const {
 void WritebackArbiter::reset() {
     committed_ = std::nullopt;
     pending_commit_ = std::nullopt;
-    writeback_stall_ = false;
+    // Phase 7: Wire<bool> de-asserts via reset() (default false) — equivalent
+    // to the prior `= false` clear.
+    writeback_stall_.reset();
 }
 
 void WritebackArbiter::flush() {
