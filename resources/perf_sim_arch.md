@@ -226,12 +226,15 @@ Per-warp timing state. Header-only.
 Per-warp branch-shadow ("branch_in_flight") bit, double-buffered in the
 exact `Scoreboard` shape. Header-only.
 
-- **Class `BranchShadowTracker`**: Two `std::array<bool, MAX_WARPS>` slots
-  `current_` and `next_`.
-- **`current_in_flight(warp)`**: Reads `current_`. Used by `WarpScheduler::evaluate()`
-  to gate issue of further instructions for a warp whose branch is still
-  in flight.
-- **Event-shaped writers** (all write to `next_`):
+- **Class `BranchShadowTracker`**: Derives `RegisteredStage`; holds the
+  whole per-warp bit array as a single `Reg<std::array<bool, MAX_WARPS>>`
+  member (`shadow_`), registered via `register_state()` in the
+  constructor body. `seed_next()` / `commit()` / `reset()` delegate to the
+  `RegisteredStage` `seed_all()` / `commit_all()` / `reset_all()` loops.
+- **`current_in_flight(warp)`**: Reads `shadow_.current()`. Used by
+  `WarpScheduler::evaluate()` to gate issue of further instructions for a
+  warp whose branch is still in flight.
+- **Event-shaped writers** (all mutate `shadow_.next_mut()`):
   `note_branch_issued(w)` — called by `WarpScheduler::evaluate()` when
   it issues a BRANCH/JAL/JALR. `note_resolved_correctly(w)` — called by
   `ALUUnit::evaluate()` (branch resolution moved into the ALU in Phase
@@ -240,10 +243,12 @@ exact `Scoreboard` shape. Header-only.
   `note_redirect_applied(w)` — called by `FetchStage::apply_redirect()`
   when a mispredict-redirect lands at the top of fetch's `evaluate()`
   (Phase 10E); the deferred clear means the scheduler keeps observing
-  `current_=true` through the cycle the redirect propagates from
+  `current()=true` through the cycle the redirect propagates from
   opcoll to fetch.
-- **`seed_next()`**: Copies `current_` -> `next_` at top of cycle.
-- **`commit()`**: Copies `next_` -> `current_` at end of cycle.
+- **`seed_next()`**: Seeds the staged array from the committed one at top
+  of cycle.
+- **`commit()`**: Latches the staged array into the committed one at end
+  of cycle.
 - **Tick-order**: `branch_tracker_.seed_next()` runs alongside
   `scoreboard_.seed_next()` near the top of `TimingModel::tick()`;
   `branch_tracker_.commit()` runs after `scoreboard_.commit()` near the
@@ -260,12 +265,19 @@ Per-warp instruction FIFO. Header-only.
 
 Double-buffered register dependency tracking. Header-only.
 
-- **Class `Scoreboard`**: Two arrays `current_[MAX_WARPS][NUM_REGS]` and `next_[...]`.
-- **`is_pending(warp, reg)`**: Reads `current_`. r0 always returns false.
-- **`set_pending(warp, reg)`**: Writes to `next_`. Called at issue time.
-- **`clear_pending(warp, reg)`**: Writes to `next_`. Called at writeback.
-- **`seed_next()`**: Copies current -> next at start of cycle.
-- **`commit()`**: Copies next -> current at end of cycle.
+- **Struct `ScoreboardBits`**: POD wrapping the whole `bool
+  pending[MAX_WARPS][NUM_REGS]` array, so it can be held in one register.
+- **Class `Scoreboard`**: Derives `RegisteredStage`; holds the whole bit
+  array as a single `Reg<ScoreboardBits>` member (`bits_`), registered via
+  `register_state()` in the constructor body. `seed_next()` / `commit()` /
+  `reset()` delegate to the `RegisteredStage` `seed_all()` / `commit_all()`
+  / `reset_all()` loops.
+- **`current_pending(warp, reg)`**: Reads `bits_.current()`. r0 always
+  returns false.
+- **`set_pending(warp, reg)`**: Mutates `bits_.next_mut()`. Called at issue time.
+- **`clear_pending(warp, reg)`**: Mutates `bits_.next_mut()`. Called at writeback.
+- **`seed_next()`**: Seeds the staged array from the committed one at start of cycle.
+- **`commit()`**: Latches the staged array into the committed one at end of cycle.
 
 ### `include/gpu_sim/timing/fetch_stage.h` -- `src/timing/fetch_stage.cpp`
 

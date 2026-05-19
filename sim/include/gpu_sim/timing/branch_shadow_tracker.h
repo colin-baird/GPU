@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/types.h"
 #include <array>
 
@@ -12,15 +13,15 @@ namespace gpu_sim {
 // that placement is load-bearing for correctness — see Phase 5 in the
 // timing-discipline doc.
 //
-// Writers (the only three sites that mutate next_):
+// Writers (the only three sites that mutate the staged value):
 //
 //   - `note_branch_issued(w)` — `WarpScheduler::evaluate` when it issues a
-//     BRANCH/JAL/JALR. Sets next_[w] = true. The scheduler's own next-cycle
-//     evaluate reads current_[w] (set by this cycle's commit) and gates
+//     BRANCH/JAL/JALR. Stages next[w] = true. The scheduler's own next-cycle
+//     evaluate reads current()[w] (set by this cycle's commit) and gates
 //     subsequent issues for the same warp.
 //
 //   - `note_resolved_correctly(w)` — `OperandCollector::resolve_branch` when
-//     the branch resolves with prediction == actual. Clears next_[w] = false
+//     the branch resolves with prediction == actual. Clears next[w] = false
 //     immediately because no flush is pending: the scheduler can resume
 //     issuing for warp w on the next cycle.
 //
@@ -28,54 +29,52 @@ namespace gpu_sim {
 //     mispredict-redirect actually lands at fetch's commit phase. The
 //     OperandCollector deliberately does NOT clear at resolve time for
 //     mispredicts, because between resolve and apply (one cycle) the
-//     scheduler must still see current_[w] = true so it does not issue a
+//     scheduler must still see current()[w] = true so it does not issue a
 //     shadow instruction from the soon-to-be-flushed buffer.
 //
-// All readers (scheduler eligibility check via `is_in_flight`) read current_.
-// The scheduler reads current_ before opcoll has had a chance to clear, so a
-// branch resolving in cycle N is not visible to the scheduler's evaluate in
-// cycle N — it becomes visible in cycle N+1 after commit(). This is exactly
-// the Scoreboard pattern (sim/include/gpu_sim/timing/scoreboard.h).
+// All readers (scheduler eligibility check via `current_in_flight`) read
+// current(). The scheduler reads current() before opcoll has had a chance to
+// clear, so a branch resolving in cycle N is not visible to the scheduler's
+// evaluate in cycle N — it becomes visible in cycle N+1 after commit(). This
+// is exactly the Scoreboard pattern (sim/include/gpu_sim/timing/scoreboard.h).
 //
 // Same-cycle resolution + new-branch-issue invariant: the scheduler can only
-// issue a branch for warp W when current_[W] is false. If a branch for W is
-// resolving in cycle N (opcoll writes next_[W]=false), the scheduler in
-// cycle N still observes current_[W]=true (set by an earlier cycle's commit)
+// issue a branch for warp W when current()[W] is false. If a branch for W is
+// resolving in cycle N (opcoll stages next[W]=false), the scheduler in
+// cycle N still observes current()[W]=true (set by an earlier cycle's commit)
 // and therefore won't issue. This means the conflicting "scheduler set +
-// opcoll clear" sequence on the same warp slot in next_* during the same
-// cycle cannot arise.
-class BranchShadowTracker {
+// opcoll clear" sequence on the same warp slot in the staged value during the
+// same cycle cannot arise.
+class BranchShadowTracker : public RegisteredStage {
 public:
-    BranchShadowTracker() { reset(); }
+    using ShadowBits = std::array<bool, MAX_WARPS>;
 
-    void reset() {
-        for (auto& a : current_) a = false;
-        for (auto& a : next_) a = false;
+    BranchShadowTracker() {
+        register_state(&shadow_);
+        reset();
     }
+
+    // Reset BOTH committed and staged state (Reg::reset() clears both slots).
+    void reset() { reset_all(); }
 
     // Reads of committed state.
-    bool current_in_flight(WarpId w) const { return current_[w]; }
+    bool current_in_flight(WarpId w) const { return shadow_.current()[w]; }
 
-    // Event-shaped writers. All three write only into next_; commit() flips
-    // next_ -> current_ at the cycle boundary.
-    void note_branch_issued(WarpId w) { next_[w] = true; }
-    void note_resolved_correctly(WarpId w) { next_[w] = false; }
-    void note_redirect_applied(WarpId w) { next_[w] = false; }
+    // Event-shaped writers. All three write only into the staged value;
+    // commit() flips staged -> committed at the cycle boundary.
+    void note_branch_issued(WarpId w) { shadow_.next_mut()[w] = true; }
+    void note_resolved_correctly(WarpId w) { shadow_.next_mut()[w] = false; }
+    void note_redirect_applied(WarpId w) { shadow_.next_mut()[w] = false; }
 
-    // Seed next_ from current_ at the top of each cycle so unmodified slots
+    // Seed staged from committed at the top of each cycle so unmodified slots
     // carry forward.
-    void seed_next() {
-        for (uint32_t i = 0; i < MAX_WARPS; ++i) next_[i] = current_[i];
-    }
+    void seed_next() { seed_all(); }
 
     // Flip double-buffered state at the cycle boundary.
-    void commit() {
-        for (uint32_t i = 0; i < MAX_WARPS; ++i) current_[i] = next_[i];
-    }
+    void commit() { commit_all(); }
 
 private:
-    std::array<bool, MAX_WARPS> current_{};
-    std::array<bool, MAX_WARPS> next_{};
+    Reg<ShadowBits> shadow_;
 };
 
 } // namespace gpu_sim
