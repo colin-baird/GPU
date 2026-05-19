@@ -4,6 +4,7 @@
 #include "gpu_sim/timing/operand_collector.h"
 #include "gpu_sim/timing/branch_predictor.h"
 #include "gpu_sim/timing/branch_shadow_tracker.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/stats.h"
 #include <optional>
 
@@ -11,12 +12,14 @@ namespace gpu_sim {
 
 class WritebackArbiter;
 
-class ALUUnit : public ExecutionUnit {
+class ALUUnit : public ExecutionUnit, public RegisteredStage {
 public:
-    explicit ALUUnit(Stats& stats) : stats_(stats) {}
+    explicit ALUUnit(Stats& stats) : stats_(stats) {
+        register_state(&result_buffer_, &has_pending_, &pending_input_);
+    }
 
     bool current_busy() const override {
-        return current_result_buffer_.valid || current_has_pending_;
+        return result_buffer_.current().valid || has_pending_.current();
     }
 
     // Phase 10B.1: nullptr-tolerant back-pointers. The ALU pulls opcoll's
@@ -40,9 +43,13 @@ public:
     // (has_pending_ / pending_input_) is a per-cycle latch of opcoll's
     // output — not multi-cycle carry-forward state. evaluate() consumes the
     // value written by accept() THIS tick, never a prior committed value, so
-    // there is nothing to re-establish in next_*. seed_next() is therefore
-    // empty (the ExecutionUnit interface still carries it for the iterative
-    // units). See the classification criterion in the phase-10 plan.
+    // there is nothing to re-establish in the staged slot. seed_next() is
+    // therefore empty (the ExecutionUnit interface still carries it for the
+    // iterative units). Phase 3: the Reg<T>s here are committed and reset but
+    // never seeded; this is faithful because evaluate() re-stages every cycle
+    // (result_buffer_ unconditionally at the top; has_pending_/pending_input_
+    // via accept() then cleared at line that ends `next_has_pending_=false`).
+    // See the classification criterion in the phase-10 plan.
     void seed_next() override {}
     void evaluate() override;
     void commit() override;
@@ -71,7 +78,8 @@ public:
     // next_redirect() at the top of their own evaluate() — the back-to-front
     // sweep (Phase 10D) runs the ALU before the frontend, so the read sees
     // this tick's fresh transient. The redirect is a backward control signal
-    // (Principle 6): there is no current_* slot and no commit() flip.
+    // (Principle 6): there is no current_* slot and no commit() flip. Will
+    // become a Wire<T> in a later phase of the reg.h migration.
     const RedirectRequest& next_redirect() const {
         return next_redirect_;
     }
@@ -99,51 +107,50 @@ public:
     static bool branch_mispredicted(const DispatchInput& input);
 
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool busy() const { return current_has_pending_; }
+    bool busy() const { return has_pending_.current(); }
     std::optional<uint32_t> active_warp() const {
-        if (!current_has_pending_) return std::nullopt;
-        return current_pending_input_.warp_id;
+        if (!has_pending_.current()) return std::nullopt;
+        return pending_input_.current().warp_id;
     }
     const DispatchInput* pending_input() const {
-        return current_has_pending_ ? &current_pending_input_ : nullptr;
+        return has_pending_.current() ? &pending_input_.current() : nullptr;
     }
     const WritebackEntry* result_entry() const {
         // Phase 10B.3: the result buffer is a plain double-buffered pipeline
         // register. The trace path runs after commit(), so it reads the
-        // committed current_* slot.
-        return current_result_buffer_.valid ? &current_result_buffer_ : nullptr;
+        // committed slot.
+        return result_buffer_.current().valid ? &result_buffer_.current() : nullptr;
     }
 
 private:
     Stats& stats_;
-    // Double-buffered cross-cycle state. accept() / evaluate() / consume_result()
-    // write only next_*; commit() flips next_* -> current_*. External readers
-    // (writeback arbiter, scheduler, panic drain, snapshot) see current_*.
-    WritebackEntry current_result_buffer_;
-    WritebackEntry next_result_buffer_;
-    bool current_has_pending_ = false;
-    bool next_has_pending_ = false;
-    DispatchInput current_pending_input_;
-    DispatchInput next_pending_input_;
+    // Phase 3 (reg.h migration): the ALU's per-cycle pipeline registers.
+    // accept() / evaluate() / consume_result() write only the staged slot via
+    // set_next() / next_mut(); commit() latches. External readers (writeback
+    // arbiter, scheduler, panic drain, snapshot) see the committed slot.
+    Reg<WritebackEntry> result_buffer_;
+    Reg<bool> has_pending_;
+    Reg<DispatchInput> pending_input_;
     // Phase 10B.0.5: not double-buffered. accept() writes it and evaluate()
     // reads it within the same tick (into next_result_buffer_.issue_cycle);
     // no consumer ever reads a prior committed value, so it carries no
-    // cross-cycle information for a 1-cycle ALU and needs no current_/next_
-    // pair.
-    uint64_t pending_cycle_ = 0;
+    // cross-cycle information for a 1-cycle ALU and needs no Reg wrapper.
+    uint64_t pending_cycle_ = 0;         // scratch (single-tick latch)
 
     // Phase 10B.0.5: per-cycle scratch flag. evaluate() sets it to whether it
     // processed an instruction this cycle; commit() consumes it to relocate
     // the alu_stats.busy_cycles / .instructions increments out of evaluate()
     // (a re-evaluated stalled cycle must not double-count Stats artifacts).
     // Not a double-buffered field — evaluate() assigns it fresh each cycle.
-    bool processed_this_cycle_ = false;
+    bool processed_this_cycle_ = false;  // scratch
 
     // Phase 10E COMBINATIONAL-backward redirect signal. Single transient
     // slot, reset at the top of evaluate() and asserted on a mispredicted
     // branch the same cycle; there is no current_* twin and no commit()
     // flip. FetchStage / DecodeStage read it via next_redirect() at the top
-    // of their own evaluate() (back-to-front sweep: ALU runs first).
+    // of their own evaluate() (back-to-front sweep: ALU runs first). Will
+    // become a Wire<T> in a later phase of the reg.h migration; Phase 3
+    // leaves it as a plain transient.
     RedirectRequest next_redirect_{};
     // Test-only override; when set, evaluate() reads it into next_redirect_.
     std::optional<RedirectRequest> redirect_override_;
@@ -161,7 +168,7 @@ private:
     // non-stalled commit()). "Branch still at the resolve stage" iff "ALU was
     // stalled" — the ALU is fully pipelined and the writeback stall is the
     // only thing that holds it — so no instruction tag is needed.
-    bool branch_resolved_ = false;
+    bool branch_resolved_ = false;  // sim-instrumentation: deliberate non-register, see timing_discipline.md
 
     // Wired post-construction; nullptr-tolerant for unit tests in isolation.
     BranchShadowTracker* branch_tracker_ = nullptr;

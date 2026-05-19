@@ -4,28 +4,21 @@
 namespace gpu_sim {
 
 void TLookupUnit::accept(const DispatchInput& input, uint64_t cycle) {
-    // Phase 1 discipline: writes only into next_* slots.
-    next_busy_ = true;
-    next_cycles_remaining_ = TLOOKUP_LATENCY;
-    next_pending_result_.valid = true;
-    next_pending_result_.warp_id = input.warp_id;
-    next_pending_result_.dest_reg = input.decoded.rd;
-    next_pending_result_.values = input.trace.results;
-    next_pending_result_.source_unit = ExecUnit::TLOOKUP;
-    next_pending_result_.pc = input.pc;
-    next_pending_result_.raw_instruction = input.decoded.raw;
-    next_pending_result_.issue_cycle = cycle;
+    // Phase 1 discipline: writes only into the staged slot.
+    busy_.set_next(true);
+    cycles_remaining_.set_next(TLOOKUP_LATENCY);
+    WritebackEntry& pr = pending_result_.next_mut();
+    pr.valid = true;
+    pr.warp_id = input.warp_id;
+    pr.dest_reg = input.decoded.rd;
+    pr.values = input.trace.results;
+    pr.source_unit = ExecUnit::TLOOKUP;
+    pr.pc = input.pc;
+    pr.raw_instruction = input.decoded.raw;
+    pr.issue_cycle = cycle;
     // Phase 10B.0.5: tlookup_stats.instructions is incremented in commit()
     // (gated on accepted_this_cycle_), not here.
     accepted_this_cycle_ = true;
-}
-
-void TLookupUnit::seed_next() {
-    // Phase 10B.0.5: re-establish the carry-forward iterative state in next_*
-    // at the top of the tick.
-    next_busy_ = current_busy_;
-    next_cycles_remaining_ = current_cycles_remaining_;
-    next_pending_result_ = current_pending_result_;
 }
 
 void TLookupUnit::evaluate() {
@@ -37,19 +30,19 @@ void TLookupUnit::evaluate() {
         }
     }
 
-    // Operates on next_* (seeded equal to current_* by seed_next() at the top
-    // of the tick, possibly updated by accept() earlier this tick).
+    // Operates on the staged slots (seeded equal to current_* by seed_next()
+    // at the top of the tick, possibly updated by accept() earlier this tick).
     // Phase 10B.3: the result buffer is a plain double-buffered pipeline
-    // register — assign next_result_buffer_ fresh every cycle.
-    next_result_buffer_ = WritebackEntry{};
+    // register — assign it fresh every cycle.
+    result_buffer_.set_next(WritebackEntry{});
     // Phase 10B.0.5: capture the per-cycle busy flag before the body may
     // clear next_busy_; tlookup_stats.busy_cycles is incremented at commit().
-    busy_this_cycle_ = next_busy_;
-    if (next_busy_) {
-        next_cycles_remaining_--;
-        if (next_cycles_remaining_ == 0) {
-            next_result_buffer_ = next_pending_result_;
-            next_busy_ = false;
+    busy_this_cycle_ = busy_.next();
+    if (busy_.next()) {
+        cycles_remaining_.next_mut()--;
+        if (cycles_remaining_.next() == 0) {
+            result_buffer_.set_next(pending_result_.next());
+            busy_.set_next(false);
         }
     }
 }
@@ -73,33 +66,17 @@ void TLookupUnit::commit() {
         accepted_this_cycle_ = false;
     }
 
-    current_busy_ = next_busy_;
-    current_cycles_remaining_ = next_cycles_remaining_;
-    current_pending_result_ = next_pending_result_;
-    current_result_buffer_ = next_result_buffer_;
-}
-
-void TLookupUnit::reset() {
-    current_busy_ = false;
-    next_busy_ = false;
-    current_cycles_remaining_ = 0;
-    next_cycles_remaining_ = 0;
-    current_result_buffer_.valid = false;
-    next_result_buffer_.valid = false;
-    current_pending_result_.valid = false;
-    next_pending_result_.valid = false;
-    busy_this_cycle_ = false;
-    accepted_this_cycle_ = false;
+    commit_all();
 }
 
 bool TLookupUnit::current_has_result() const {
-    // Phase 10B.3: REGISTERED unit->arbiter edge — committed (current_*) state.
-    return current_result_buffer_.valid;
+    // Phase 10B.3: REGISTERED unit->arbiter edge — committed state.
+    return result_buffer_.current().valid;
 }
 
 WritebackEntry TLookupUnit::consume_result() {
     // Phase 10B.3: pure read — mutates nothing.
-    return current_result_buffer_;
+    return result_buffer_.current();
 }
 
 } // namespace gpu_sim

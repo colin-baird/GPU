@@ -2,18 +2,22 @@
 
 #include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/stats.h"
 
 namespace gpu_sim {
 
 class WritebackArbiter;
 
-class DivideUnit : public ExecutionUnit {
+class DivideUnit : public ExecutionUnit, public RegisteredStage {
 public:
-    explicit DivideUnit(Stats& stats) : stats_(stats) {}
+    explicit DivideUnit(Stats& stats) : stats_(stats) {
+        register_state(&busy_, &cycles_remaining_, &pending_result_,
+                       &result_buffer_);
+    }
 
     bool current_busy() const override {
-        return current_busy_ || current_result_buffer_.valid;
+        return busy_.current() || result_buffer_.current().valid;
     }
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
@@ -25,33 +29,34 @@ public:
     }
     void set_sim_cycle(const uint64_t* cycle) { sim_cycle_ = cycle; }
 
-    // Phase 10B.0.5: copy the carry-forward iterative state current_* ->
-    // next_*. evaluate() consumes the prior-cycle busy flag and decrements
-    // cycles_remaining, so busy_/cycles_remaining_/pending_result_ are genuine
-    // multi-cycle carry-forward. The result buffer is NOT seeded — evaluate()
-    // assigns it fresh when the countdown reaches zero.
-    void seed_next() override;
+    // Phase 10B.0.5: re-establish the carry-forward iterative state at the top
+    // of the tick. busy_, cycles_remaining_, pending_result_ are genuine
+    // multi-cycle carry-forward. seed_all() also seeds result_buffer_; that is
+    // byte-identical because evaluate() unconditionally restages it
+    // (WritebackEntry{}) at its top before any conditional write.
+    void seed_next() override { seed_all(); }
     void evaluate() override;
     void commit() override;
-    void reset() override;
+    void reset() override { reset_all(); busy_this_cycle_ = false; accepted_this_cycle_ = false; }
     bool current_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::DIVIDE; }
 
     void accept(const DispatchInput& input, uint64_t cycle);
-    bool busy() const { return current_busy_; }
-    uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
+    bool busy() const { return busy_.current(); }
+    uint32_t current_cycles_remaining() const { return cycles_remaining_.current(); }
     std::optional<uint32_t> active_warp() const {
-        if (!current_busy_) return std::nullopt;
-        return current_pending_result_.warp_id;
+        if (!busy_.current()) return std::nullopt;
+        return pending_result_.current().warp_id;
     }
     const WritebackEntry* pending_entry() const {
-        return current_busy_ ? &current_pending_result_ : nullptr;
+        return busy_.current() ? &pending_result_.current() : nullptr;
     }
     const WritebackEntry* result_entry() const {
         // Phase 10B.3: the result buffer is a plain double-buffered pipeline
-        // register. The trace path runs after commit(), so it reads current_*.
-        return current_result_buffer_.valid ? &current_result_buffer_ : nullptr;
+        // register. The trace path runs after commit(), so it reads the
+        // committed slot.
+        return result_buffer_.current().valid ? &result_buffer_.current() : nullptr;
     }
 
 private:
@@ -60,22 +65,18 @@ private:
     static constexpr uint32_t DIVIDE_LATENCY = kDivideLatency;
 
     Stats& stats_;
-    // Phase 1 discipline: every cross-cycle field is double-buffered.
-    bool current_busy_ = false;
-    bool next_busy_ = false;
-    uint32_t current_cycles_remaining_ = 0;
-    uint32_t next_cycles_remaining_ = 0;
-    WritebackEntry current_pending_result_;
-    WritebackEntry next_pending_result_;
-    WritebackEntry current_result_buffer_;
-    WritebackEntry next_result_buffer_;
+    // Phase 3 (reg.h migration): every cross-cycle field is a Reg<T>.
+    Reg<bool> busy_;
+    Reg<uint32_t> cycles_remaining_;
+    Reg<WritebackEntry> pending_result_;
+    Reg<WritebackEntry> result_buffer_;
 
     // Phase 10B.0.5: per-cycle scratch flags for Stats relocation. evaluate()
     // assigns busy_this_cycle_ fresh; accept() sets accepted_this_cycle_. Both
     // consumed at commit() so a re-evaluated stalled cycle does not
     // double-count div_stats.
-    bool busy_this_cycle_ = false;
-    bool accepted_this_cycle_ = false;
+    bool busy_this_cycle_ = false;       // scratch
+    bool accepted_this_cycle_ = false;   // scratch
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
     OperandCollector* opcoll_ = nullptr;

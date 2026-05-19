@@ -56,7 +56,8 @@ void CoalescingUnit::evaluate() {
         }
 
         current_entry_ = fifo_front;
-        // Phase M1: REGISTERED FIFO — defer pop to commit().
+        // Phase M1: defer the pop to commit. Read remains a stable
+        // committed-state read.
         next_pop_ = true;
         processing_ = true;
 
@@ -132,19 +133,22 @@ void CoalescingUnit::evaluate() {
 }
 
 void CoalescingUnit::commit() {
-    // Phase M1: apply the staged FIFO pop. The defensive empty check below
-    // should never fire — between the evaluate that set next_pop_ and this
-    // commit, the only mutation to addr_gen_fifo_ is LdStUnit::commit()
-    // pushing to the back; the front is stable.
-    if (next_pop_ && !ldst_.current_fifo_empty()) {
-        ldst_.pop_front();
+    // Phase M1: apply the deferred pop on the ldst addr-gen FIFO. This commit
+    // is ungated — coalescing is not part of the writeback-stall freeze, so a
+    // pop may still drain the FIFO even when LdStUnit::commit is held; the
+    // held push lands on the resumed cycle.
+    if (next_pop_) {
+        if (!ldst_.current_fifo_empty()) {
+            ldst_.pop_front();
+        }
+        next_pop_ = false;
     }
-    next_pop_ = false;
 }
 
 void CoalescingUnit::reset() {
     processing_ = false;
     serial_index_ = 0;
+    next_pop_ = false;
     cmd_in_flight_ = false;
 }
 

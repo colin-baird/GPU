@@ -4,8 +4,8 @@
 namespace gpu_sim {
 
 void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
-    // Phase 1 discipline: writes only into next_* slots. The newly-pushed
-    // entry is visible to this same tick's evaluate() through next_pipeline_.
+    // Phase 1 discipline: writes only into the staged slot. The newly-pushed
+    // entry is visible to this same tick's evaluate() through pipeline_.next().
     PipelineEntry entry;
     entry.wb.valid = true;
     entry.wb.warp_id = input.warp_id;
@@ -16,16 +16,10 @@ void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
     entry.wb.raw_instruction = input.decoded.raw;
     entry.wb.issue_cycle = cycle;
     entry.cycles_remaining = pipeline_stages_;
-    next_pipeline_.push_back(entry);
+    pipeline_.next_mut().push_back(entry);
     // Phase 10B.0.5: mul_stats.instructions is incremented in commit()
     // (gated on accepted_this_cycle_), not here.
     accepted_this_cycle_ = true;
-}
-
-void MultiplyUnit::seed_next() {
-    // Phase 10B.0.5: re-establish the carry-forward pipeline state in next_*
-    // at the top of the tick. A deque copy — depth is kMulPipelineStages.
-    next_pipeline_ = current_pipeline_;
 }
 
 void MultiplyUnit::evaluate() {
@@ -38,38 +32,40 @@ void MultiplyUnit::evaluate() {
         }
     }
 
-    // At entry, next_pipeline_ already contains all prior committed entries
+    // At entry, pipeline_.next() already contains all prior committed entries
     // (seeded by seed_next() via next_=current_) plus any entry just pushed by
-    // accept() this tick. We mutate next_pipeline_ in place: decrement
-    // cycles_remaining, and pop the head into next_result_buffer_ when ready.
+    // accept() this tick. We mutate the staged deque in place: decrement
+    // cycles_remaining, and pop the head into the staged result buffer when
+    // ready.
     // Phase 10B.0.5: assign the per-cycle busy flag fresh; mul_stats.busy_cycles
     // is incremented at commit() gated on it.
-    busy_this_cycle_ = !next_pipeline_.empty();
+    auto& staged_pipeline = pipeline_.next_mut();
+    busy_this_cycle_ = !staged_pipeline.empty();
 
     // Phase 10B.3: the result buffer is a plain double-buffered pipeline
-    // register — assign next_result_buffer_ fresh every cycle. There is no
-    // head-blocked hold: the writeback bitmap (10B.0) guarantees the prior
-    // fixed-latency result was consumed before a fresh one is produced, and a
-    // load-preempted result is held by the stalled (gated) commit() — so a
-    // non-stalled evaluate() can always pop a ready head unconditionally.
-    next_result_buffer_ = WritebackEntry{};
+    // register — assign it fresh every cycle. There is no head-blocked hold:
+    // the writeback bitmap (10B.0) guarantees the prior fixed-latency result
+    // was consumed before a fresh one is produced, and a load-preempted result
+    // is held by the stalled (gated) commit() — so a non-stalled evaluate()
+    // can always pop a ready head unconditionally.
+    result_buffer_.set_next(WritebackEntry{});
 
-    for (auto& entry : next_pipeline_) {
+    for (auto& entry : staged_pipeline) {
         if (entry.cycles_remaining > 0) {
             entry.cycles_remaining--;
         }
     }
 
     // Check if head of pipeline is done; pop it into the result buffer.
-    if (!next_pipeline_.empty() && next_pipeline_.front().cycles_remaining == 0) {
-        next_result_buffer_ = next_pipeline_.front().wb;
-        next_pipeline_.pop_front();
+    if (!staged_pipeline.empty() && staged_pipeline.front().cycles_remaining == 0) {
+        result_buffer_.set_next(staged_pipeline.front().wb);
+        staged_pipeline.pop_front();
     }
 }
 
 void MultiplyUnit::commit() {
     // Phase 10B.3: writeback-stall self-gate. On a stalled cycle this stage
-    // holds — no next_->current_ flip, no Stats increment — so the pipeline
+    // holds — no commit_all() flip, no Stats increment — so the pipeline
     // and result buffer re-evaluate identically next tick.
     if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
         return;
@@ -91,36 +87,26 @@ void MultiplyUnit::commit() {
         accepted_this_cycle_ = false;
     }
 
-    // Flip next_* -> current_*.
-    current_pipeline_ = next_pipeline_;
-    current_result_buffer_ = next_result_buffer_;
-}
-
-void MultiplyUnit::reset() {
-    current_pipeline_.clear();
-    next_pipeline_.clear();
-    current_result_buffer_.valid = false;
-    next_result_buffer_.valid = false;
-    busy_this_cycle_ = false;
-    accepted_this_cycle_ = false;
+    commit_all();
 }
 
 bool MultiplyUnit::current_has_result() const {
-    // Phase 10B.3: REGISTERED unit->arbiter edge — committed (current_*) state.
-    return current_result_buffer_.valid;
+    // Phase 10B.3: REGISTERED unit->arbiter edge — committed state.
+    return result_buffer_.current().valid;
 }
 
 WritebackEntry MultiplyUnit::consume_result() {
     // Phase 10B.3: pure read. A consumed result clears naturally next cycle
-    // (the non-stalled commit() lets evaluate() overwrite next_result_buffer_);
+    // (the non-stalled commit() lets evaluate() overwrite the staged slot);
     // a preempted result is held by the stalled (gated) commit().
-    return current_result_buffer_;
+    return result_buffer_.current();
 }
 
 std::vector<uint32_t> MultiplyUnit::active_warps() const {
     std::vector<uint32_t> warps;
-    warps.reserve(current_pipeline_.size());
-    for (const auto& entry : current_pipeline_) {
+    const auto& committed = pipeline_.current();
+    warps.reserve(committed.size());
+    for (const auto& entry : committed) {
         warps.push_back(entry.wb.warp_id);
     }
     return warps;
@@ -128,8 +114,9 @@ std::vector<uint32_t> MultiplyUnit::active_warps() const {
 
 std::vector<MultiplyUnit::PipelineSnapshot> MultiplyUnit::pipeline_snapshot() const {
     std::vector<PipelineSnapshot> snapshot;
-    snapshot.reserve(current_pipeline_.size());
-    for (const auto& entry : current_pipeline_) {
+    const auto& committed = pipeline_.current();
+    snapshot.reserve(committed.size());
+    for (const auto& entry : committed) {
         PipelineSnapshot item;
         item.warp_id = entry.wb.warp_id;
         item.pc = entry.wb.pc;

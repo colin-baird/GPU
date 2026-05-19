@@ -2,6 +2,7 @@
 
 #include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/timing/operand_collector.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/stats.h"
 #include <deque>
 #include <optional>
@@ -20,19 +21,18 @@ struct AddrGenFIFOEntry {
     uint64_t issue_cycle;
 };
 
-class LdStUnit : public ExecutionUnit {
+class LdStUnit : public ExecutionUnit, public RegisteredStage {
 public:
     LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats);
 
-    bool current_busy() const override { return current_busy_; }
+    bool current_busy() const override { return busy_.current(); }
     // Phase 10B.0.5: LdSt is a full seed_next participant. Address generation
     // is multi-cycle — while an addr-gen op is in flight evaluate() consumes
     // busy_/cycles_remaining_/pending_entry_ from the prior cycle — so these
-    // are genuine carry-forward. seed_next() copies them current_* -> next_*.
-    // The addr_gen_fifo_ deque keeps its M1 commit-phase-mutation discipline
-    // (it is not double-buffered) and is untouched; next_push_ is a fresh
-    // per-cycle staging slot reset at the top of evaluate().
-    void seed_next() override;
+    // are genuine carry-forward. Phase 3: seed_all() seeds those three Regs;
+    // the addr_gen_fifo_ RegFifo's seed() is a no-op (the committed deque is
+    // the only state), so the call is equivalent to today's per-field seeding.
+    void seed_next() override { seed_all(); }
     void evaluate() override;
     void commit() override;
     void reset() override;
@@ -51,33 +51,40 @@ public:
     }
     void set_sim_cycle(const uint64_t* cycle) { sim_cycle_ = cycle; }
 
-    // Phase M1 discipline: the address-gen FIFO is REGISTERED. evaluate()
-    // does not push directly; it stages an entry in next_push_ and commit()
-    // applies it. coalescing reads current_fifo_* (the stable single-field
-    // state) during its evaluate and stages a pop in its own next-side flag,
-    // applied at coalescing.commit() via pop_front(). End-of-cycle state is
-    // identical to the pre-M1 mid-evaluate model. This matches the structural
-    // pattern in fetch_stage.cpp where fetch's `will_be_full` check does not
-    // account for scheduler's same-cycle pop of `instr_buffer`; an FIFO-full
-    // bubble of one cycle is parity with that pattern.
+    // Phase M1: REGISTERED address-gen FIFO. Mutated only at the commit
+    // phase — producer (this unit) writes next_push_ at evaluate and applies
+    // it at LdStUnit::commit (gated by the writeback stall); consumer
+    // (coalescing) drives pop_front() from its own commit (ungated). The
+    // asymmetric gating is deliberate: on a writeback-stall cycle, coalescing
+    // may still drain the FIFO while this unit holds its push, and the held
+    // entry re-pushes on the resumed cycle. Reads during evaluate see the
+    // start-of-cycle state.
+    //
+    // This FIFO is intentionally hand-rolled rather than wrapped in a
+    // RegFifo<T> — the simple RegFifo applies pop-then-push atomically inside
+    // a single owning stage's commit(), which cannot express the cross-stage
+    // commit-gating asymmetry above (Phase 3 verified this empirically: the
+    // RegFifo migration produced cycle-count deltas across all six workload
+    // benchmarks). The deque + next_push_ + caller-driven pop_front() pattern
+    // remains the byte-identical encoding.
     bool current_fifo_empty() const { return addr_gen_fifo_.empty(); }
     const AddrGenFIFOEntry& current_fifo_front() const { return addr_gen_fifo_.front(); }
     void pop_front() { addr_gen_fifo_.pop_front(); }
-    bool busy() const { return current_busy_; }
-    uint32_t current_cycles_remaining() const { return current_cycles_remaining_; }
+    bool busy() const { return busy_.current(); }
+    uint32_t current_cycles_remaining() const { return cycles_remaining_.current(); }
     std::optional<uint32_t> active_warp() const {
-        if (!current_busy_) return std::nullopt;
-        return current_pending_entry_.warp_id;
+        if (!busy_.current()) return std::nullopt;
+        return pending_entry_.current().warp_id;
     }
     const AddrGenFIFOEntry* pending_entry() const {
-        return current_pending_entry_.valid ? &current_pending_entry_ : nullptr;
+        return pending_entry_.current().valid ? &pending_entry_.current() : nullptr;
     }
-    // FIFO view for trace dumps. Reads the stable REGISTERED deque (same
-    // state observed by coalescing during evaluate this cycle).
+    // FIFO view for trace dumps. Reads the stable committed deque (same state
+    // observed by coalescing during evaluate this cycle).
     const std::deque<AddrGenFIFOEntry>& current_fifo_entries() const { return addr_gen_fifo_; }
     // Size accessor for upstream issue-gate bookkeeping (consumed by the
     // pipeline plan's Phase 10B.0 LDST FIFO accounting). REGISTERED: reads the
-    // committed addr-gen FIFO, which only commit() mutates.
+    // committed addr-gen FIFO.
     uint32_t current_fifo_size() const { return static_cast<uint32_t>(addr_gen_fifo_.size()); }
 
     // Phase 10B.0: the addr-gen FIFO's configured depth (SimConfig
@@ -87,7 +94,7 @@ public:
 
     // Phase 10B.0: address-generation latency, ceil(WARP_SIZE / num_ldst_units)
     // cycles. The addr-gen stage holds exactly one op at a time (a single
-    // next_busy_ flag — accept() unconditionally overwrites it), so it is an
+    // busy_ flag — accept() unconditionally overwrites it), so it is an
     // iterative structural hazard distinct from the addr-gen FIFO. The
     // scheduler arms its unit_busy_[LDST] countdown with this value so two
     // LDST ops are never issued closely enough for the second to clobber the
@@ -110,31 +117,30 @@ private:
     uint32_t fifo_depth_;
     Stats& stats_;
 
-    // Phase 1 discipline: every cross-cycle field is double-buffered.
-    bool current_busy_ = false;
-    bool next_busy_ = false;
-    uint32_t current_cycles_remaining_ = 0;
-    uint32_t next_cycles_remaining_ = 0;
-    AddrGenFIFOEntry current_pending_entry_;
-    AddrGenFIFOEntry next_pending_entry_;
-    // Phase M1: REGISTERED address-gen FIFO. Mutated only at commit phase
-    // — producer (this unit) writes next_push_ at evaluate; consumer
-    // (coalescing) drives pop_front() from its own commit. Reads during
-    // evaluate see the start-of-cycle state.
+    // Phase 3 (reg.h migration): the per-cycle iterative state is wrapped in
+    // Reg<T>; the addr-gen FIFO is intentionally NOT a RegFifo (see the
+    // public-section comment above).
+    Reg<bool> busy_;
+    Reg<uint32_t> cycles_remaining_;
+    Reg<AddrGenFIFOEntry> pending_entry_;
+    // Phase M1: REGISTERED address-gen FIFO. Mutated only at the commit phase
+    // — push applied here (gated), pop applied by coalescing (ungated).
     std::deque<AddrGenFIFOEntry> addr_gen_fifo_;
     std::optional<AddrGenFIFOEntry> next_push_;
-    // Phase 10B.0: REGISTERED monotonic push counter. Incremented in commit()
-    // on the cycle the staged next_push_ is applied — the same cycle the
-    // op becomes visible in addr_gen_fifo_. Never decremented; the scheduler's
+    // Phase 10B.0: monotonic push counter. Incremented in commit() on the
+    // cycle the staged push is applied — the same cycle the op becomes
+    // visible in addr_gen_fifo_. Never decremented; the scheduler's
     // FIFO-occupancy gate uses it as a difference against ldst_issued_total_.
-    uint32_t fifo_total_pushes_ = 0;
+    // Plain uint32_t: monotonic sim-instrumentation accumulator, not a
+    // clocked-hardware register.
+    uint32_t fifo_total_pushes_ = 0;     // sim-instrumentation
 
     // Phase 10B.0.5: per-cycle scratch flags for Stats relocation. evaluate()
     // assigns busy_this_cycle_ fresh; accept() sets accepted_this_cycle_. Both
     // consumed at commit() so a re-evaluated stalled cycle does not
     // double-count ldst_stats.
-    bool busy_this_cycle_ = false;
-    bool accepted_this_cycle_ = false;
+    bool busy_this_cycle_ = false;       // scratch
+    bool accepted_this_cycle_ = false;   // scratch
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
     OperandCollector* opcoll_ = nullptr;

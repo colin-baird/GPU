@@ -4,33 +4,27 @@
 namespace gpu_sim {
 
 LdStUnit::LdStUnit(uint32_t num_ldst_units, uint32_t fifo_depth, Stats& stats)
-    : num_ldst_units_(num_ldst_units), fifo_depth_(fifo_depth), stats_(stats) {}
+    : num_ldst_units_(num_ldst_units), fifo_depth_(fifo_depth), stats_(stats) {
+    register_state(&busy_, &cycles_remaining_, &pending_entry_);
+}
 
 void LdStUnit::accept(const DispatchInput& input, uint64_t cycle) {
-    // Phase 1 discipline: writes only into next_* slots. ceil(32 / num_ldst_units)
+    // Phase 1 discipline: writes only into the staged slot. ceil(32 / num_ldst_units)
     // cycles for address generation.
-    next_busy_ = true;
-    next_cycles_remaining_ = (WARP_SIZE + num_ldst_units_ - 1) / num_ldst_units_;
+    busy_.set_next(true);
+    cycles_remaining_.set_next((WARP_SIZE + num_ldst_units_ - 1) / num_ldst_units_);
 
-    next_pending_entry_.valid = true;
-    next_pending_entry_.warp_id = input.warp_id;
-    next_pending_entry_.dest_reg = input.decoded.rd;
-    next_pending_entry_.is_load = input.trace.is_load;
-    next_pending_entry_.is_store = input.trace.is_store;
-    next_pending_entry_.trace = input.trace;
-    next_pending_entry_.issue_cycle = cycle;
+    AddrGenFIFOEntry& pe = pending_entry_.next_mut();
+    pe.valid = true;
+    pe.warp_id = input.warp_id;
+    pe.dest_reg = input.decoded.rd;
+    pe.is_load = input.trace.is_load;
+    pe.is_store = input.trace.is_store;
+    pe.trace = input.trace;
+    pe.issue_cycle = cycle;
     // Phase 10B.0.5: ldst_stats.instructions is incremented in commit()
     // (gated on accepted_this_cycle_), not here.
     accepted_this_cycle_ = true;
-}
-
-void LdStUnit::seed_next() {
-    // Phase 10B.0.5: re-establish the carry-forward addr-gen state in next_*
-    // at the top of the tick. addr_gen_fifo_ / fifo_total_pushes_ are not
-    // double-buffered (M1 commit-phase-mutation discipline) and are untouched.
-    next_busy_ = current_busy_;
-    next_cycles_remaining_ = current_cycles_remaining_;
-    next_pending_entry_ = current_pending_entry_;
 }
 
 void LdStUnit::evaluate() {
@@ -43,31 +37,27 @@ void LdStUnit::evaluate() {
         }
     }
 
-    // Operates on next_* (seeded equal to current_* by seed_next() at the top
-    // of the tick, possibly updated by accept() earlier this tick).
-    // Phase 10B.0.5: next_push_ is a fresh per-cycle staging slot — reset it
-    // at the top of evaluate() (moved here from commit()) so a gated commit()
-    // does not skip the reset. Matches how opcoll::evaluate resets
-    // next_output_.
-    next_push_.reset();
+    // Operates on the staged slots (seeded equal to current_* by seed_next()
+    // at the top of the tick, possibly updated by accept() earlier this tick).
     // Phase 10B.0.5: capture the per-cycle busy flag before the body may
     // clear next_busy_; ldst_stats.busy_cycles is incremented at commit().
-    busy_this_cycle_ = next_busy_;
-    if (next_busy_) {
-        if (next_cycles_remaining_ > 0) {
-            next_cycles_remaining_--;
+    busy_this_cycle_ = busy_.next();
+    if (busy_.next()) {
+        if (cycles_remaining_.next() > 0) {
+            cycles_remaining_.next_mut()--;
         }
-        if (next_cycles_remaining_ == 0) {
-            // Phase M1: REGISTERED FIFO. The push is staged in next_push_
-            // and applied at commit(). Eligibility check uses the stable
-            // current-cycle FIFO size; this mirrors fetch_stage.cpp's
-            // will_be_full check that does not account for the consumer's
-            // same-cycle pop. A one-cycle bubble when the FIFO is full and
-            // coalescing pops same-tick is the documented parity.
+        if (cycles_remaining_.next() == 0) {
+            // Phase M1: REGISTERED FIFO. Stage the push in next_push_; the
+            // commit phase applies it (gated by the writeback stall). The
+            // eligibility check uses the stable committed-cycle FIFO size;
+            // this mirrors fetch_stage.cpp's will_be_full check that does not
+            // account for the consumer's same-cycle pop. A one-cycle bubble
+            // when the FIFO is full and coalescing pops same-tick is the
+            // documented parity.
             if (addr_gen_fifo_.size() < fifo_depth_) {
-                next_push_ = next_pending_entry_;
-                next_pending_entry_.valid = false;
-                next_busy_ = false;
+                next_push_ = pending_entry_.next();
+                pending_entry_.next_mut().valid = false;
+                busy_.set_next(false);
             }
             // If FIFO full, stay busy (stall) until a slot opens
         }
@@ -77,11 +67,10 @@ void LdStUnit::evaluate() {
 void LdStUnit::commit() {
     // Phase 10B.3: writeback-stall self-gate. LdStUnit is one of the five
     // issue/execute units that freeze on a writeback-stall cycle: no
-    // next_->current_ flip and no FIFO push, so seed_next()+evaluate() re-run
-    // identically next tick (re-staging next_push_, re-pushing once). The
-    // addr-gen FIFO push is gated with the rest — coalescing (ungated) may
-    // still pop from the FIFO this cycle, which simply shrinks it; the
-    // LdStUnit re-pushes its held entry on the resumed cycle.
+    // commit_all() flip and no next_push_ application, so the next tick's
+    // seed_next()+evaluate() re-stages the push identically. Coalescing
+    // (ungated) may still pop from the FIFO this cycle, which simply
+    // shrinks it; the held push lands on the resumed cycle.
     if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
         return;
     }
@@ -98,33 +87,20 @@ void LdStUnit::commit() {
         accepted_this_cycle_ = false;
     }
 
-    current_busy_ = next_busy_;
-    current_cycles_remaining_ = next_cycles_remaining_;
-    current_pending_entry_ = next_pending_entry_;
-    // Phase M1: apply the staged push. Coalescing's commit (which runs
-    // after this in TimingModel::tick()) calls pop_front() — push touches
-    // the back, pop touches the front, so order between the two commits
-    // is irrelevant for correctness.
-    // Phase 10B.0.5: next_push_ is no longer reset here — it is reset at the
-    // top of evaluate() as a fresh per-cycle staging slot, so a gated commit()
-    // cannot skip the reset.
+    // Phase M1: apply the staged push to the committed FIFO; advance the
+    // monotonic push counter in lockstep with the push (the scheduler's
+    // LDST FIFO-occupancy gate reads current_fifo_total_pushes()).
     if (next_push_) {
         addr_gen_fifo_.push_back(*next_push_);
-        // Phase 10B.0: monotonic push counter advances on the same cycle the
-        // op becomes visible in addr_gen_fifo_, so the scheduler's
-        // (issued - pushed) difference stays invariant across the FIFO-entry
-        // transition.
+        next_push_.reset();
         ++fifo_total_pushes_;
     }
+
+    commit_all();
 }
 
 void LdStUnit::reset() {
-    current_busy_ = false;
-    next_busy_ = false;
-    current_cycles_remaining_ = 0;
-    next_cycles_remaining_ = 0;
-    current_pending_entry_.valid = false;
-    next_pending_entry_.valid = false;
+    reset_all();
     addr_gen_fifo_.clear();
     next_push_.reset();
     // Phase 10B.0: cleared in lockstep with WarpScheduler::reset()'s
