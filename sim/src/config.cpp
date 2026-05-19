@@ -76,6 +76,9 @@ void SimConfig::validate() const {
     if (dramsim3_bytes_per_burst == 0) {
         throw std::invalid_argument("dramsim3_bytes_per_burst must be > 0");
     }
+    if (dramsim3_write_commit_latency_tck < 1) {
+        throw std::invalid_argument("dramsim3_write_commit_latency_tck must be >= 1");
+    }
     if (cache_line_size_bytes % dramsim3_bytes_per_burst != 0) {
         throw std::invalid_argument(
             "cache_line_size_bytes must be a multiple of dramsim3_bytes_per_burst");
@@ -189,6 +192,7 @@ SimConfig SimConfig::from_json(const std::string& path) {
         else if (key == "external_memory_size_bytes") config.external_memory_size_bytes = num;
         else if (key == "dramsim3_request_fifo_depth") config.dramsim3_request_fifo_depth = num;
         else if (key == "dramsim3_bytes_per_burst") config.dramsim3_bytes_per_burst = num;
+        else if (key == "dramsim3_write_commit_latency_tck") config.dramsim3_write_commit_latency_tck = num;
         else if (key == "start_pc") config.start_pc = num;
         else if (key == "arg0") config.kernel_args[0] = num;
         else if (key == "arg1") config.kernel_args[1] = num;
@@ -268,6 +272,7 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         else if (key == "external_memory_size_bytes") external_memory_size_bytes = num;
         else if (key == "dramsim3_request_fifo_depth") dramsim3_request_fifo_depth = num;
         else if (key == "dramsim3_bytes_per_burst") dramsim3_bytes_per_burst = num;
+        else if (key == "dramsim3_write_commit_latency_tck") dramsim3_write_commit_latency_tck = num;
         else if (key == "start_pc") start_pc = num;
         else if (key == "arg0") kernel_args[0] = num;
         else if (key == "arg1") kernel_args[1] = num;

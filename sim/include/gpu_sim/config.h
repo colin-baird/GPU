@@ -65,6 +65,15 @@ struct SimConfig {
     // outstanding chunks than the architectural bound.
     uint32_t    dramsim3_request_fifo_depth = 32;
     uint32_t    dramsim3_bytes_per_burst = 32;      // BL8 x 32-bit = 32 B
+    // Synthetic write-commit latency, in DRAM cycles (tCK): how long after a
+    // write-through is issued to DRAM its write ack is released to the cache
+    // (releasing the write-ack pin). DRAMSim3's own write callback models a
+    // posted write at submit+1 and folds same-line writes, so it is neither
+    // 1:1 with write-throughs nor durability-faithful; DRAMSim3Memory
+    // synthesizes the ack instead. The default ~= CWL + 3*tCCD_S + BL/2 + tWR
+    // for a 4-chunk line under the DDR3-800 DE-10 Nano timings. Device-anchored
+    // (tCK), so it is stable under fabric/DRAM clock-ratio changes.
+    uint32_t    dramsim3_write_commit_latency_tck = 30;
 
     // Kernel arguments — loaded into x1..x6 of every lane at kernel launch.
     uint32_t kernel_args[6] = {0, 0, 0, 0, 0, 0};

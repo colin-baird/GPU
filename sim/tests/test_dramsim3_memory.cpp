@@ -636,3 +636,48 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-ack pin survives a store->load "
     REQUIRE(cache.is_idle());
     REQUIRE(mem.is_idle());
 }
+
+TEST_CASE("DRAMSim3Memory: same-line writes each get their own write ack",
+          "[dramsim3_memory]") {
+    // Regression for the write-ack folding deadlock. DRAMSim3 folds multiple
+    // in-flight same-line writes into one write_assembly_ slot and emits one
+    // (posted, submit+1) callback; its chunk-address callback is also
+    // collapsed by an address-keyed map. If the wrapper derived write acks
+    // from that callback, N same-line write-throughs would yield far fewer
+    // than N acks -> the cache's per-write-through outstanding-write counter
+    // would stick -> the set would stay write-ack-pinned forever -> hang.
+    // DRAMSim3Memory instead synthesizes one ack per submit_write.
+    Stats stats;
+    SimConfig cfg = make_dramsim3_config(4, "samelinewrites");
+    DRAMSim3Memory mem(cfg, stats);
+
+    constexpr uint32_t kLine = 0x20;
+    constexpr uint32_t kWrites = 4;  // <= write_buffer_depth, all to ONE line
+
+    for (uint32_t i = 0; i < kWrites; ++i) {
+        REQUIRE(mem.submit_write(kLine));
+    }
+    CHECK_FALSE(mem.is_idle());
+
+    // Every write-through must surface its own ack — 1:1, no folding.
+    uint32_t acks = 0;
+    for (uint32_t c = 0; c < 5000 && acks < kWrites; ++c) {
+        mem.evaluate();
+        while (mem.current_has_write_ack()) {
+            const auto ack = mem.get_write_ack();
+            CHECK(ack.is_write);
+            CHECK(ack.line_addr == kLine);
+            ++acks;
+        }
+    }
+    CHECK(acks == kWrites);   // would be < kWrites if same-line writes folded
+    CHECK(mem.is_idle());
+
+    // The synthetic ack is durability-latent, not posted at submit time:
+    // it must not arrive in the first couple of cycles after submit.
+    DRAMSim3Memory mem2(cfg, stats);
+    REQUIRE(mem2.submit_write(kLine));
+    mem2.evaluate();
+    mem2.evaluate();
+    CHECK_FALSE(mem2.current_has_write_ack());  // not yet — commit latency pending
+}

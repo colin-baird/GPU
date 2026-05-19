@@ -23,6 +23,7 @@ DRAMSim3Memory::DRAMSim3Memory(const SimConfig& cfg, Stats& stats)
       write_ack_queue_capacity_(cfg.max_outstanding_writes +
                                 (cfg.cache_line_size_bytes /
                                  cfg.dramsim3_bytes_per_burst)),
+      write_commit_latency_tck_(cfg.dramsim3_write_commit_latency_tck),
       ticks_per_fabric_(cfg.dram_clock_mhz / cfg.fpga_clock_mhz),
       read_assembly_(cfg.num_mshrs) {
     if (cfg.dramsim3_config_path.empty()) {
@@ -47,7 +48,12 @@ void DRAMSim3Memory::rebuild_memory_system() {
     std::error_code ec;
     std::filesystem::create_directories(cfg_.dramsim3_output_dir, ec);
     auto rcb = [this](uint64_t a) { on_read_complete(a); };
-    auto wcb = [this](uint64_t a) { on_write_complete(a); };
+    // DRAMSim3's write callback fires at submit+1 (it models a posted write)
+    // and is address-only — it cannot drive a 1:1, durability-faithful write
+    // ack. Writes are still issued to DRAMSim3 for bank/bus contention, but
+    // the cache-facing write ack is synthesized in submit_write/evaluate;
+    // the write callback itself is intentionally a no-op.
+    auto wcb = [](uint64_t) {};
     mem_.reset(dramsim3::GetMemorySystem(cfg_.dramsim3_config_path,
                                          cfg_.dramsim3_output_dir,
                                          std::move(rcb),
@@ -103,9 +109,6 @@ bool DRAMSim3Memory::submit_write(uint32_t line_addr) {
     if (write_chunks_in_fifo_ + chunks_per_line_ > write_region_capacity_) {
         return false;
     }
-    auto& w = write_assembly_[line_addr];
-    w.chunks_remaining = static_cast<uint16_t>(w.chunks_remaining + chunks_per_line_);
-
     const uint64_t base = static_cast<uint64_t>(line_addr) * line_size_;
     for (uint32_t i = 0; i < chunks_per_line_; ++i) {
         request_fifo_.push_back(
@@ -114,6 +117,12 @@ bool DRAMSim3Memory::submit_write(uint32_t line_addr) {
     }
     write_chunks_in_fifo_ += chunks_per_line_;
     stats_.external_memory_writes++;
+    // Schedule one synthetic write ack for this write-through, released
+    // write_commit_latency_tck_ DRAM cycles from now (the write being issued
+    // to DRAM). Exactly one ack per submit_write — 1:1 with the cache's
+    // outstanding-write counter, with no same-line folding.
+    pending_write_acks_.push_back(
+        {line_addr, dram_ticks_ + write_commit_latency_tck_});
     return true;
 }
 
@@ -156,7 +165,6 @@ void DRAMSim3Memory::evaluate() {
             const auto& c = request_fifo_.front();
             if (mem_->WillAcceptTransaction(c.chunk_byte_addr, c.is_write)) {
                 if (c.is_write) {
-                    write_chunk_to_line_[c.chunk_byte_addr] = c.line_addr;
                     --write_chunks_in_fifo_;
                 } else {
                     read_chunk_to_mshr_[c.chunk_byte_addr] = c.mshr_id;
@@ -168,6 +176,20 @@ void DRAMSim3Memory::evaluate() {
         mem_->ClockTick();
         ++dram_ticks_;
         phase_ -= 1.0;
+    }
+
+    // Release synthetic write acks whose commit latency has elapsed.
+    // pending_write_acks_ is sorted by release tick (submit order, constant
+    // latency), so a front-drain is correct.
+    while (!pending_write_acks_.empty() &&
+           pending_write_acks_.front().release_dram_tick <= dram_ticks_) {
+        assert(write_acks_.size() < write_ack_queue_capacity_ &&
+               "DRAMSim3Memory write-ack queue overflow on synthetic release");
+        write_acks_.push_back({pending_write_acks_.front().line_addr, 0, true});
+        pending_write_acks_.pop_front();
+        if (write_acks_.size() > max_write_ack_queue_) {
+            max_write_ack_queue_ = write_acks_.size();
+        }
     }
 }
 
@@ -193,7 +215,7 @@ MemoryResponse DRAMSim3Memory::get_write_ack() {
 
 bool DRAMSim3Memory::is_idle() const {
     if (!request_fifo_.empty() || !responses_.empty() || !write_acks_.empty()) return false;
-    if (!write_assembly_.empty()) return false;
+    if (!pending_write_acks_.empty()) return false;
     if (current_read_request_.valid || next_read_request_.valid) return false;
     if (current_write_request_.valid || next_write_request_.valid) return false;
     for (const auto& a : read_assembly_) {
@@ -203,7 +225,8 @@ bool DRAMSim3Memory::is_idle() const {
 }
 
 size_t DRAMSim3Memory::in_flight_count() const {
-    size_t n = write_assembly_.size();
+    // A write is in flight from submit_write until its synthetic ack releases.
+    size_t n = pending_write_acks_.size();
     for (const auto& a : read_assembly_) {
         if (a.active) ++n;
     }
@@ -215,10 +238,9 @@ void DRAMSim3Memory::reset() {
     write_chunks_in_fifo_ = 0;
     responses_.clear();
     write_acks_.clear();
+    pending_write_acks_.clear();
     for (auto& a : read_assembly_) a = {};
-    write_assembly_.clear();
     read_chunk_to_mshr_.clear();
-    write_chunk_to_line_.clear();
     current_read_request_ = PendingMemoryRequest{};
     next_read_request_ = PendingMemoryRequest{};
     current_write_request_ = PendingMemoryRequest{};
@@ -255,30 +277,6 @@ void DRAMSim3Memory::on_read_complete(uint64_t addr) {
         a.active = false;
         if (responses_.size() > max_response_queue_) {
             max_response_queue_ = responses_.size();
-        }
-    }
-}
-
-void DRAMSim3Memory::on_write_complete(uint64_t addr) {
-    auto cit = write_chunk_to_line_.find(addr);
-    if (cit == write_chunk_to_line_.end()) return;
-    const uint32_t line_addr = cit->second;
-    write_chunk_to_line_.erase(cit);
-
-    auto wit = write_assembly_.find(line_addr);
-    if (wit == write_assembly_.end()) return;
-    auto& w = wit->second;
-    if (w.chunks_remaining == 0) return;
-    --w.chunks_remaining;
-    if (w.chunks_remaining == 0) {
-        // The write-ack queue is bounded by max_outstanding_writes (the
-        // cache's enqueue cap) plus a chunks_per_line cushion.
-        assert(write_acks_.size() < write_ack_queue_capacity_ &&
-               "DRAMSim3Memory write-ack queue overflow on write completion");
-        write_acks_.push_back({line_addr, 0, true});
-        write_assembly_.erase(wit);
-        if (write_acks_.size() > max_write_ack_queue_) {
-            max_write_ack_queue_ = write_acks_.size();
         }
     }
 }

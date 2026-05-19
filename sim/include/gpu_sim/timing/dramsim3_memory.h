@@ -71,13 +71,20 @@ private:
         uint64_t submit_cycle     = 0;
     };
 
-    struct WriteAssembly {
-        uint16_t chunks_remaining = 0;
+    // One synthetic write ack, scheduled per submit_write. DRAMSim3's own
+    // write callback fires at submit+1 (it models a posted write) and folds
+    // multiple in-flight same-line writes into one event — neither faithful
+    // to write durability nor 1:1 with write-throughs. So the wrapper
+    // synthesizes a write ack per submit_write, released a parameterized
+    // DRAM-cycle commit latency after the write is issued to DRAM. This is
+    // 1:1 with the cache's outstanding-write counter by construction.
+    struct PendingWriteAck {
+        uint32_t line_addr;
+        uint64_t release_dram_tick;
     };
 
     void rebuild_memory_system();
     void on_read_complete(uint64_t hex_addr);
-    void on_write_complete(uint64_t hex_addr);
 
     const SimConfig& cfg_;
     Stats& stats_;
@@ -102,12 +109,17 @@ private:
     // its push site:
     //   - read responses: at most one per in-flight MSHR, so num_mshrs.
     //   - write acks: the cache caps enqueued-but-unacked write-throughs at
-    //     max_outstanding_writes (eager-wobbling-pizza.md Steps 1-2) and the
-    //     write-ack queue holds a subset of those, plus a chunks_per_line
-    //     cushion for an in-evaluate completion and the bounded same-cycle
-    //     multi-enqueue overshoot. So max_outstanding_writes + chunks_per_line.
+    //     max_outstanding_writes (eager-wobbling-pizza.md Steps 1-2); the
+    //     synthetic write ack is 1:1 with submit_write, so the write-ack
+    //     queue holds a subset of those. The chunks_per_line cushion absorbs
+    //     the bounded same-cycle multi-enqueue overshoot.
     uint32_t read_response_queue_capacity_;
     uint32_t write_ack_queue_capacity_;
+    // Synthetic write-ack durability latency: DRAM cycles from a write being
+    // issued to DRAM until its ack is released to the cache (SimConfig
+    // dramsim3_write_commit_latency_tck). Models the DDR write-commit window
+    // (~CWL + BL/2 + tWR, plus column spacing for a multi-chunk line).
+    uint32_t write_commit_latency_tck_;
 
     // DRAM ticks per fabric tick. Fractional ratios accumulate in `phase_`.
     double ticks_per_fabric_;
@@ -121,19 +133,19 @@ private:
 
     // Response FIFO (DRAM clock producer; fabric clock consumer). Reads only.
     std::deque<MemoryResponse> responses_;
-    // Write-ack FIFO — write completions, drained unconditionally by the cache.
+    // Write-ack FIFO — synthetic write acks released after the commit
+    // latency, drained unconditionally by the cache.
     std::deque<MemoryResponse> write_acks_;
+    // Synthetic write acks awaiting their commit latency. One per submit_write,
+    // sorted by release tick (submit order, constant latency); the front-most
+    // ready entry is promoted into write_acks_ each evaluate().
+    std::deque<PendingWriteAck> pending_write_acks_;
 
     // Per-MSHR read reassembly. Indexed by mshr_id; sized to cfg.num_mshrs.
     std::vector<ReadAssembly> read_assembly_;
 
-    // Per-line write reassembly. Multiple in-flight writes to the same line
-    // share one slot.
-    std::unordered_map<uint32_t, WriteAssembly> write_assembly_;
-
-    // Reverse maps from chunk byte address (issued to DRAMSim3) to its owner.
+    // Reverse map from a read chunk's byte address to its owning MSHR.
     std::unordered_map<uint64_t, uint32_t> read_chunk_to_mshr_;
-    std::unordered_map<uint64_t, uint32_t> write_chunk_to_line_;
 
     // Fabric-clock cycle counter, incremented once per evaluate(). Used to
     // tag in-flight reads with their submit cycle so per-request latency
