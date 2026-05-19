@@ -8,7 +8,8 @@ L1Cache::L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
                  LoadGatherBufferFile& gather_file, Stats& stats)
     : cache_size_(cache_size), line_size_(line_size),
       num_sets_(cache_size / line_size),
-      tags_(cache_size / line_size),
+      current_tags_(cache_size / line_size),
+      next_tags_(cache_size / line_size),
       mshrs_(num_mshrs),
       write_buffer_depth_(write_buffer_depth),
       mem_if_(mem_if), gather_file_(gather_file), stats_(stats) {}
@@ -32,7 +33,19 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     uint32_t tag = get_tag(addr);
     uint32_t line_addr = get_line_addr(addr);
 
-    if (tags_[set].valid && tags_[set].tag == tag) {
+    // Fill-conflict retry: a load racing a fill that installs into this set
+    // this cycle is rejected and re-staged by coalescing's valid/ready
+    // handshake. This precedes every tag read, MSHR access, side effect, and
+    // trace event so a retried command leaves no partial state. Retrying
+    // loads (not just stores) closes the orphaned-secondary hang — a load
+    // miss in the fill cycle would chain onto the line's just-freed lone
+    // primary. See registered-tag-array.md Step 4.
+    if (fill_installed_set_ == static_cast<int32_t>(set)) {
+        stats_.fill_conflict_retry_cycles++;
+        return false;
+    }
+
+    if (current_tags_[set].valid && current_tags_[set].tag == tag) {
         // Cache hit: deposit lane values into the gather buffer. Phase 7:
         // arbitration is owned by LoadGatherBufferFile via a single shared
         // REGISTERED next_port_claimed flag (models spec §5.3 — one
@@ -54,14 +67,14 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     // Cache miss: check for line-pin stall before accepting the request. A
     // pin stall means this request has not been accepted, so the miss/load-miss
     // counters must not be incremented here.
-    if (tags_[set].valid && tags_[set].tag != tag && tags_[set].pinned) {
+    if (current_tags_[set].valid && current_tags_[set].tag != tag && current_tags_[set].pinned) {
         stats_.line_pin_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
         next_last_pin_stall_event_.valid = true;
         next_last_pin_stall_event_.warp_id = warp_id;
         next_last_pin_stall_event_.requested_line_addr = line_addr;
-        next_last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
+        next_last_pin_stall_event_.pinned_line_addr = current_tags_[set].tag * num_sets_ + set;
         next_last_pin_stall_event_.is_store = false;
         return false;
     }
@@ -119,7 +132,16 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     uint32_t set = get_set(addr);
     uint32_t tag = get_tag(addr);
 
-    if (tags_[set].valid && tags_[set].tag == tag) {
+    // Fill-conflict retry: a store racing a fill that installs into this set
+    // this cycle is rejected and re-staged. Precedes every tag read, MSHR
+    // access, side effect, and trace event. See registered-tag-array.md
+    // Step 4.
+    if (fill_installed_set_ == static_cast<int32_t>(set)) {
+        stats_.fill_conflict_retry_cycles++;
+        return false;
+    }
+
+    if (current_tags_[set].valid && current_tags_[set].tag == tag) {
         // Store hit: write-through to write buffer (timing model tracks tags only, not data)
         if (write_buffer_.size() >= write_buffer_depth_) {
             stats_.write_buffer_stall_cycles++;
@@ -135,14 +157,14 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
 
     // Store miss (write-allocate): pin check first. Non-acceptance path must
     // not bump the miss counters.
-    if (tags_[set].valid && tags_[set].tag != tag && tags_[set].pinned) {
+    if (current_tags_[set].valid && current_tags_[set].tag != tag && current_tags_[set].pinned) {
         stats_.line_pin_stall_cycles++;
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
         next_last_pin_stall_event_.valid = true;
         next_last_pin_stall_event_.warp_id = warp_id;
         next_last_pin_stall_event_.requested_line_addr = line_addr;
-        next_last_pin_stall_event_.pinned_line_addr = tags_[set].tag * num_sets_ + set;
+        next_last_pin_stall_event_.pinned_line_addr = current_tags_[set].tag * num_sets_ + set;
         next_last_pin_stall_event_.is_store = true;
         return false;
     }
@@ -205,7 +227,7 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // line's secondaries are still draining), we cannot evict it. Defer this
     // fill until the pin is released. The fill stays in `pending_fill_` and
     // will be retried next cycle.
-    if (tags_[set].valid && tags_[set].pinned && tags_[set].tag != new_tag) {
+    if (current_tags_[set].valid && current_tags_[set].pinned && current_tags_[set].tag != new_tag) {
         stats_.line_pin_stall_cycles++;
         next_last_fill_event_.valid = true;
         next_last_fill_event_.warp_id = mshr.warp_id;
@@ -233,9 +255,9 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
             return false;
         }
 
-        tags_[set].valid = true;
-        tags_[set].tag = get_tag(addr);
-        tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
+        next_tags_[set].valid = true;
+        next_tags_[set].tag = get_tag(addr);
+        next_tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
         write_buffer_.push_back(mshr.cache_line_addr);
     } else {
         // Load miss fill: deposit lane values into the owning warp's gather
@@ -244,13 +266,18 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         // sets the buffer's `next_port_claimed`. Any same-tick HIT to the
         // same buffer (later via coalescing_->evaluate -> process_load) will
         // see the live `next_port_claimed` and bail.
-        tags_[set].valid = true;
-        tags_[set].tag = get_tag(addr);
-        tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
+        next_tags_[set].valid = true;
+        next_tags_[set].tag = get_tag(addr);
+        next_tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
         bool ok = gather_file_.try_write(mshr.warp_id, mshr.lane_mask, mshr.results,
                                          LoadGatherBufferFile::GatherWriteSource::FILL);
         (void)ok;
     }
+
+    // Successful (non-deferred) install: record the set so a command racing
+    // this fill to the same set is rejected and retried (fill-conflict
+    // retry). The write-buffer-full early return above does not reach here.
+    fill_installed_set_ = static_cast<int32_t>(set);
 
     next_last_fill_event_.valid = true;
     next_last_fill_event_.warp_id = mshr.warp_id;
@@ -304,7 +331,14 @@ void L1Cache::drain_secondary_chain_head() {
         uint32_t addr = line_addr * line_size_;
         uint32_t set = get_set(addr);
         uint32_t tag = get_tag(addr);
-        if (!tags_[set].valid || tags_[set].tag != tag || !tags_[set].pinned) {
+        // drain_secondary_chain_head is part of the in-evaluate fill/drain
+        // machinery: it must see complete_fill's same-cycle install, so it
+        // reads (and writes) next_tags_. Reading current_tags_ here would
+        // delay every chain drain by a cycle — a shift plan 1 does not
+        // predict. (registered-tag-array.md Step 2 omits this read site;
+        // Step 3 routes its pin-clear write to next_tags_.)
+        if (!next_tags_[set].valid || next_tags_[set].tag != tag ||
+            !next_tags_[set].pinned) {
             continue;
         }
 
@@ -341,7 +375,7 @@ void L1Cache::drain_secondary_chain_head() {
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
-                tags_[set].pinned = false;
+                next_tags_[set].pinned = false;
             }
             return;
         } else {
@@ -368,7 +402,7 @@ void L1Cache::drain_secondary_chain_head() {
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
-                tags_[set].pinned = false;
+                next_tags_[set].pinned = false;
             }
             return;
         }
@@ -397,12 +431,17 @@ void L1Cache::evaluate() {
     // success, leaving current_pending_fill_ set across the cycle.
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
+    fill_installed_set_ = -1;
     next_last_miss_event_.valid = false;
     next_last_fill_event_.valid = false;
     next_last_fill_event_.deferred = false;
     next_last_drain_event_.valid = false;
     next_last_pin_stall_event_.valid = false;
     next_pending_fill_ = current_pending_fill_;
+    // REGISTERED tag array: seed next from current so an un-touched set
+    // carries forward; complete_fill / drain_secondary_chain_head write
+    // next_tags_, commit() flips it into current_tags_.
+    next_tags_ = current_tags_;
 
     // Phase 7 + M3: FILL > secondary > HIT priority encoded by tick order.
     // handle_responses() (FILL) runs first; drain_secondary_chain_head()
@@ -480,7 +519,7 @@ void L1Cache::set_next_store_cmd(uint32_t line_addr, uint32_t warp_id,
 }
 
 bool L1Cache::any_pinned_tag() const {
-    for (const auto& t : tags_) {
+    for (const auto& t : current_tags_) {
         if (t.valid && t.pinned) return true;
     }
     return false;
@@ -497,15 +536,15 @@ CacheStallReason L1Cache::next_cmd_stall_reason() const {
 
 void L1Cache::commit() {
     // Phase 9: flip the REGISTERED observable state (pending_fill_,
-    // trace events). stalled_ / stall_reason_ are COMBINATIONAL same-tick
-    // scratch (single slot, reset at top of evaluate, observed mid-tick
-    // by CoalescingUnit::evaluate as a same-cycle backpressure signal),
-    // so they are not flipped here. Internal hardware state (tags_,
-    // mshrs_, write_buffer_) is direct-mutated synchronously by
-    // process_load/process_store, complete_fill, and
-    // drain_secondary_chain_head — see resources/timing_discipline.md
-    // row 10. The gather-extract port-claim flag is owned by
-    // LoadGatherBufferFile (separate REGISTERED pair).
+    // trace events). stalled_ / stall_reason_ / fill_installed_set_ are
+    // COMBINATIONAL same-tick scratch (single slot, reset at top of
+    // evaluate, observed mid-tick), so they are not flipped here. The tag
+    // array is now a REGISTERED next/current pair flipped below. Remaining
+    // internal hardware state (mshrs_, write_buffer_) is direct-mutated
+    // synchronously — see resources/timing_discipline.md row 10. The
+    // gather-extract port-claim flag is owned by LoadGatherBufferFile
+    // (separate REGISTERED pair).
+    current_tags_ = next_tags_;
     current_pending_fill_ = next_pending_fill_;
     current_last_miss_event_ = next_last_miss_event_;
     current_last_fill_event_ = next_last_fill_event_;
@@ -519,6 +558,10 @@ void L1Cache::commit() {
     next_load_cmd_ = LoadCommand{};
     current_store_cmd_ = next_store_cmd_;
     next_store_cmd_ = StoreCommand{};
+    // fill_installed_set_ is COMBINATIONAL same-tick scratch — clear it at
+    // the tick boundary so it cannot leak into the next tick. evaluate()
+    // also clears it at the top of the tick (the production path).
+    fill_installed_set_ = -1;
 }
 
 bool L1Cache::is_idle() const {
@@ -551,15 +594,17 @@ std::vector<uint32_t> L1Cache::active_mshr_warps() const {
 }
 
 void L1Cache::reset() {
-    for (auto& t : tags_) {
+    for (auto& t : current_tags_) {
         t.valid = false;
         t.tag = 0;
         t.pinned = false;
     }
+    next_tags_ = current_tags_;
     mshrs_.reset();
     write_buffer_.clear();
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
+    fill_installed_set_ = -1;
     current_pending_fill_ = PendingCacheFill{};
     next_pending_fill_ = PendingCacheFill{};
     current_last_miss_event_ = CacheMissTraceEvent{};
@@ -578,7 +623,7 @@ void L1Cache::reset() {
 
 uint32_t L1Cache::pinned_line_count() const {
     uint32_t count = 0;
-    for (const auto& t : tags_) {
+    for (const auto& t : current_tags_) {
         if (t.valid && t.pinned) count++;
     }
     return count;

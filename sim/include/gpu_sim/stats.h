@@ -80,6 +80,9 @@ struct Stats {
     uint64_t mshr_merged_stores = 0;
     uint64_t line_pin_stall_cycles = 0;
     uint64_t secondary_drain_cycles = 0;
+    // Cycles a load or store command was rejected because a fill installed
+    // into its set the same cycle (registered tag array fill-conflict retry).
+    uint64_t fill_conflict_retry_cycles = 0;
 
     // Writeback. Phase 10B.3: fixed_writeback_preempted_cycles counts cycles a
     // fixed-latency writeback was held off because a variable-latency load

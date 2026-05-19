@@ -191,7 +191,12 @@ private:
     uint32_t line_size_;
     uint32_t num_sets_;
 
-    std::vector<CacheTag> tags_;
+    // REGISTERED tag array (next/current pair flipped by commit()).
+    // Readers in cycle T see current_tags_ (the value latched at the start
+    // of T); fills write next_tags_ and latch for T+1. This retires the
+    // implicit write-first tag-array assumption.
+    std::vector<CacheTag> current_tags_;
+    std::vector<CacheTag> next_tags_;
     MSHRFile mshrs_;
     std::deque<uint32_t> write_buffer_;  // Queue of line addresses to write back
     uint32_t write_buffer_depth_;
@@ -206,6 +211,16 @@ private:
     // pending_fill_ all source from registered state).
     bool stalled_ = false;
     CacheStallReason stall_reason_ = CacheStallReason::NONE;
+    // COMBINATIONAL same-tick scratch: the set a successful (non-deferred)
+    // complete_fill installed into this cycle, or -1 if none. Produced by
+    // complete_fill, consumed later in the same tick by process_load /
+    // process_store to reject a command racing the fill to the same set
+    // (fill-conflict retry). Reset to -1 at the top of evaluate() and again
+    // at commit(): its lifetime is exactly one tick, so it must not leak
+    // past the tick boundary. The commit() reset is redundant in production
+    // (evaluate()'s top-of-tick reset governs) but makes the field's
+    // same-tick lifetime explicit for the direct-API test path.
+    int32_t fill_installed_set_ = -1;
     // REGISTERED next/current pairs (flipped by commit()).
     PendingCacheFill current_pending_fill_;
     PendingCacheFill next_pending_fill_;

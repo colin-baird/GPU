@@ -392,3 +392,258 @@ TEST_CASE("Cache: reset clears all state", "[cache]") {
     REQUIRE(f.stats.load_hits == hits);
     REQUIRE(f.stats.load_misses == misses + 1);
 }
+
+// ----------------------------------------------------------------------------
+// registered-tag-array.md Step 4: fill-conflict command retry.
+//
+// The tag array is a REGISTERED current_/next_ pair. A fill writes next_tags_
+// and "wins"; a load or store command racing that fill to the same set is
+// rejected this cycle (next_cmd_ready() false, fill_conflict_retry_cycles
+// bumped) and re-staged by coalescing. On the retry it reads the committed
+// post-fill current_tags_.
+// ----------------------------------------------------------------------------
+
+TEST_CASE("Cache: store racing a same-set fill is retried then hits", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+
+    // Bring line 0 (set 0) toward residency via a load miss on warp 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+
+    // Stage a store command to set 0 for the cycle the fill lands.
+    f.cache.set_next_store_cmd(/*line_addr=*/0, 0, 2, 0, 0);
+    f.cache.commit();   // flip the staged cmd into current_store_cmd_
+    // evaluate(): handle_responses installs line 0 (fill_installed_set_ = 0);
+    // the staged store to set 0 is rejected for the fill conflict.
+    f.cache.evaluate();
+    REQUIRE_FALSE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 1);
+    // The rejected store left no partial state: nothing entered the WB.
+    REQUIRE(f.cache.write_buffer_size() == 0);
+    // The fill itself completed regardless of the racing command.
+    f.gather_file.commit();
+    REQUIRE(f.gather_file.current_has_result());
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Retry: re-stage the store. No fill this cycle -> it reads the committed
+    // post-fill tags and hits.
+    f.cache.set_next_store_cmd(/*line_addr=*/0, 0, 3, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.store_hits == 1);
+    REQUIRE(f.cache.write_buffer_size() == 1);
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 1);  // no spurious retry
+}
+
+TEST_CASE("Cache: load racing a same-set fill is retried then hits", "[cache]") {
+    CacheFixture f;
+    auto results = make_results(2000);
+
+    // Load miss to line 0 (set 0) on warp 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+
+    // Stage a fresh load to the SAME line on warp 1 for the fill cycle.
+    f.claim(1, /*dest_reg=*/3);
+    auto results2 = make_results(9000);
+    f.cache.set_next_load_cmd(0, 1, FULL_MASK, results2, 2, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    // The load racing the fill is retried exactly as a store would be.
+    REQUIRE_FALSE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 1);
+    REQUIRE(f.stats.load_hits == 0);
+    REQUIRE(f.stats.load_misses == 1);   // no second miss allocated
+    // Fill delivered warp 0's data.
+    f.gather_file.commit();
+    REQUIRE(f.gather_file.current_has_result());
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Retry: the load now reads the committed post-fill tags and hits.
+    f.cache.set_next_load_cmd(0, 1, FULL_MASK, results2, 3, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.load_hits == 1);
+    REQUIRE(f.stats.load_misses == 1);
+}
+
+TEST_CASE("Cache: load racing an evicting fill misses cleanly on retry", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;                 // set 0, tag 0
+    const uint32_t line_b = num_sets;          // set 0, tag 1 (conflicts with A)
+
+    // Install line A in set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Load miss to line B (same set, different tag) — its fill will evict A.
+    f.claim(1);
+    REQUIRE(f.cache.process_load(line_b * LINE_SIZE, 1, FULL_MASK, results, 2, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+
+    // Stage a load to line A racing B's evicting fill.
+    f.claim(2, /*dest_reg=*/4);
+    f.cache.set_next_load_cmd(line_a * LINE_SIZE, 2, FULL_MASK, results, 3, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE_FALSE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 1);
+    auto misses_before = f.stats.load_misses;
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();   // B's fill data
+    f.end_cycle();
+
+    // Retry: set 0 now holds B; the load to A misses cleanly (no stale hit).
+    f.cache.set_next_load_cmd(line_a * LINE_SIZE, 2, FULL_MASK, results, 4, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.load_misses == misses_before + 1);
+    REQUIRE(f.stats.load_hits == 0);   // never a stale hit on the evicted line
+}
+
+TEST_CASE("Cache: orphaned-secondary regression — load racing a lone-primary fill",
+          "[cache]") {
+    CacheFixture f;
+    auto results = make_results(7000);
+
+    // Lone primary: a single load miss to line 0, no dependent chain.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    REQUIRE(f.stats.external_memory_reads == 1);
+    f.tick_mem(MEM_LATENCY);
+
+    // A fresh load to the same line, racing the cycle complete_fill frees the
+    // lone primary. Step 4's retry must reject it BEFORE it reaches
+    // find_chain_tail — otherwise (retry restricted to stores) it would chain
+    // a secondary onto the just-freed primary, or allocate a duplicate fetch.
+    f.claim(1, /*dest_reg=*/6);
+    auto results2 = make_results(123);
+    f.cache.set_next_load_cmd(0, 1, FULL_MASK, results2, 2, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE_FALSE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 1);
+    // No second external fetch, no secondary MSHR allocated.
+    REQUIRE(f.stats.external_memory_reads == 1);
+    REQUIRE(f.stats.mshr_merged_loads == 0);
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+    // The lone primary was freed by the fill; nothing chained to it.
+    REQUIRE(f.cache.active_mshr_count() == 0);
+
+    // Retry: the load hits the now-resident line; no undrained secondary.
+    f.cache.set_next_load_cmd(0, 1, FULL_MASK, results2, 3, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.load_hits == 1);
+    REQUIRE(f.stats.external_memory_reads == 1);
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+    // Cache fully drained: no leaked MSHR, sim can terminate.
+    REQUIRE(f.cache.is_idle());
+}
+
+TEST_CASE("Cache: store hit racing an evicting fill retries into a miss", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;            // set 0, tag 0
+    const uint32_t line_b = num_sets;     // set 0, tag 1
+
+    // Install line A in set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Store-miss (write-allocate) to line B — its fill evicts A from set 0.
+    REQUIRE(f.cache.process_store(line_b, 0, 2, 0, 0));
+    REQUIRE(f.stats.store_misses == 1);
+    f.tick_mem(MEM_LATENCY);
+
+    // Stage a store to line A racing B's evicting fill. Pre-change this would
+    // "hit" the doomed line and queue a write-through for it.
+    auto store_hits_before = f.stats.store_hits;
+    auto store_misses_before = f.stats.store_misses;
+    f.cache.set_next_store_cmd(line_a, 0, 3, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE_FALSE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 1);
+    REQUIRE(f.stats.store_hits == store_hits_before);   // did not hit doomed A
+    f.end_cycle();
+
+    // Retry: set 0 holds B; the store to A is correctly a miss (write-allocate).
+    f.cache.set_next_store_cmd(line_a, 0, 4, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.store_misses == store_misses_before + 1);
+    REQUIRE(f.stats.store_hits == store_hits_before);
+}
+
+TEST_CASE("Cache: a fill is never blocked by a same-set command", "[cache]") {
+    CacheFixture f;
+    auto results = make_results(4242);
+
+    // Load miss to line 0; the fill is pending.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+
+    // A store command to the same set is staged for the fill cycle.
+    f.cache.set_next_store_cmd(0, 0, 2, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    // The command was rejected, but the fill completed unconditionally.
+    REQUIRE_FALSE(f.cache.next_cmd_ready());
+    f.gather_file.commit();
+    REQUIRE(f.gather_file.current_has_result());
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+    REQUIRE(f.cache.active_mshr_count() == 0);   // fill freed the MSHR
+}
+
+TEST_CASE("Cache: command to a set with no fill is not spuriously retried",
+          "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+
+    // Install line 0 in set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // A store to set 0 with no fill landing this cycle proceeds normally.
+    f.cache.set_next_store_cmd(0, 0, 2, 0, 0);
+    f.cache.commit();
+    f.cache.evaluate();
+    REQUIRE(f.cache.next_cmd_ready());
+    REQUIRE(f.stats.fill_conflict_retry_cycles == 0);
+    REQUIRE(f.stats.store_hits == 1);
+}

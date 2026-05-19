@@ -868,9 +868,12 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     f.cache.evaluate();
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
     REQUIRE(f.cache.active_mshr_count() == 1);
-    REQUIRE(f.cache.pinned_line_count() == 1);
     auto drains_before = f.stats.secondary_drain_cycles;
     f.end_cycle();
+    // Registered tag array: the pin installed by complete_fill this cycle
+    // is observable via pinned_line_count() (a current_tags_ reader) only
+    // after commit() — end_cycle() flips next_tags_ → current_tags_.
+    REQUIRE(f.cache.pinned_line_count() == 1);
 
     // Natural drain path: each timing-model tick calls drain_write_buffer()
     // after mem_if.evaluate(). Here we simulate that cadence: tick mem_if
@@ -903,9 +906,11 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     f.cache.evaluate();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
     REQUIRE(f.cache.active_mshr_count() == 0); // secondary retired
-    REQUIRE(f.cache.pinned_line_count() == 0); // pin cleared
     // WB grew by 1 (secondary pushed its line) but also loses any mem_if
     // completion -- we just assert it's within depth.
     REQUIRE(f.cache.write_buffer_size() <= WB_DEPTH);
     f.end_cycle();
+    // Registered tag array: drain_secondary_chain_head clears the pin into
+    // next_tags_; pinned_line_count() (current_tags_) sees it after commit.
+    REQUIRE(f.cache.pinned_line_count() == 0); // pin cleared
 }
