@@ -10,17 +10,34 @@ L1Cache::L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
                  LoadGatherBufferFile& gather_file, Stats& stats)
     : cache_size_(cache_size), line_size_(line_size),
       num_sets_(cache_size / line_size),
-      current_tags_(cache_size / line_size),
-      next_tags_(cache_size / line_size),
       mshrs_(num_mshrs),
       write_buffer_depth_(write_buffer_depth),
       max_outstanding_writes_(max_outstanding_writes),
-      mem_if_(mem_if), gather_file_(gather_file), stats_(stats),
-      current_outstanding_writes_(cache_size / line_size),
-      next_outstanding_writes_(cache_size / line_size) {
+      mem_if_(mem_if), gather_file_(gather_file), stats_(stats) {
     // A cap of 0 deadlocks every store (no write-through could ever be
     // enqueued). SimConfig::validate() also enforces this.
     assert(max_outstanding_writes_ >= 1);
+    // Phase 5a: enroll every Reg / RegFifo so reset_all() / commit_all()
+    // drive them uniformly. The cache intentionally has no seed_next() —
+    // it self-seeds the carry-forward fields in-place at the top of
+    // evaluate() (see the seed block) so that load_cmd_ / store_cmd_, which
+    // are NOT seed-friendly (auto-seed would re-latch the consumed cmd
+    // when coalescing does not re-stage), keep their memoryless-consumer
+    // semantics. See cache.h above register declarations and
+    // resources/timing_discipline.md.
+    register_state(&tags_, &write_buffer_, &pending_fill_,
+                   &outstanding_writes_, &outstanding_writes_total_,
+                   &last_miss_event_, &last_fill_event_,
+                   &last_drain_event_, &last_pin_stall_event_,
+                   &load_cmd_, &store_cmd_);
+    // Initial tag/outstanding-writes vector sizing. reset() applies the
+    // same sizing through reset_all() + explicit re-sizing, but the
+    // constructor needs the vectors initialized to num_sets_ elements before
+    // any evaluate()/process_load can index them.
+    tags_.set_next(std::vector<CacheTag>(num_sets_));
+    outstanding_writes_.set_next(std::vector<uint32_t>(num_sets_));
+    tags_.commit();
+    outstanding_writes_.commit();
 }
 
 uint32_t L1Cache::get_set(uint32_t addr) const {
@@ -37,18 +54,18 @@ uint32_t L1Cache::get_line_addr(uint32_t addr) const {
 
 bool L1Cache::is_pinned(uint32_t set) const {
     // Effective pin = chain pin OR write-ack pin. Both terms are REGISTERED:
-    // current_tags_[set].pinned and the per-set outstanding-write counter.
-    return current_tags_[set].pinned || current_outstanding_writes_[set] > 0;
+    // tags_.current()[set].pinned and the per-set outstanding-write counter.
+    return tags_.current()[set].pinned || outstanding_writes_.current()[set] > 0;
 }
 
 bool L1Cache::outstanding_writes_at_cap() const {
-    return current_outstanding_writes_total_ >= max_outstanding_writes_;
+    return outstanding_writes_total_.current() >= max_outstanding_writes_;
 }
 
 bool L1Cache::queue_write_through(uint32_t line_addr) {
     // Single, fallible enqueue wrapper. The write buffer has one enqueue port
     // per cycle: if it is already claimed, refuse without staging anything.
-    if (next_write_buffer_port_claimed_) {
+    if (write_buffer_.port_claimed()) {
         stats_.write_buffer_port_conflict_cycles++;
         return false;
     }
@@ -56,11 +73,11 @@ bool L1Cache::queue_write_through(uint32_t line_addr) {
     // commit). Both outstanding-write counters are bumped into next_ — a
     // queued write-through pins its set and consumes one outstanding-write
     // credit until its ack returns.
-    next_write_buffer_port_claimed_ = true;
-    next_write_buffer_push_ = line_addr;
+    write_buffer_.claim_port();
+    write_buffer_.stage_push(line_addr);
     uint32_t set = get_set(line_addr * line_size_);
-    ++next_outstanding_writes_[set];
-    ++next_outstanding_writes_total_;
+    ++outstanding_writes_.next_mut()[set];
+    ++outstanding_writes_total_.next_mut();
     return true;
 }
 
@@ -83,7 +100,8 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
         return false;
     }
 
-    if (current_tags_[set].valid && current_tags_[set].tag == tag) {
+    const auto& tags = tags_.current();
+    if (tags[set].valid && tags[set].tag == tag) {
         // Cache hit: deposit lane values into the gather buffer. Phase 7:
         // arbitration is owned by LoadGatherBufferFile via a single shared
         // REGISTERED next_port_claimed flag (models spec §5.3 — one
@@ -105,21 +123,22 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     // Cache miss: check for line-pin stall before accepting the request. A
     // pin stall means this request has not been accepted, so the miss/load-miss
     // counters must not be incremented here.
-    if (current_tags_[set].valid && current_tags_[set].tag != tag && is_pinned(set)) {
+    if (tags[set].valid && tags[set].tag != tag && is_pinned(set)) {
         // Attribute the stall: chain pin takes precedence over the write-ack
         // pin (precedence: chain-pin > write-ack-pin).
-        if (current_tags_[set].pinned) {
+        if (tags[set].pinned) {
             stats_.line_pin_stall_cycles++;
         } else {
             stats_.write_ack_pin_stall_cycles++;
         }
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
-        next_last_pin_stall_event_.valid = true;
-        next_last_pin_stall_event_.warp_id = warp_id;
-        next_last_pin_stall_event_.requested_line_addr = line_addr;
-        next_last_pin_stall_event_.pinned_line_addr = current_tags_[set].tag * num_sets_ + set;
-        next_last_pin_stall_event_.is_store = false;
+        auto& pin_ev = last_pin_stall_event_.next_mut();
+        pin_ev.valid = true;
+        pin_ev.warp_id = warp_id;
+        pin_ev.requested_line_addr = line_addr;
+        pin_ev.pinned_line_addr = tags[set].tag * num_sets_ + set;
+        pin_ev.is_store = false;
         return false;
     }
 
@@ -150,13 +169,14 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     int mshr_idx = mshrs_.allocate(entry);
     assert(mshr_idx >= 0);
 
-    next_last_miss_event_.valid = true;
-    next_last_miss_event_.warp_id = warp_id;
-    next_last_miss_event_.line_addr = line_addr;
-    next_last_miss_event_.is_store = false;
-    next_last_miss_event_.pc = pc;
-    next_last_miss_event_.raw_instruction = raw_instruction;
-    next_last_miss_event_.merged_secondary = (tail_idx >= 0);
+    auto& miss_ev = last_miss_event_.next_mut();
+    miss_ev.valid = true;
+    miss_ev.warp_id = warp_id;
+    miss_ev.line_addr = line_addr;
+    miss_ev.is_store = false;
+    miss_ev.pc = pc;
+    miss_ev.raw_instruction = raw_instruction;
+    miss_ev.merged_secondary = (tail_idx >= 0);
 
     if (tail_idx >= 0) {
         // Secondary: inherit the primary's external fetch. Link to the tail.
@@ -185,12 +205,13 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
         return false;
     }
 
-    if (current_tags_[set].valid && current_tags_[set].tag == tag) {
+    const auto& tags = tags_.current();
+    if (tags[set].valid && tags[set].tag == tag) {
         // Store hit: write-through to write buffer (timing model tracks tags only, not data).
         // Admission requires both a free write-buffer slot and an outstanding-
         // write credit; precedence for stall attribution is buffer-full > cap.
-        if (write_buffer_.size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
-            if (write_buffer_.size() >= write_buffer_depth_) {
+        if (write_buffer_.current_size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
+            if (write_buffer_.current_size() >= write_buffer_depth_) {
                 stats_.write_buffer_stall_cycles++;
             } else {
                 stats_.write_throttle_stall_cycles++;
@@ -212,20 +233,21 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
 
     // Store miss (write-allocate): pin check first. Non-acceptance path must
     // not bump the miss counters.
-    if (current_tags_[set].valid && current_tags_[set].tag != tag && is_pinned(set)) {
+    if (tags[set].valid && tags[set].tag != tag && is_pinned(set)) {
         // Attribute the stall: chain-pin > write-ack-pin.
-        if (current_tags_[set].pinned) {
+        if (tags[set].pinned) {
             stats_.line_pin_stall_cycles++;
         } else {
             stats_.write_ack_pin_stall_cycles++;
         }
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
-        next_last_pin_stall_event_.valid = true;
-        next_last_pin_stall_event_.warp_id = warp_id;
-        next_last_pin_stall_event_.requested_line_addr = line_addr;
-        next_last_pin_stall_event_.pinned_line_addr = current_tags_[set].tag * num_sets_ + set;
-        next_last_pin_stall_event_.is_store = true;
+        auto& pin_ev = last_pin_stall_event_.next_mut();
+        pin_ev.valid = true;
+        pin_ev.warp_id = warp_id;
+        pin_ev.requested_line_addr = line_addr;
+        pin_ev.pinned_line_addr = tags[set].tag * num_sets_ + set;
+        pin_ev.is_store = true;
         return false;
     }
 
@@ -254,13 +276,14 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     int mshr_idx = mshrs_.allocate(entry);
     assert(mshr_idx >= 0);
 
-    next_last_miss_event_.valid = true;
-    next_last_miss_event_.warp_id = warp_id;
-    next_last_miss_event_.line_addr = line_addr;
-    next_last_miss_event_.is_store = true;
-    next_last_miss_event_.pc = pc;
-    next_last_miss_event_.raw_instruction = raw_instruction;
-    next_last_miss_event_.merged_secondary = (tail_idx >= 0);
+    auto& miss_ev = last_miss_event_.next_mut();
+    miss_ev.valid = true;
+    miss_ev.warp_id = warp_id;
+    miss_ev.line_addr = line_addr;
+    miss_ev.is_store = true;
+    miss_ev.pc = pc;
+    miss_ev.raw_instruction = raw_instruction;
+    miss_ev.merged_secondary = (tail_idx >= 0);
 
     if (tail_idx >= 0) {
         mshrs_.next_at(static_cast<uint32_t>(tail_idx)).next_in_chain =
@@ -287,21 +310,23 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // line's secondaries are still draining), we cannot evict it. Defer this
     // fill until the pin is released. The fill stays in `pending_fill_` and
     // will be retried next cycle.
-    if (current_tags_[set].valid && is_pinned(set) && current_tags_[set].tag != new_tag) {
+    const auto& tags = tags_.current();
+    if (tags[set].valid && is_pinned(set) && tags[set].tag != new_tag) {
         // Attribute the stall: chain-pin > write-ack-pin.
-        if (current_tags_[set].pinned) {
+        if (tags[set].pinned) {
             stats_.line_pin_stall_cycles++;
         } else {
             stats_.write_ack_pin_stall_cycles++;
         }
-        next_last_fill_event_.valid = true;
-        next_last_fill_event_.warp_id = mshr.warp_id;
-        next_last_fill_event_.line_addr = mshr.cache_line_addr;
-        next_last_fill_event_.is_store = mshr.is_store;
-        next_last_fill_event_.pc = mshr.pc;
-        next_last_fill_event_.raw_instruction = mshr.raw_instruction;
-        next_last_fill_event_.chain_length_at_fill = 0;
-        next_last_fill_event_.deferred = true;
+        auto& fill_ev = last_fill_event_.next_mut();
+        fill_ev.valid = true;
+        fill_ev.warp_id = mshr.warp_id;
+        fill_ev.line_addr = mshr.cache_line_addr;
+        fill_ev.is_store = mshr.is_store;
+        fill_ev.pc = mshr.pc;
+        fill_ev.raw_instruction = mshr.raw_instruction;
+        fill_ev.chain_length_at_fill = 0;
+        fill_ev.deferred = true;
         return false;
     }
 
@@ -316,8 +341,8 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         // Admission gated on write-buffer depth AND the outstanding-write
         // cap, tested before any tag install so a refusal leaves no partial
         // state. Precedence for stall attribution is buffer-full > cap.
-        if (write_buffer_.size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
-            if (write_buffer_.size() >= write_buffer_depth_) {
+        if (write_buffer_.current_size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
+            if (write_buffer_.current_size() >= write_buffer_depth_) {
                 stats_.write_buffer_stall_cycles++;
             } else {
                 stats_.write_throttle_stall_cycles++;
@@ -334,9 +359,10 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         if (!queue_write_through(mshr.cache_line_addr)) {
             return false;
         }
-        next_tags_[set].valid = true;
-        next_tags_[set].tag = get_tag(addr);
-        next_tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
+        auto& tag_slot = tags_.next_mut()[set];
+        tag_slot.valid = true;
+        tag_slot.tag = get_tag(addr);
+        tag_slot.pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
     } else {
         // Load miss fill: deposit lane values into the owning warp's gather
         // buffer. FILL runs first in the tick (cache.handle_responses is
@@ -344,9 +370,10 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         // sets the buffer's `next_port_claimed`. Any same-tick HIT to the
         // same buffer (later via coalescing_->evaluate -> process_load) will
         // see the live `next_port_claimed` and bail.
-        next_tags_[set].valid = true;
-        next_tags_[set].tag = get_tag(addr);
-        next_tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
+        auto& tag_slot = tags_.next_mut()[set];
+        tag_slot.valid = true;
+        tag_slot.tag = get_tag(addr);
+        tag_slot.pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
         bool ok = gather_file_.try_write(mshr.warp_id, mshr.lane_mask, mshr.results,
                                          LoadGatherBufferFile::GatherWriteSource::FILL);
         (void)ok;
@@ -357,13 +384,14 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // retry). The write-buffer-full early return above does not reach here.
     fill_installed_set_ = static_cast<int32_t>(set);
 
-    next_last_fill_event_.valid = true;
-    next_last_fill_event_.warp_id = mshr.warp_id;
-    next_last_fill_event_.line_addr = mshr.cache_line_addr;
-    next_last_fill_event_.is_store = mshr.is_store;
-    next_last_fill_event_.pc = mshr.pc;
-    next_last_fill_event_.raw_instruction = mshr.raw_instruction;
-    next_last_fill_event_.chain_length_at_fill = chain_length;
+    auto& fill_ev = last_fill_event_.next_mut();
+    fill_ev.valid = true;
+    fill_ev.warp_id = mshr.warp_id;
+    fill_ev.line_addr = mshr.cache_line_addr;
+    fill_ev.is_store = mshr.is_store;
+    fill_ev.pc = mshr.pc;
+    fill_ev.raw_instruction = mshr.raw_instruction;
+    fill_ev.chain_length_at_fill = chain_length;
     mshrs_.free(resp.mshr_id);
     return true;
 }
@@ -374,28 +402,29 @@ void L1Cache::handle_responses() {
     // a fill deferred on a write-ack pin can only make progress once the
     // blocking ack is consumed and the pin clears, so the ack drain must run
     // even while a fill is deferred. The ack returns one outstanding-write
-    // credit (per-set pin + global cap). next_outstanding_writes_ has just
-    // been seeded from current_ in evaluate(), so the asserts against
-    // current_ and the decrements of next_ are consistent.
+    // credit (per-set pin + global cap). outstanding_writes_.next_mut() has
+    // just been seeded from current_ in evaluate(), so the asserts against
+    // .current() and the decrements of .next_mut() are consistent.
     if (mem_if_.current_has_write_ack()) {
         MemoryResponse ack = mem_if_.get_write_ack();
         uint32_t set = get_set(ack.line_addr * line_size_);
-        assert(current_tags_[set].valid &&
+        assert(tags_.current()[set].valid &&
                "write ack: acked line must still be resident (self-enforcing)");
-        assert(current_outstanding_writes_[set] > 0 &&
+        assert(outstanding_writes_.current()[set] > 0 &&
                "write ack: per-set outstanding-write underflow");
-        assert(current_outstanding_writes_total_ > 0 &&
+        assert(outstanding_writes_total_.current() > 0 &&
                "write ack: global outstanding-write underflow");
-        --next_outstanding_writes_[set];
-        --next_outstanding_writes_total_;
+        --outstanding_writes_.next_mut()[set];
+        --outstanding_writes_total_.next_mut();
     }
 
-    // pending_fill_ is REGISTERED: read from current_, write next_. seed_next
-    // at the top of evaluate() copies current_ -> next_ so a deferred fill
-    // carries forward unless this cycle's complete_fill succeeds.
-    if (current_pending_fill_.valid) {
-        if (complete_fill(current_pending_fill_.response)) {
-            next_pending_fill_.valid = false;
+    // pending_fill_ is REGISTERED: read from current_, write next_. The
+    // top-of-evaluate seed (pending_fill_.set_next(pending_fill_.current()))
+    // carries a deferred fill forward unless this cycle's complete_fill
+    // succeeds.
+    if (pending_fill_.current().valid) {
+        if (complete_fill(pending_fill_.current().response)) {
+            pending_fill_.next_mut().valid = false;
         }
         return;
     }
@@ -405,11 +434,12 @@ void L1Cache::handle_responses() {
     while (mem_if_.current_has_response()) {
         auto resp = mem_if_.get_response();
 
-        next_pending_fill_.valid = true;
-        next_pending_fill_.response = resp;
+        auto& pf = pending_fill_.next_mut();
+        pf.valid = true;
+        pf.response = resp;
 
         if (complete_fill(resp)) {
-            next_pending_fill_.valid = false;
+            pending_fill_.next_mut().valid = false;
         }
         return;
     }
@@ -428,22 +458,22 @@ void L1Cache::drain_secondary_chain_head() {
         uint32_t addr = line_addr * line_size_;
         uint32_t set = get_set(addr);
         uint32_t tag = get_tag(addr);
-        // Registered tag array: read current_tags_, like every other tag
+        // Registered tag array: read tags_.current(), like every other tag
         // reader (registered-tag-array.md Step 2). The pin-clear further
-        // down is the write side and targets next_tags_ (Step 3).
+        // down is the write side and targets tags_.next_mut() (Step 3).
         //
         // A secondary of the line whose primary fills THIS cycle cannot
         // drain in the fill cycle regardless of which slot is read: the
         // registered MSHR file keeps the primary valid in current_entries_
         // until commit, so the head-detection scan below never sees a
         // secondary become the chain head until the primary is
-        // committed-free (T+1). next_tags_ here would therefore observe
+        // committed-free (T+1). next_tags here would therefore observe
         // complete_fill's same-cycle install but the drain is gated anyway —
-        // reading current_tags_ is observationally identical and is the
+        // reading current is observationally identical and is the
         // discipline-correct choice (no same-cycle read of a registered
         // next_ write).
-        if (!current_tags_[set].valid || current_tags_[set].tag != tag ||
-            !current_tags_[set].pinned) {
+        const auto& tags = tags_.current();
+        if (!tags[set].valid || tags[set].tag != tag || !tags[set].pinned) {
             continue;
         }
 
@@ -464,7 +494,7 @@ void L1Cache::drain_secondary_chain_head() {
 
         // Drain exactly one per cycle.
         if (cand.is_store) {
-            if (write_buffer_.size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
+            if (write_buffer_.current_size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
                 // Normal write-buffer / outstanding-write-cap backpressure;
                 // leave pinned, retry next cycle. No stall-counter bump.
                 return;
@@ -476,16 +506,17 @@ void L1Cache::drain_secondary_chain_head() {
                 return;
             }
             stats_.secondary_drain_cycles++;
-            next_last_drain_event_.valid = true;
-            next_last_drain_event_.warp_id = cand.warp_id;
-            next_last_drain_event_.line_addr = line_addr;
-            next_last_drain_event_.is_store = true;
-            next_last_drain_event_.pc = cand.pc;
-            next_last_drain_event_.raw_instruction = cand.raw_instruction;
+            auto& drain_ev = last_drain_event_.next_mut();
+            drain_ev.valid = true;
+            drain_ev.warp_id = cand.warp_id;
+            drain_ev.line_addr = line_addr;
+            drain_ev.is_store = true;
+            drain_ev.pc = cand.pc;
+            drain_ev.raw_instruction = cand.raw_instruction;
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
-                next_tags_[set].pinned = false;
+                tags_.next_mut()[set].pinned = false;
             }
             return;
         } else {
@@ -503,16 +534,17 @@ void L1Cache::drain_secondary_chain_head() {
                 return;
             }
             stats_.secondary_drain_cycles++;
-            next_last_drain_event_.valid = true;
-            next_last_drain_event_.warp_id = cand.warp_id;
-            next_last_drain_event_.line_addr = line_addr;
-            next_last_drain_event_.is_store = false;
-            next_last_drain_event_.pc = cand.pc;
-            next_last_drain_event_.raw_instruction = cand.raw_instruction;
+            auto& drain_ev = last_drain_event_.next_mut();
+            drain_ev.valid = true;
+            drain_ev.warp_id = cand.warp_id;
+            drain_ev.line_addr = line_addr;
+            drain_ev.is_store = false;
+            drain_ev.pc = cand.pc;
+            drain_ev.raw_instruction = cand.raw_instruction;
             uint32_t next = cand.next_in_chain;
             mshrs_.free(i);
             if (next == MSHREntry::INVALID_MSHR) {
-                next_tags_[set].pinned = false;
+                tags_.next_mut()[set].pinned = false;
             }
             return;
         }
@@ -529,9 +561,9 @@ void L1Cache::drain_write_buffer() {
     // the memory model. write_buffer_ is a registered FIFO: the pop is staged
     // here and applied by commit(), so the entry submitted this cycle is not
     // removed from write_buffer_ until the cycle boundary.
-    if (!write_buffer_.empty() && !mem_if_.next_request_stall()) {
-        mem_if_.set_next_write_request(write_buffer_.front());
-        next_write_buffer_pop_ = true;
+    if (!write_buffer_.current_empty() && !mem_if_.next_request_stall()) {
+        mem_if_.set_next_write_request(write_buffer_.current_front());
+        write_buffer_.stage_pop();
     }
 }
 
@@ -539,33 +571,47 @@ void L1Cache::evaluate() {
     // seed_next: scratch fields (stall flags, trace events) clear to false
     // so an unwritten cycle commits a quiescent observable state. The
     // pending_fill_ slot is a multi-cycle deferred-fill carrier, so it
-    // copies forward; complete_fill clears next_pending_fill_.valid on
-    // success, leaving current_pending_fill_ set across the cycle.
+    // copies forward; complete_fill clears pending_fill_.next_mut().valid on
+    // success, leaving pending_fill_.current() set across the cycle.
+    //
+    // Phase 5a: in-place seeding instead of seed_all(). load_cmd_ / store_cmd_
+    // are NOT seed-friendly (today's commit clears the staged slot, so
+    // auto-seed would re-latch the consumed cmd when coalescing did not
+    // re-stage). The other registered fields are seeded by hand, faithful
+    // to the pre-migration code.
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
     fill_installed_set_ = -1;
-    next_last_miss_event_.valid = false;
-    next_last_fill_event_.valid = false;
-    next_last_fill_event_.deferred = false;
-    next_last_drain_event_.valid = false;
-    next_last_pin_stall_event_.valid = false;
-    next_pending_fill_ = current_pending_fill_;
+    // Trace events: only the .valid flag matters when un-asserted. Seed the
+    // whole struct from current (faithful to a Reg<T>'s auto-seed semantics)
+    // then clear .valid. Faithful to pre-migration: only .valid was assigned;
+    // the other fields are observationally dead when valid is false.
+    last_miss_event_.set_next(last_miss_event_.current());
+    last_miss_event_.next_mut().valid = false;
+    last_fill_event_.set_next(last_fill_event_.current());
+    last_fill_event_.next_mut().valid = false;
+    last_fill_event_.next_mut().deferred = false;
+    last_drain_event_.set_next(last_drain_event_.current());
+    last_drain_event_.next_mut().valid = false;
+    last_pin_stall_event_.set_next(last_pin_stall_event_.current());
+    last_pin_stall_event_.next_mut().valid = false;
+    pending_fill_.set_next(pending_fill_.current());
     // REGISTERED tag array: seed next from current so an un-touched set
     // carries forward; complete_fill / drain_secondary_chain_head write
-    // next_tags_, commit() flips it into current_tags_.
-    next_tags_ = current_tags_;
+    // tags_.next_mut(), commit() flips into tags_.current().
+    tags_.set_next(tags_.current());
     // REGISTERED write-ack pin counters: seed next from current. Enqueues
     // increment next_; the write-ack consumer decrements next_.
-    next_outstanding_writes_ = current_outstanding_writes_;
-    next_outstanding_writes_total_ = current_outstanding_writes_total_;
+    outstanding_writes_.set_next(outstanding_writes_.current());
+    outstanding_writes_total_.set_next(outstanding_writes_total_.current());
     // REGISTERED MSHR file: seed its next-state from committed state.
     mshrs_.seed_next();
 
     // Phase 7 + M3: FILL > secondary > HIT priority encoded by tick order.
     // handle_responses() (FILL) runs first; drain_secondary_chain_head()
     // (secondary) runs second; the HIT slot processes the REGISTERED
-    // current_load_cmd_ / current_store_cmd_ that coalescing submitted at
-    // the prior cycle. The shared gather-extract port is arbitrated by
+    // committed load/store cmd that coalescing submitted at the prior cycle.
+    // The shared gather-extract port is arbitrated by
     // LoadGatherBufferFile's REGISTERED next_port_claimed_ flag.
     handle_responses();
     drain_secondary_chain_head();
@@ -579,22 +625,23 @@ void L1Cache::evaluate() {
     // state holds the source data and re-stages next cycle.
     next_cmd_ready_ = false;
     int processed_count = 0;
-    if (current_load_cmd_.valid) {
-        bool ok = process_load(current_load_cmd_.addr, current_load_cmd_.warp_id,
-                               current_load_cmd_.lane_mask, current_load_cmd_.results,
-                               current_load_cmd_.issue_cycle, current_load_cmd_.pc,
-                               current_load_cmd_.raw_instruction);
-        current_load_cmd_.valid = false;
+    if (load_cmd_.current().valid) {
+        const auto& lc = load_cmd_.current();
+        bool ok = process_load(lc.addr, lc.warp_id, lc.lane_mask, lc.results,
+                               lc.issue_cycle, lc.pc, lc.raw_instruction);
+        // Mid-cycle invalidation of committed state — the memoryless-consumer
+        // contract. Faithful to today's `current_load_cmd_.valid = false`.
+        load_cmd_.current_mut().valid = false;
         if (ok) {
             next_cmd_ready_ = true;
             ++processed_count;
         }
     }
-    if (current_store_cmd_.valid) {
-        bool ok = process_store(current_store_cmd_.line_addr, current_store_cmd_.warp_id,
-                                current_store_cmd_.issue_cycle, current_store_cmd_.pc,
-                                current_store_cmd_.raw_instruction);
-        current_store_cmd_.valid = false;
+    if (store_cmd_.current().valid) {
+        const auto& sc = store_cmd_.current();
+        bool ok = process_store(sc.line_addr, sc.warp_id, sc.issue_cycle, sc.pc,
+                                sc.raw_instruction);
+        store_cmd_.current_mut().valid = false;
         if (ok) {
             next_cmd_ready_ = true;
             ++processed_count;
@@ -615,25 +662,27 @@ void L1Cache::set_next_load_cmd(uint32_t addr, uint32_t warp_id, uint32_t lane_m
     // evaluate. Coalescing may stage every cycle (re-stage on hold) and
     // overwriting an empty slot is harmless. Asserting that the prior
     // value was empty is unnecessary now.
-    next_load_cmd_.valid = true;
-    next_load_cmd_.addr = addr;
-    next_load_cmd_.warp_id = warp_id;
-    next_load_cmd_.lane_mask = lane_mask;
-    next_load_cmd_.results = results;
-    next_load_cmd_.issue_cycle = issue_cycle;
-    next_load_cmd_.pc = pc;
-    next_load_cmd_.raw_instruction = raw_instruction;
+    auto& lc = load_cmd_.next_mut();
+    lc.valid = true;
+    lc.addr = addr;
+    lc.warp_id = warp_id;
+    lc.lane_mask = lane_mask;
+    lc.results = results;
+    lc.issue_cycle = issue_cycle;
+    lc.pc = pc;
+    lc.raw_instruction = raw_instruction;
 }
 
 void L1Cache::set_next_store_cmd(uint32_t line_addr, uint32_t warp_id,
                                  uint64_t issue_cycle, uint32_t pc,
                                  uint32_t raw_instruction) {
-    next_store_cmd_.valid = true;
-    next_store_cmd_.line_addr = line_addr;
-    next_store_cmd_.warp_id = warp_id;
-    next_store_cmd_.issue_cycle = issue_cycle;
-    next_store_cmd_.pc = pc;
-    next_store_cmd_.raw_instruction = raw_instruction;
+    auto& sc = store_cmd_.next_mut();
+    sc.valid = true;
+    sc.line_addr = line_addr;
+    sc.warp_id = warp_id;
+    sc.issue_cycle = issue_cycle;
+    sc.pc = pc;
+    sc.raw_instruction = raw_instruction;
 }
 
 bool L1Cache::any_pinned_tag() const {
@@ -649,49 +698,38 @@ CacheStallReason L1Cache::next_cmd_stall_reason() const {
     // Trace classification: pure cache-state resource-exhaustion accessor.
     // Independent of any in-flight cmd. Order: MSHR_FULL > WB_FULL > LINE_PINNED.
     if (!mshrs_.has_free()) return CacheStallReason::MSHR_FULL;
-    if (write_buffer_.size() >= write_buffer_depth_) return CacheStallReason::WRITE_BUFFER_FULL;
+    if (write_buffer_.current_size() >= write_buffer_depth_) return CacheStallReason::WRITE_BUFFER_FULL;
     if (any_pinned_tag()) return CacheStallReason::LINE_PINNED;
     return CacheStallReason::NONE;
 }
 
 void L1Cache::commit() {
-    // Phase 9: flip the REGISTERED observable state (pending_fill_,
-    // trace events). stalled_ / stall_reason_ / fill_installed_set_ are
-    // COMBINATIONAL same-tick scratch (single slot, reset at top of
-    // evaluate, observed mid-tick), so they are not flipped here. The tag
-    // array, the MSHR file, and the write buffer are all REGISTERED and are
-    // flipped / applied below — see resources/timing_discipline.md row 10.
-    // The gather-extract port-claim flag is owned by LoadGatherBufferFile
-    // (separate REGISTERED pair).
-    current_tags_ = next_tags_;
+    // Phase 9: flip the REGISTERED observable state. stalled_ /
+    // stall_reason_ / fill_installed_set_ are COMBINATIONAL same-tick scratch
+    // (single slot, reset at top of evaluate, observed mid-tick), so they
+    // are not flipped here. The tag array, the MSHR file, and the
+    // write-buffer FIFO are all REGISTERED — see resources/timing_discipline.md
+    // row 10. The gather-extract port-claim flag is owned by
+    // LoadGatherBufferFile (separate REGISTERED pair).
+    //
+    // Phase 5a: commit_all() drives every enrolled Reg (tags_, pending_fill_,
+    // outstanding_writes_, outstanding_writes_total_, the four last_*_event_,
+    // load_cmd_, store_cmd_) and the write_buffer_ RegFifo (pop-then-push
+    // applied, staging slots and port-claim flag cleared) in one sweep. The
+    // MSHR file is committed separately (Phase 5b will fold it into the
+    // RegisteredStage list).
+    commit_all();
     mshrs_.commit();
-    // Registered write-buffer FIFO: apply the staged ops. Pop first, then
-    // push, so a same-cycle drain+enqueue nets to no depth change. Then
-    // clear the staging slots and release the enqueue port for next cycle.
-    if (next_write_buffer_pop_) {
-        write_buffer_.pop_front();
-    }
-    if (next_write_buffer_push_.has_value()) {
-        write_buffer_.push_back(*next_write_buffer_push_);
-    }
-    next_write_buffer_pop_ = false;
-    next_write_buffer_push_.reset();
-    next_write_buffer_port_claimed_ = false;
-    current_pending_fill_ = next_pending_fill_;
-    current_outstanding_writes_ = next_outstanding_writes_;
-    current_outstanding_writes_total_ = next_outstanding_writes_total_;
-    current_last_miss_event_ = next_last_miss_event_;
-    current_last_fill_event_ = next_last_fill_event_;
-    current_last_drain_event_ = next_last_drain_event_;
-    current_last_pin_stall_event_ = next_last_pin_stall_event_;
-    // Phase M3 (valid/ready): unconditional flip. Cache is memoryless —
-    // evaluate clears current_*_cmd_ every cycle regardless of success,
-    // so there's no retry slot to preserve. Coalescing's processing_/
-    // current_entry_ holds the source data and re-stages on a hold.
-    current_load_cmd_ = next_load_cmd_;
-    next_load_cmd_ = LoadCommand{};
-    current_store_cmd_ = next_store_cmd_;
-    next_store_cmd_ = StoreCommand{};
+    // Phase M3 (valid/ready): cache is memoryless — evaluate clears the
+    // committed cmd slot every cycle regardless of success, and the staged
+    // slot must come back to empty so that a subsequent commit() with no
+    // intervening set_next call does NOT re-latch a stale value. Today's
+    // hand-rolled commit cleared `next_*_cmd_ = LoadCommand{}` at the tail;
+    // the Reg-flipped equivalent is set_next(LoadCommand{}) after commit_all
+    // has flipped current = next. Coalescing's processing_/current_entry_
+    // holds the source data and re-stages on a hold.
+    load_cmd_.set_next(LoadCommand{});
+    store_cmd_.set_next(StoreCommand{});
     // fill_installed_set_ is COMBINATIONAL same-tick scratch — clear it at
     // the tick boundary so it cannot leak into the next tick. evaluate()
     // also clears it at the top of the tick (the production path).
@@ -699,15 +737,19 @@ void L1Cache::commit() {
 }
 
 bool L1Cache::is_idle() const {
-    // Idle reflects committed observable state. current_pending_fill_ is
+    // Idle reflects committed observable state. pending_fill_.current() is
     // set when a deferred fill is carrying across cycles. Phase M3:
-    // current_/next_ cmd slots also count — an in-flight cmd is not idle.
+    // current/next cmd slots also count — an in-flight cmd is not idle.
     // A write that left write_buffer_ but is not yet acked keeps the cache
     // non-idle (O(1) via the total scalar — no per-set scan).
-    return !current_pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty()
-           && current_outstanding_writes_total_ == 0
-           && !current_load_cmd_.valid && !next_load_cmd_.valid
-           && !current_store_cmd_.valid && !next_store_cmd_.valid;
+    //
+    // load_cmd_.next() / store_cmd_.next() are intra-class staged reads of
+    // the same Reg; they observe a cmd that has been set_next'd by
+    // coalescing this cycle but not yet committed.
+    return !pending_fill_.current().valid && !mshrs_.has_active() && write_buffer_.current_empty()
+           && outstanding_writes_total_.current() == 0
+           && !load_cmd_.current().valid && !load_cmd_.next().valid
+           && !store_cmd_.current().valid && !store_cmd_.next().valid;
 }
 
 uint32_t L1Cache::active_mshr_count() const {
@@ -731,43 +773,26 @@ std::vector<uint32_t> L1Cache::active_mshr_warps() const {
 }
 
 void L1Cache::reset() {
-    for (auto& t : current_tags_) {
-        t.valid = false;
-        t.tag = 0;
-        t.pinned = false;
-    }
-    next_tags_ = current_tags_;
+    // Phase 5a: reset_all() clears every enrolled Reg's current_ AND next_
+    // to T{} and clears the RegFifo's deque + staging. Then re-size the
+    // tag and outstanding-writes vectors back to num_sets_ (Reg::reset()
+    // value-initializes the inner vector to empty), and clear the
+    // combinational scratch + the MSHR file by hand.
+    reset_all();
+    tags_.set_next(std::vector<CacheTag>(num_sets_));
+    tags_.commit();
+    outstanding_writes_.set_next(std::vector<uint32_t>(num_sets_));
+    outstanding_writes_.commit();
     mshrs_.reset();
-    write_buffer_.clear();
-    next_write_buffer_port_claimed_ = false;
-    next_write_buffer_push_.reset();
-    next_write_buffer_pop_ = false;
-    std::fill(current_outstanding_writes_.begin(), current_outstanding_writes_.end(), 0u);
-    std::fill(next_outstanding_writes_.begin(), next_outstanding_writes_.end(), 0u);
-    current_outstanding_writes_total_ = 0;
-    next_outstanding_writes_total_ = 0;
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
     fill_installed_set_ = -1;
-    current_pending_fill_ = PendingCacheFill{};
-    next_pending_fill_ = PendingCacheFill{};
-    current_last_miss_event_ = CacheMissTraceEvent{};
-    next_last_miss_event_ = CacheMissTraceEvent{};
-    current_last_fill_event_ = CacheFillTraceEvent{};
-    next_last_fill_event_ = CacheFillTraceEvent{};
-    current_last_drain_event_ = CacheSecondaryDrainTraceEvent{};
-    next_last_drain_event_ = CacheSecondaryDrainTraceEvent{};
-    current_last_pin_stall_event_ = CachePinStallTraceEvent{};
-    next_last_pin_stall_event_ = CachePinStallTraceEvent{};
-    current_load_cmd_ = LoadCommand{};
-    next_load_cmd_ = LoadCommand{};
-    current_store_cmd_ = StoreCommand{};
-    next_store_cmd_ = StoreCommand{};
+    next_cmd_ready_ = false;
 }
 
 uint32_t L1Cache::pinned_line_count() const {
     uint32_t count = 0;
-    for (const auto& t : current_tags_) {
+    for (const auto& t : tags_.current()) {
         if (t.valid && t.pinned) count++;
     }
     return count;

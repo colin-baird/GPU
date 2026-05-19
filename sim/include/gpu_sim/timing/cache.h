@@ -5,6 +5,7 @@
 #include "gpu_sim/timing/memory_interface.h"
 #include "gpu_sim/timing/execution_unit.h"
 #include "gpu_sim/timing/load_gather_buffer.h"
+#include "gpu_sim/timing/reg.h"
 #include "gpu_sim/stats.h"
 #include <vector>
 #include <deque>
@@ -98,7 +99,7 @@ struct StoreCommand {
     uint32_t raw_instruction = 0;
 };
 
-class L1Cache {
+class L1Cache : public RegisteredStage {
 public:
     L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
             uint32_t write_buffer_depth, uint32_t max_outstanding_writes,
@@ -106,9 +107,9 @@ public:
             LoadGatherBufferFile& gather_file, Stats& stats);
 
     // Direct synchronous API. Used by tests and called internally by
-    // L1Cache::evaluate to process the REGISTERED current_load_cmd_ /
-    // current_store_cmd_. Returns true when the request was accepted; tests
-    // rely on this bool.
+    // L1Cache::evaluate to process the REGISTERED current load/store cmd
+    // slots. Returns true when the request was accepted; tests rely on this
+    // bool.
     bool process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
                       const std::array<uint32_t, WARP_SIZE>& results,
                       uint64_t issue_cycle, uint32_t pc, uint32_t raw_instruction);
@@ -116,8 +117,8 @@ public:
                        uint32_t pc, uint32_t raw_instruction);
 
     // Phase M3 (valid/ready): REGISTERED command setters. Coalescing writes
-    // next_*_cmd_; commit() flips into current_*_cmd_; evaluate() processes
-    // the cmd this cycle and unconditionally clears the slot (cache is
+    // the staged slot; commit() flips it into the committed slot; evaluate()
+    // processes the cmd this cycle and unconditionally clears it (cache is
     // memoryless — no retry state). Whether processing succeeded is exposed
     // via next_cmd_ready(); on failure (port lost to FILL/secondary, MSHR
     // full, pin/wb conflict) the cmd is dropped and coalescing must
@@ -130,11 +131,11 @@ public:
 
     // Phase M3 (valid/ready): the consumer-side ready signal. True iff
     // this cycle's cache.evaluate processed (and accepted) a cmd from the
-    // current_*_cmd_ slot. Tick order has cache.evaluate before
-    // coalescing.evaluate so the producer reads ready combinationally
-    // after cache has set it. The throughput guarantee "1 cmd/cycle when
-    // ready" is enforced by an assert in evaluate.
-    bool next_cmd_ready() const { return next_cmd_ready_; }
+    // committed slot. Tick order has cache.evaluate before coalescing.evaluate
+    // so the producer reads ready combinationally after cache has set it.
+    // The throughput guarantee "1 cmd/cycle when ready" is enforced by an
+    // assert in evaluate.
+    bool next_cmd_ready() const { return next_cmd_ready_; }  // combinational, Phase 7 -> Wire<T>
 
     // Generic resource-exhaustion accessor for trace classification only.
     // Returns the structural reason the LDST FIFO head warp is waiting on
@@ -164,8 +165,8 @@ public:
     // this cycle's stall outcome. Models a same-cycle backpressure handshake
     // where the cache's stall signal is combinationally driven from
     // registered tag / write-buffer / pending_fill state.
-    bool next_stalled() const { return stalled_; }
-    CacheStallReason next_stall_reason() const { return stall_reason_; }
+    bool next_stalled() const { return stalled_; }                     // combinational, Phase 7 -> Wire<T>
+    CacheStallReason next_stall_reason() const { return stall_reason_; }  // combinational, Phase 7 -> Wire<T>
     //
     // REGISTERED (next/current pair flipped by commit()). Trace recording
     // runs at end-of-tick after cache.commit(); reads return committed
@@ -174,13 +175,13 @@ public:
     bool is_idle() const;
     uint32_t active_mshr_count() const;
     std::vector<uint32_t> active_mshr_warps() const;
-    size_t write_buffer_size() const { return write_buffer_.size(); }
-    const PendingCacheFill& current_pending_fill() const { return current_pending_fill_; }
+    size_t write_buffer_size() const { return write_buffer_.current_size(); }
+    const PendingCacheFill& current_pending_fill() const { return pending_fill_.current(); }
     const MSHRFile& mshrs() const { return mshrs_; }
-    const CacheMissTraceEvent& current_last_miss_event() const { return current_last_miss_event_; }
-    const CacheFillTraceEvent& current_last_fill_event() const { return current_last_fill_event_; }
-    const CacheSecondaryDrainTraceEvent& current_last_drain_event() const { return current_last_drain_event_; }
-    const CachePinStallTraceEvent& current_last_pin_stall_event() const { return current_last_pin_stall_event_; }
+    const CacheMissTraceEvent& current_last_miss_event() const { return last_miss_event_.current(); }
+    const CacheFillTraceEvent& current_last_fill_event() const { return last_fill_event_.current(); }
+    const CacheSecondaryDrainTraceEvent& current_last_drain_event() const { return last_drain_event_.current(); }
+    const CachePinStallTraceEvent& current_last_pin_stall_event() const { return last_pin_stall_event_.current(); }
     uint32_t pinned_line_count() const;
     uint32_t secondary_mshr_count() const;
 
@@ -208,41 +209,37 @@ private:
     // tag install / MSHR free / pin clear only on a true return.
     bool queue_write_through(uint32_t line_addr);
 
-    uint32_t cache_size_;
-    uint32_t line_size_;
-    uint32_t num_sets_;
+    uint32_t cache_size_;        // config
+    uint32_t line_size_;         // config
+    uint32_t num_sets_;          // config
 
-    // REGISTERED tag array (next/current pair flipped by commit()).
-    // Readers in cycle T see current_tags_ (the value latched at the start
-    // of T); fills write next_tags_ and latch for T+1. This retires the
-    // implicit write-first tag-array assumption.
-    std::vector<CacheTag> current_tags_;
-    std::vector<CacheTag> next_tags_;
+    // REGISTERED tag array (Reg<std::vector<CacheTag>>; the whole vector is
+    // one register). Readers in cycle T see tags_.current() (the value
+    // latched at the start of T); fills write tags_.next_mut() and latch for
+    // T+1. This retires the implicit write-first tag-array assumption.
+    Reg<std::vector<CacheTag>> tags_;
     MSHRFile mshrs_;
-    // REGISTERED, single-enqueue-port FIFO of line addresses to write back.
-    // write_buffer_ is mutated ONLY by commit(): evaluate-phase reads see the
-    // committed deque. next_write_buffer_port_claimed_ is the per-cycle
-    // enqueue-port claim (first writer wins; cleared at commit, modeled on
-    // LoadGatherBufferFile's port-claim flag). next_write_buffer_push_ holds
-    // the <=1 staged enqueue; next_write_buffer_pop_ the staged drain. commit()
-    // applies pop-then-push and clears all three.
-    std::deque<uint32_t> write_buffer_;
-    bool next_write_buffer_port_claimed_ = false;
-    std::optional<uint32_t> next_write_buffer_push_;
-    bool next_write_buffer_pop_ = false;
-    uint32_t write_buffer_depth_;
-    uint32_t max_outstanding_writes_;
-    ExternalMemoryInterface& mem_if_;
-    LoadGatherBufferFile& gather_file_;
-    Stats& stats_;
+    // REGISTERED, single-enqueue-port write-buffer FIFO (Phase 5a:
+    // RegFifo<uint32_t>). Mutated only by commit(): evaluate-phase reads see
+    // the committed deque. RegFifo's claim_port()/port_claimed() encodes the
+    // per-cycle first-writer-wins enqueue arbitration (modeled on
+    // LoadGatherBufferFile's port-claim flag). stage_push() / stage_pop()
+    // queue the <=1 staged enqueue and the staged drain; commit() applies
+    // pop-then-push and clears the staging slots.
+    RegFifo<uint32_t> write_buffer_;
+    uint32_t write_buffer_depth_;     // config
+    uint32_t max_outstanding_writes_; // config
+    ExternalMemoryInterface& mem_if_; // config (back-pointer)
+    LoadGatherBufferFile& gather_file_;  // config (back-pointer)
+    Stats& stats_;                    // config (back-pointer)
     // COMBINATIONAL same-tick scratch: reset at top of evaluate(), written
     // by handle_responses / process_load / process_store / complete_fill,
     // observed mid-tick by CoalescingUnit::evaluate. No next/current pair —
     // coalescing reads this cycle's value to make a same-cycle bail
     // decision (single-cycle backpressure path; tags_/write_buffer_/
     // pending_fill_ all source from registered state).
-    bool stalled_ = false;
-    CacheStallReason stall_reason_ = CacheStallReason::NONE;
+    bool stalled_ = false;                                       // scratch (combinational, intra-tick), Phase 7 -> Wire<T>
+    CacheStallReason stall_reason_ = CacheStallReason::NONE;     // scratch (combinational, intra-tick), Phase 7 -> Wire<T>
     // COMBINATIONAL same-tick scratch: the set a successful (non-deferred)
     // complete_fill installed into this cycle, or -1 if none. Produced by
     // complete_fill, consumed later in the same tick by process_load /
@@ -252,28 +249,23 @@ private:
     // past the tick boundary. The commit() reset is redundant in production
     // (evaluate()'s top-of-tick reset governs) but makes the field's
     // same-tick lifetime explicit for the direct-API test path.
-    int32_t fill_installed_set_ = -1;
-    // REGISTERED next/current pairs (flipped by commit()).
-    PendingCacheFill current_pending_fill_;
-    PendingCacheFill next_pending_fill_;
-    // Write-ack pin state, REGISTERED (modeled on the pending_fill_ carrier).
-    // current_outstanding_writes_[set] counts enqueued-but-unacked write-
-    // throughs to that set: a queued write-through pins its set until the
-    // external write ack returns. outstanding_writes_total_ is the running
-    // sum — the state of the global max_outstanding_writes cap. Enqueues
-    // increment next_; write-ack consumption decrements next_; commit() flips.
-    std::vector<uint32_t> current_outstanding_writes_;
-    std::vector<uint32_t> next_outstanding_writes_;
-    uint32_t current_outstanding_writes_total_ = 0;
-    uint32_t next_outstanding_writes_total_ = 0;
-    CacheMissTraceEvent current_last_miss_event_;
-    CacheMissTraceEvent next_last_miss_event_;
-    CacheFillTraceEvent current_last_fill_event_;
-    CacheFillTraceEvent next_last_fill_event_;
-    CacheSecondaryDrainTraceEvent current_last_drain_event_;
-    CacheSecondaryDrainTraceEvent next_last_drain_event_;
-    CachePinStallTraceEvent current_last_pin_stall_event_;
-    CachePinStallTraceEvent next_last_pin_stall_event_;
+    int32_t fill_installed_set_ = -1;                            // scratch (combinational, intra-tick)
+    // REGISTERED deferred-fill carrier.
+    Reg<PendingCacheFill> pending_fill_;
+    // Write-ack pin state, REGISTERED. outstanding_writes_[set] counts
+    // enqueued-but-unacked write-throughs to that set: a queued write-through
+    // pins its set until the external write ack returns. The total scalar
+    // is the running sum — the state of the global max_outstanding_writes
+    // cap. Enqueues increment next_; write-ack consumption decrements next_;
+    // commit() flips.
+    Reg<std::vector<uint32_t>> outstanding_writes_;
+    Reg<uint32_t> outstanding_writes_total_;
+    // REGISTERED trace event slots — written next_mut() during evaluate,
+    // flipped by commit, read post-commit by TimingModel::record_cycle_trace.
+    Reg<CacheMissTraceEvent> last_miss_event_;
+    Reg<CacheFillTraceEvent> last_fill_event_;
+    Reg<CacheSecondaryDrainTraceEvent> last_drain_event_;
+    Reg<CachePinStallTraceEvent> last_pin_stall_event_;
     // Phase 7: the prior `gather_extract_port_used_` scratch flag has been
     // removed. The shared gather-extract port (spec §5.3 — one line-to-
     // gather-buffer extraction per cycle) is now arbitrated by
@@ -285,20 +277,27 @@ private:
     // second via drain_secondary_chain_head); coalescing_->evaluate() runs
     // later in the tick (HIT third).
 
-    // Phase M3: REGISTERED forward command slots. Coalescing writes
-    // next_load_cmd_ / next_store_cmd_; commit() flips next → current;
-    // evaluate() consumes current_load_cmd_ / current_store_cmd_ after
+    // Phase M3: REGISTERED forward command slots. Coalescing writes the
+    // staged slot via set_next_load_cmd / set_next_store_cmd; commit() flips
+    // next → current; evaluate() consumes the committed slot after
     // handle_responses + drain_secondary_chain_head (HIT slot in the
     // FILL > secondary > HIT priority ladder).
-    LoadCommand current_load_cmd_;
-    LoadCommand next_load_cmd_;
-    StoreCommand current_store_cmd_;
-    StoreCommand next_store_cmd_;
+    //
+    // Phase 5a (reg.h migration): NOT auto-seeded. The cache has no
+    // seed_next() and is not enrolled in TimingModel::tick()'s seed phase.
+    // Cache evaluate() consumes the committed cmd via current_mut() (a
+    // mid-cycle invalidation of committed state — the memoryless-consumer
+    // contract). After commit_all() flips current = next, evaluate-stage
+    // commit() explicitly clears the staged slot via set_next(LoadCommand{})
+    // / set_next(StoreCommand{}) — equivalent to today's
+    // `next_*_cmd_ = LoadCommand{}` at the tail of commit().
+    Reg<LoadCommand> load_cmd_;
+    Reg<StoreCommand> store_cmd_;
     // Phase M3 (valid/ready): consumer-side ready signal. Reset to false
-    // at top of evaluate; set true by evaluate when a cmd from
-    // current_*_cmd_ was processed and accepted. Read combinationally by
-    // coalescing later in the same tick. COMBINATIONAL same-tick scratch.
-    bool next_cmd_ready_ = false;
+    // at top of evaluate; set true by evaluate when a cmd from the committed
+    // slot was processed and accepted. Read combinationally by coalescing
+    // later in the same tick. COMBINATIONAL same-tick scratch.
+    bool next_cmd_ready_ = false;  // scratch (combinational, intra-tick), Phase 7 -> Wire<T>
 };
 
 } // namespace gpu_sim
