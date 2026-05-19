@@ -14,8 +14,11 @@ namespace gpu_sim {
 struct CacheTag {
     bool valid = false;
     uint32_t tag = 0;
-    // Set when a primary fill installs a line and has a non-empty dependent
-    // chain. A different-tag miss into a pinned set stalls with LINE_PINNED.
+    // The "chain pin": set when a primary fill installs a line and has a
+    // non-empty dependent chain; cleared when the last secondary drains.
+    // This is one of two pin reasons combined by L1Cache::is_pinned() — the
+    // other is the per-set outstanding-write counter (write-ack pin). A
+    // different-tag miss into a pinned set (either reason) stalls LINE_PINNED.
     bool pinned = false;
 };
 
@@ -97,7 +100,8 @@ struct StoreCommand {
 class L1Cache {
 public:
     L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
-            uint32_t write_buffer_depth, ExternalMemoryInterface& mem_if,
+            uint32_t write_buffer_depth, uint32_t max_outstanding_writes,
+            ExternalMemoryInterface& mem_if,
             LoadGatherBufferFile& gather_file, Stats& stats);
 
     // Direct synchronous API. Used by tests and called internally by
@@ -186,6 +190,18 @@ private:
     uint32_t get_tag(uint32_t addr) const;
     uint32_t get_line_addr(uint32_t addr) const;
     bool any_pinned_tag() const;
+    // Effective line pin: the chain pin (CacheTag::pinned) OR the write-ack
+    // pin (a non-zero per-set outstanding-write count). Reads the REGISTERED
+    // current_ slots only.
+    bool is_pinned(uint32_t set) const;
+    // True when the global enqueued-but-unacked write-through count is at the
+    // max_outstanding_writes ceiling. Reads the REGISTERED current_ scalar.
+    bool outstanding_writes_at_cap() const;
+    // Single wrapper for all write-buffer enqueues: pushes the line into the
+    // write buffer and bumps the per-set and global outstanding-write
+    // counters (both into next_). Callers must confirm admission (write-
+    // buffer depth AND outstanding_writes_at_cap()) before invoking it.
+    void queue_write_through(uint32_t line_addr);
 
     uint32_t cache_size_;
     uint32_t line_size_;
@@ -200,6 +216,7 @@ private:
     MSHRFile mshrs_;
     std::deque<uint32_t> write_buffer_;  // Queue of line addresses to write back
     uint32_t write_buffer_depth_;
+    uint32_t max_outstanding_writes_;
     ExternalMemoryInterface& mem_if_;
     LoadGatherBufferFile& gather_file_;
     Stats& stats_;
@@ -224,6 +241,16 @@ private:
     // REGISTERED next/current pairs (flipped by commit()).
     PendingCacheFill current_pending_fill_;
     PendingCacheFill next_pending_fill_;
+    // Write-ack pin state, REGISTERED (modeled on the pending_fill_ carrier).
+    // current_outstanding_writes_[set] counts enqueued-but-unacked write-
+    // throughs to that set: a queued write-through pins its set until the
+    // external write ack returns. outstanding_writes_total_ is the running
+    // sum — the state of the global max_outstanding_writes cap. Enqueues
+    // increment next_; write-ack consumption decrements next_; commit() flips.
+    std::vector<uint32_t> current_outstanding_writes_;
+    std::vector<uint32_t> next_outstanding_writes_;
+    uint32_t current_outstanding_writes_total_ = 0;
+    uint32_t next_outstanding_writes_total_ = 0;
     CacheMissTraceEvent current_last_miss_event_;
     CacheMissTraceEvent next_last_miss_event_;
     CacheFillTraceEvent current_last_fill_event_;

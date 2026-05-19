@@ -1,10 +1,12 @@
 #include "gpu_sim/timing/cache.h"
+#include <algorithm>
 #include <cassert>
 
 namespace gpu_sim {
 
 L1Cache::L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
-                 uint32_t write_buffer_depth, ExternalMemoryInterface& mem_if,
+                 uint32_t write_buffer_depth, uint32_t max_outstanding_writes,
+                 ExternalMemoryInterface& mem_if,
                  LoadGatherBufferFile& gather_file, Stats& stats)
     : cache_size_(cache_size), line_size_(line_size),
       num_sets_(cache_size / line_size),
@@ -12,7 +14,14 @@ L1Cache::L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
       next_tags_(cache_size / line_size),
       mshrs_(num_mshrs),
       write_buffer_depth_(write_buffer_depth),
-      mem_if_(mem_if), gather_file_(gather_file), stats_(stats) {}
+      max_outstanding_writes_(max_outstanding_writes),
+      mem_if_(mem_if), gather_file_(gather_file), stats_(stats),
+      current_outstanding_writes_(cache_size / line_size),
+      next_outstanding_writes_(cache_size / line_size) {
+    // A cap of 0 deadlocks every store (no write-through could ever be
+    // enqueued). SimConfig::validate() also enforces this.
+    assert(max_outstanding_writes_ >= 1);
+}
 
 uint32_t L1Cache::get_set(uint32_t addr) const {
     return (addr / line_size_) % num_sets_;
@@ -24,6 +33,27 @@ uint32_t L1Cache::get_tag(uint32_t addr) const {
 
 uint32_t L1Cache::get_line_addr(uint32_t addr) const {
     return addr / line_size_;
+}
+
+bool L1Cache::is_pinned(uint32_t set) const {
+    // Effective pin = chain pin OR write-ack pin. Both terms are REGISTERED:
+    // current_tags_[set].pinned and the per-set outstanding-write counter.
+    return current_tags_[set].pinned || current_outstanding_writes_[set] > 0;
+}
+
+bool L1Cache::outstanding_writes_at_cap() const {
+    return current_outstanding_writes_total_ >= max_outstanding_writes_;
+}
+
+void L1Cache::queue_write_through(uint32_t line_addr) {
+    // Single enqueue wrapper. Callers must confirm admission (write-buffer
+    // depth AND the outstanding-write cap) before calling this. Both
+    // counters are bumped into next_ — a queued write-through pins its set
+    // and consumes one outstanding-write credit until its ack returns.
+    write_buffer_.push_back(line_addr);
+    uint32_t set = get_set(line_addr * line_size_);
+    ++next_outstanding_writes_[set];
+    ++next_outstanding_writes_total_;
 }
 
 bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
@@ -67,8 +97,14 @@ bool L1Cache::process_load(uint32_t addr, uint32_t warp_id, uint32_t lane_mask,
     // Cache miss: check for line-pin stall before accepting the request. A
     // pin stall means this request has not been accepted, so the miss/load-miss
     // counters must not be incremented here.
-    if (current_tags_[set].valid && current_tags_[set].tag != tag && current_tags_[set].pinned) {
-        stats_.line_pin_stall_cycles++;
+    if (current_tags_[set].valid && current_tags_[set].tag != tag && is_pinned(set)) {
+        // Attribute the stall: chain pin takes precedence over the write-ack
+        // pin (precedence: chain-pin > write-ack-pin).
+        if (current_tags_[set].pinned) {
+            stats_.line_pin_stall_cycles++;
+        } else {
+            stats_.write_ack_pin_stall_cycles++;
+        }
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
         next_last_pin_stall_event_.valid = true;
@@ -142,23 +178,34 @@ bool L1Cache::process_store(uint32_t line_addr, uint32_t warp_id, uint64_t issue
     }
 
     if (current_tags_[set].valid && current_tags_[set].tag == tag) {
-        // Store hit: write-through to write buffer (timing model tracks tags only, not data)
-        if (write_buffer_.size() >= write_buffer_depth_) {
-            stats_.write_buffer_stall_cycles++;
+        // Store hit: write-through to write buffer (timing model tracks tags only, not data).
+        // Admission requires both a free write-buffer slot and an outstanding-
+        // write credit; precedence for stall attribution is buffer-full > cap.
+        if (write_buffer_.size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
+            if (write_buffer_.size() >= write_buffer_depth_) {
+                stats_.write_buffer_stall_cycles++;
+            } else {
+                stats_.write_throttle_stall_cycles++;
+            }
             stalled_ = true;
             stall_reason_ = CacheStallReason::WRITE_BUFFER_FULL;
             return false;
         }
         stats_.cache_hits++;
         stats_.store_hits++;
-        write_buffer_.push_back(line_addr);
+        queue_write_through(line_addr);
         return true;
     }
 
     // Store miss (write-allocate): pin check first. Non-acceptance path must
     // not bump the miss counters.
-    if (current_tags_[set].valid && current_tags_[set].tag != tag && current_tags_[set].pinned) {
-        stats_.line_pin_stall_cycles++;
+    if (current_tags_[set].valid && current_tags_[set].tag != tag && is_pinned(set)) {
+        // Attribute the stall: chain-pin > write-ack-pin.
+        if (current_tags_[set].pinned) {
+            stats_.line_pin_stall_cycles++;
+        } else {
+            stats_.write_ack_pin_stall_cycles++;
+        }
         stalled_ = true;
         stall_reason_ = CacheStallReason::LINE_PINNED;
         next_last_pin_stall_event_.valid = true;
@@ -227,8 +274,13 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     // line's secondaries are still draining), we cannot evict it. Defer this
     // fill until the pin is released. The fill stays in `pending_fill_` and
     // will be retried next cycle.
-    if (current_tags_[set].valid && current_tags_[set].pinned && current_tags_[set].tag != new_tag) {
-        stats_.line_pin_stall_cycles++;
+    if (current_tags_[set].valid && is_pinned(set) && current_tags_[set].tag != new_tag) {
+        // Attribute the stall: chain-pin > write-ack-pin.
+        if (current_tags_[set].pinned) {
+            stats_.line_pin_stall_cycles++;
+        } else {
+            stats_.write_ack_pin_stall_cycles++;
+        }
         next_last_fill_event_.valid = true;
         next_last_fill_event_.warp_id = mshr.warp_id;
         next_last_fill_event_.line_addr = mshr.cache_line_addr;
@@ -248,8 +300,15 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
     }
 
     if (mshr.is_store) {
-        if (write_buffer_.size() >= write_buffer_depth_) {
-            stats_.write_buffer_stall_cycles++;
+        // Admission gated on write-buffer depth AND the outstanding-write
+        // cap, tested before any tag install so a refusal leaves no partial
+        // state. Precedence for stall attribution is buffer-full > cap.
+        if (write_buffer_.size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
+            if (write_buffer_.size() >= write_buffer_depth_) {
+                stats_.write_buffer_stall_cycles++;
+            } else {
+                stats_.write_throttle_stall_cycles++;
+            }
             stalled_ = true;
             stall_reason_ = CacheStallReason::WRITE_BUFFER_FULL;
             return false;
@@ -258,7 +317,7 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
         next_tags_[set].valid = true;
         next_tags_[set].tag = get_tag(addr);
         next_tags_[set].pinned = (mshr.next_in_chain != MSHREntry::INVALID_MSHR);
-        write_buffer_.push_back(mshr.cache_line_addr);
+        queue_write_through(mshr.cache_line_addr);
     } else {
         // Load miss fill: deposit lane values into the owning warp's gather
         // buffer. FILL runs first in the tick (cache.handle_responses is
@@ -291,6 +350,27 @@ bool L1Cache::complete_fill(const MemoryResponse& resp) {
 }
 
 void L1Cache::handle_responses() {
+    // Step 1: consume at most one write ack per cycle, UNCONDITIONALLY —
+    // before the deferred-fill early return below. This is the deadlock fix:
+    // a fill deferred on a write-ack pin can only make progress once the
+    // blocking ack is consumed and the pin clears, so the ack drain must run
+    // even while a fill is deferred. The ack returns one outstanding-write
+    // credit (per-set pin + global cap). next_outstanding_writes_ has just
+    // been seeded from current_ in evaluate(), so the asserts against
+    // current_ and the decrements of next_ are consistent.
+    if (mem_if_.current_has_write_ack()) {
+        MemoryResponse ack = mem_if_.get_write_ack();
+        uint32_t set = get_set(ack.line_addr * line_size_);
+        assert(current_tags_[set].valid &&
+               "write ack: acked line must still be resident (self-enforcing)");
+        assert(current_outstanding_writes_[set] > 0 &&
+               "write ack: per-set outstanding-write underflow");
+        assert(current_outstanding_writes_total_ > 0 &&
+               "write ack: global outstanding-write underflow");
+        --next_outstanding_writes_[set];
+        --next_outstanding_writes_total_;
+    }
+
     // pending_fill_ is REGISTERED: read from current_, write next_. seed_next
     // at the top of evaluate() copies current_ -> next_ so a deferred fill
     // carries forward unless this cycle's complete_fill succeeds.
@@ -301,12 +381,10 @@ void L1Cache::handle_responses() {
         return;
     }
 
+    // Read fills only — write completions now arrive on the separate
+    // write-ack channel drained above, never on responses_.
     while (mem_if_.current_has_response()) {
         auto resp = mem_if_.get_response();
-        if (resp.is_write) {
-            // Write ack from write buffer drain -- nothing to do
-            continue;
-        }
 
         next_pending_fill_.valid = true;
         next_pending_fill_.response = resp;
@@ -359,12 +437,12 @@ void L1Cache::drain_secondary_chain_head() {
 
         // Drain exactly one per cycle.
         if (cand.is_store) {
-            if (write_buffer_.size() >= write_buffer_depth_) {
-                // Normal write-buffer backpressure; leave pinned, retry next
-                // cycle. No stall-counter bump.
+            if (write_buffer_.size() >= write_buffer_depth_ || outstanding_writes_at_cap()) {
+                // Normal write-buffer / outstanding-write-cap backpressure;
+                // leave pinned, retry next cycle. No stall-counter bump.
                 return;
             }
-            write_buffer_.push_back(line_addr);
+            queue_write_through(line_addr);
             stats_.secondary_drain_cycles++;
             next_last_drain_event_.valid = true;
             next_last_drain_event_.warp_id = cand.warp_id;
@@ -442,6 +520,10 @@ void L1Cache::evaluate() {
     // carries forward; complete_fill / drain_secondary_chain_head write
     // next_tags_, commit() flips it into current_tags_.
     next_tags_ = current_tags_;
+    // REGISTERED write-ack pin counters: seed next from current. Enqueues
+    // increment next_; the write-ack consumer decrements next_.
+    next_outstanding_writes_ = current_outstanding_writes_;
+    next_outstanding_writes_total_ = current_outstanding_writes_total_;
 
     // Phase 7 + M3: FILL > secondary > HIT priority encoded by tick order.
     // handle_responses() (FILL) runs first; drain_secondary_chain_head()
@@ -519,8 +601,10 @@ void L1Cache::set_next_store_cmd(uint32_t line_addr, uint32_t warp_id,
 }
 
 bool L1Cache::any_pinned_tag() const {
-    for (const auto& t : current_tags_) {
-        if (t.valid && t.pinned) return true;
+    // Effective pin (chain pin OR write-ack pin) over all sets — used by
+    // next_cmd_stall_reason() for LINE_PINNED trace classification.
+    for (uint32_t set = 0; set < num_sets_; ++set) {
+        if (is_pinned(set)) return true;
     }
     return false;
 }
@@ -546,6 +630,8 @@ void L1Cache::commit() {
     // (separate REGISTERED pair).
     current_tags_ = next_tags_;
     current_pending_fill_ = next_pending_fill_;
+    current_outstanding_writes_ = next_outstanding_writes_;
+    current_outstanding_writes_total_ = next_outstanding_writes_total_;
     current_last_miss_event_ = next_last_miss_event_;
     current_last_fill_event_ = next_last_fill_event_;
     current_last_drain_event_ = next_last_drain_event_;
@@ -568,7 +654,10 @@ bool L1Cache::is_idle() const {
     // Idle reflects committed observable state. current_pending_fill_ is
     // set when a deferred fill is carrying across cycles. Phase M3:
     // current_/next_ cmd slots also count — an in-flight cmd is not idle.
+    // A write that left write_buffer_ but is not yet acked keeps the cache
+    // non-idle (O(1) via the total scalar — no per-set scan).
     return !current_pending_fill_.valid && !mshrs_.has_active() && write_buffer_.empty()
+           && current_outstanding_writes_total_ == 0
            && !current_load_cmd_.valid && !next_load_cmd_.valid
            && !current_store_cmd_.valid && !next_store_cmd_.valid;
 }
@@ -602,6 +691,10 @@ void L1Cache::reset() {
     next_tags_ = current_tags_;
     mshrs_.reset();
     write_buffer_.clear();
+    std::fill(current_outstanding_writes_.begin(), current_outstanding_writes_.end(), 0u);
+    std::fill(next_outstanding_writes_.begin(), next_outstanding_writes_.end(), 0u);
+    current_outstanding_writes_total_ = 0;
+    next_outstanding_writes_total_ = 0;
     stalled_ = false;
     stall_reason_ = CacheStallReason::NONE;
     fill_installed_set_ = -1;

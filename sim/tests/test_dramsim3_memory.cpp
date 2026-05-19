@@ -220,7 +220,10 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     CHECK_FALSE(mem.is_idle());
     mem.evaluate();
     pump_until_drained(mem);
-    while (mem.next_has_response()) (void)mem.get_response();
+    // Writes complete on the separate write-ack channel (Plan 2); is_idle()
+    // stays false until the ack is drained.
+    CHECK(mem.current_has_write_ack());
+    while (mem.current_has_write_ack()) (void)mem.get_write_ack();
     CHECK(mem.is_idle());
 
     // Re-submit and reset mid-flight. After reset everything must be clear.
@@ -254,17 +257,21 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
     //     can hold against the backend at one instant. With the cache
     //     respecting submit_*'s bool return (drain_write_buffer pops only on
     //     success), the FIFO never overflows and no request is dropped.
-    //   - The response queue stays within `response_queue_capacity_` =
-    //     num_mshrs + write_buffer_depth + chunks_per_line, asserted at every
+    //   - The read response queue stays within `read_response_queue_capacity_`
+    //     = num_mshrs, and the write-ack queue within `write_ack_queue_capacity_`
+    //     = max_outstanding_writes + chunks_per_line. Each is asserted at its
     //     push site in DRAMSim3Memory.
     //
     // Drives the backend at peak production: every cycle, allocate any free
     // MSHR for a fresh read AND attempt to drain one entry from a wb_depth-
     // deep "cache write buffer" of distinct lines. Distinct lines defeat
     // write_assembly collapsing so the bound is exercised, not bypassed.
-    // Cache-side drain models L1Cache::handle_responses (all leading writes
-    // + at most one read per cycle) and L1Cache::drain_write_buffer (pop only
-    // when submit succeeds — the architectural contract this test certifies).
+    // Cache-side drain models the post-split L1Cache::handle_responses (at
+    // most one write ack AND at most one read fill per cycle) and
+    // L1Cache::drain_write_buffer (pop only when submit succeeds). Write
+    // submission additionally models the outstanding-write cap: a write is
+    // refused once max_outstanding_writes writes are enqueued-but-unacked,
+    // which is what bounds the write-ack queue.
     Stats stats;
     SimConfig cfg = make_dramsim3_config(4, "stress");
     cfg.write_buffer_depth = 4;
@@ -288,8 +295,12 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
     uint32_t writes_dropped   = 0;
     uint32_t write_submit_rejected = 0;
     uint32_t read_submit_rejected  = 0;
+    uint32_t write_throttle_rejected = 0;  // refused by the outstanding-write cap
     std::deque<uint32_t> write_buffer;  // models L1Cache::write_buffer_
-    std::set<uint32_t> writes_in_flight;  // line addrs popped from buffer
+    // Line addrs submitted but not yet acked-and-consumed. Its size is the
+    // count of enqueued-but-unacked write-throughs — the outstanding-write
+    // cap's state in this test model.
+    std::set<uint32_t> writes_in_flight;
 
     auto next_free_mshr = [&]() -> int {
         for (uint32_t i = 0; i < cfg.num_mshrs; ++i) {
@@ -299,20 +310,26 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
     };
 
     for (uint32_t cycle = 0; cycle < kCycleCap; ++cycle) {
-        // Cache-side drain (equivalent of L1Cache::handle_responses): consume
-        // all leading writes, then at most one read per cycle.
-        while (mem.next_has_response()) {
+        // Cache-side drain (post write-ack-channel split, equivalent of
+        // L1Cache::handle_responses): consume at most one write ack and at
+        // most one read fill per cycle, from the two separate channels.
+        if (mem.current_has_write_ack()) {
+            const auto ack = mem.get_write_ack();
+            REQUIRE(ack.is_write);
+            REQUIRE(writes_in_flight.erase(ack.line_addr) == 1u);
+            ++writes_completed;
+        }
+        if (mem.current_has_response()) {
             const auto resp = mem.get_response();
-            if (resp.is_write) {
-                REQUIRE(writes_in_flight.erase(resp.line_addr) == 1u);
-                ++writes_completed;
-                continue;
-            }
+            REQUIRE_FALSE(resp.is_write);
             REQUIRE(resp.mshr_id < cfg.num_mshrs);
             REQUIRE(mshr_busy[resp.mshr_id]);
             mshr_busy[resp.mshr_id] = false;
             ++reads_completed;
-            break;
+        }
+        // is_idle() must stay false while any completion is queued.
+        if (mem.write_ack_count() > 0u || mem.response_count() > 0u) {
+            CHECK_FALSE(mem.is_idle());
         }
 
         // Issue one read into any free MSHR. The architecture guarantees the
@@ -346,7 +363,11 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
         }
         if (!write_buffer.empty()) {
             const uint32_t addr = write_buffer.front();
-            if (mem.submit_write(addr)) {
+            // Model the outstanding-write cap: refuse a new write-through
+            // when max_outstanding_writes are already enqueued-but-unacked.
+            if (writes_in_flight.size() >= cfg.max_outstanding_writes) {
+                ++write_throttle_rejected;
+            } else if (mem.submit_write(addr)) {
                 write_buffer.pop_front();
                 writes_in_flight.insert(addr);
                 ++writes_submitted;
@@ -383,9 +404,11 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
     // the bound, only the easy path.
     CHECK(write_submit_rejected > 0u);
 
-    // The response queue stayed within the architectural bound throughout.
-    CHECK(mem.max_observed_response_queue() <= mem.response_queue_capacity());
+    // Both completion queues stayed within their architectural bounds.
+    CHECK(mem.max_observed_response_queue() <= mem.read_response_queue_capacity());
     CHECK(mem.max_observed_response_queue() > 0u);  // sanity: the test ran
+    CHECK(mem.max_observed_write_ack_queue() <= mem.write_ack_queue_capacity());
+    CHECK(mem.max_observed_write_ack_queue() > 0u);  // sanity: writes flowed
 
     // The backend is fully drained at the end.
     CHECK(mem.is_idle());
@@ -428,8 +451,8 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     DRAMSim3Memory mem(cfg, stats);
     LoadGatherBufferFile gather_file(kNumWarps, stats);
     L1Cache cache(/*cache_size=*/4096, cfg.cache_line_size_bytes,
-                  cfg.num_mshrs, cfg.write_buffer_depth, mem, gather_file,
-                  stats);
+                  cfg.num_mshrs, cfg.write_buffer_depth,
+                  cfg.max_outstanding_writes, mem, gather_file, stats);
 
     auto pump_one_cycle = [&]() {
         cache.evaluate();              // clears prior-cycle stall flag
@@ -539,4 +562,77 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     // After full drain, the system is idle: no leaks anywhere in the chain.
     CHECK(mem.is_idle());
     CHECK(cache.write_buffer_size() == 0u);
+}
+
+TEST_CASE("DRAMSim3Memory + L1Cache: write-ack pin survives a store->load "
+          "across a conflicting access", "[dramsim3_memory]") {
+    // eager-wobbling-pizza.md integration case under the DDR3 backend: a
+    // store hit pins its set until the external write ack; a conflicting
+    // different-tag access cannot evict the line while the write is in
+    // flight, so a later load to the stored address still hits. The whole
+    // chain terminates (is_idle) and write_ack_pin_stall_cycles is non-zero.
+    Stats stats;
+    SimConfig cfg = make_dramsim3_config(4, "writeackpin");
+    constexpr uint32_t kNumWarps = 4;
+    DRAMSim3Memory mem(cfg, stats);
+    LoadGatherBufferFile gather_file(kNumWarps, stats);
+    L1Cache cache(/*cache_size=*/4096, cfg.cache_line_size_bytes,
+                  cfg.num_mshrs, cfg.write_buffer_depth,
+                  cfg.max_outstanding_writes, mem, gather_file, stats);
+
+    const uint32_t num_sets = 4096u / cfg.cache_line_size_bytes;
+    const uint32_t line_a = 0;            // set 0, tag 0
+    const uint32_t line_b = num_sets;     // set 0, tag 1 (conflicts with A)
+
+    auto pump = [&]() {
+        cache.evaluate();
+        mem.evaluate();
+        cache.drain_write_buffer();
+        cache.commit();
+        mem.commit();
+        gather_file.commit();
+    };
+
+    // Install line A via a load miss.
+    gather_file.claim(0, 1, 0, 0, 0);
+    gather_file.commit();
+    gather_file.evaluate();
+    std::array<uint32_t, WARP_SIZE> results{};
+    REQUIRE(cache.process_load(line_a * cfg.cache_line_size_bytes, 0, 0xFFFFFFFFu,
+                               results, /*issue_cycle=*/1, 0, 0));
+    cache.commit();
+    mem.commit();
+    for (uint32_t i = 0; i < 5000 && !gather_file.current_has_result(); ++i) pump();
+    REQUIRE(gather_file.current_has_result());
+    (void)gather_file.consume_result();
+    cache.commit();
+    gather_file.commit();
+
+    // Store hit to A queues a write-through, pinning set 0.
+    REQUIRE(cache.process_store(line_a, /*warp_id=*/0, /*issue_cycle=*/2, 0, 0));
+    cache.commit();
+
+    // A conflicting different-tag store to set 0 cannot evict A while A's
+    // write is in flight — it stalls LINE_PINNED on the write-ack pin.
+    REQUIRE_FALSE(cache.process_store(line_b, 0, /*issue_cycle=*/3, 0, 0));
+    cache.commit();
+    REQUIRE(stats.write_ack_pin_stall_cycles > 0u);
+
+    // The store->load guarantee: a load to A still hits — A was not evicted.
+    gather_file.claim(1, 2, 0, 0, 0);
+    gather_file.commit();
+    gather_file.evaluate();
+    REQUIRE(cache.process_load(line_a * cfg.cache_line_size_bytes, 1, 0xFFFFFFFFu,
+                               results, /*issue_cycle=*/4, 0, 0));
+    REQUIRE(stats.load_hits >= 1u);
+    cache.commit();
+    gather_file.commit();
+
+    // Drive to completion: the write ack arrives on the write-ack channel,
+    // the pin clears, and the whole system terminates.
+    for (uint32_t i = 0; i < 20000 && !(cache.is_idle() && mem.is_idle()); ++i) {
+        pump();
+    }
+    REQUIRE(cache.is_idle());
+    REQUIRE(mem.is_idle());
 }

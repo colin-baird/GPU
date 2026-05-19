@@ -83,6 +83,12 @@ struct Stats {
     // Cycles a load or store command was rejected because a fill installed
     // into its set the same cycle (registered tag array fill-conflict retry).
     uint64_t fill_conflict_retry_cycles = 0;
+    // Cycles a miss/fill stalled LINE_PINNED because the target set held a
+    // write-ack pin (an outstanding write-through), as opposed to a chain pin.
+    uint64_t write_ack_pin_stall_cycles = 0;
+    // Cycles a write-through enqueue was refused because the global
+    // outstanding-write cap (max_outstanding_writes) was reached.
+    uint64_t write_throttle_stall_cycles = 0;
 
     // Writeback. Phase 10B.3: fixed_writeback_preempted_cycles counts cycles a
     // fixed-latency writeback was held off because a variable-latency load

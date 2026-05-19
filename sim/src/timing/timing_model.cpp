@@ -184,6 +184,7 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     gather_file_ = std::make_unique<LoadGatherBufferFile>(config.num_warps, stats);
     cache_ = std::make_unique<L1Cache>(config.l1_cache_size_bytes, config.cache_line_size_bytes,
                                        config.num_mshrs, config.write_buffer_depth,
+                                       config.max_outstanding_writes,
                                        *mem_if_, *gather_file_, stats);
     coalescing_ = std::make_unique<CoalescingUnit>(*ldst_, *cache_, *gather_file_,
                                                    config.cache_line_size_bytes, stats);

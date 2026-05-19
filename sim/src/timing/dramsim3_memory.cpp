@@ -19,9 +19,10 @@ DRAMSim3Memory::DRAMSim3Memory(const SimConfig& cfg, Stats& stats)
       write_region_capacity_(cfg.write_buffer_depth *
                              (cfg.cache_line_size_bytes /
                               cfg.dramsim3_bytes_per_burst)),
-      response_queue_capacity_(cfg.num_mshrs + cfg.write_buffer_depth +
-                               (cfg.cache_line_size_bytes /
-                                cfg.dramsim3_bytes_per_burst)),
+      read_response_queue_capacity_(cfg.num_mshrs),
+      write_ack_queue_capacity_(cfg.max_outstanding_writes +
+                                (cfg.cache_line_size_bytes /
+                                 cfg.dramsim3_bytes_per_burst)),
       ticks_per_fabric_(cfg.dram_clock_mhz / cfg.fpga_clock_mhz),
       read_assembly_(cfg.num_mshrs) {
     if (cfg.dramsim3_config_path.empty()) {
@@ -184,8 +185,14 @@ MemoryResponse DRAMSim3Memory::get_response() {
     return r;
 }
 
+MemoryResponse DRAMSim3Memory::get_write_ack() {
+    MemoryResponse r = write_acks_.front();
+    write_acks_.pop_front();
+    return r;
+}
+
 bool DRAMSim3Memory::is_idle() const {
-    if (!request_fifo_.empty() || !responses_.empty()) return false;
+    if (!request_fifo_.empty() || !responses_.empty() || !write_acks_.empty()) return false;
     if (!write_assembly_.empty()) return false;
     if (current_read_request_.valid || next_read_request_.valid) return false;
     if (current_write_request_.valid || next_write_request_.valid) return false;
@@ -207,6 +214,7 @@ void DRAMSim3Memory::reset() {
     request_fifo_.clear();
     write_chunks_in_fifo_ = 0;
     responses_.clear();
+    write_acks_.clear();
     for (auto& a : read_assembly_) a = {};
     write_assembly_.clear();
     read_chunk_to_mshr_.clear();
@@ -219,6 +227,7 @@ void DRAMSim3Memory::reset() {
     fabric_cycle_ = 0;
     dram_ticks_ = 0;
     max_response_queue_ = 0;
+    max_write_ack_queue_ = 0;
     rebuild_memory_system();
 }
 
@@ -232,13 +241,13 @@ void DRAMSim3Memory::on_read_complete(uint64_t addr) {
     if (a.chunks_remaining == 0 || !a.active) return;
     --a.chunks_remaining;
     if (a.chunks_remaining == 0) {
-        // Architectural invariant: the response queue is bounded by
-        // num_mshrs + write_buffer_depth + chunks_per_line. Violation means
-        // either the cache is producing more in-flight transactions than its
+        // Architectural invariant: the read response queue is bounded by
+        // num_mshrs (at most one response per in-flight MSHR). Violation
+        // means either the cache is producing more in-flight reads than its
         // own resources should permit, or the bound derivation is wrong.
         // Either way, silently growing the queue would mask a real bug.
-        assert(responses_.size() < response_queue_capacity_ &&
-               "DRAMSim3Memory response queue overflow on read completion");
+        assert(responses_.size() < read_response_queue_capacity_ &&
+               "DRAMSim3Memory read response queue overflow on read completion");
         responses_.push_back({a.line_addr, mshr_id, false});
         stats_.external_read_latency_total +=
             (fabric_cycle_ - a.submit_cycle);
@@ -262,12 +271,14 @@ void DRAMSim3Memory::on_write_complete(uint64_t addr) {
     if (w.chunks_remaining == 0) return;
     --w.chunks_remaining;
     if (w.chunks_remaining == 0) {
-        assert(responses_.size() < response_queue_capacity_ &&
-               "DRAMSim3Memory response queue overflow on write completion");
-        responses_.push_back({line_addr, 0, true});
+        // The write-ack queue is bounded by max_outstanding_writes (the
+        // cache's enqueue cap) plus a chunks_per_line cushion.
+        assert(write_acks_.size() < write_ack_queue_capacity_ &&
+               "DRAMSim3Memory write-ack queue overflow on write completion");
+        write_acks_.push_back({line_addr, 0, true});
         write_assembly_.erase(wit);
-        if (responses_.size() > max_response_queue_) {
-            max_response_queue_ = responses_.size();
+        if (write_acks_.size() > max_write_ack_queue_) {
+            max_write_ack_queue_ = write_acks_.size();
         }
     }
 }

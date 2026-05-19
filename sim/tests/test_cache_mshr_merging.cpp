@@ -20,6 +20,7 @@ constexpr uint32_t CACHE_SIZE = 4096;
 constexpr uint32_t LINE_SIZE = 128;
 constexpr uint32_t NUM_MSHRS = 4;
 constexpr uint32_t WB_DEPTH = 4;
+constexpr uint32_t MAX_OUTSTANDING_WRITES = 32;
 constexpr uint32_t NUM_WARPS = 4;
 constexpr uint32_t MEM_LATENCY = 10;
 constexpr uint32_t FULL_MASK = 0xFFFFFFFFu;
@@ -29,7 +30,8 @@ struct MergeFixture {
     Stats stats;
     FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
-    L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
+    L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
+                  mem_if, gather_file, stats};
 
     // Phase M5: commit() flips next_*_request_ → current_*_request_; the
     // first evaluate() drains current_ into in_flight_. Without this, a
@@ -171,10 +173,23 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
     f.cache.evaluate();
     REQUIRE(f.stats.secondary_drain_cycles == 2);
     REQUIRE(f.cache.active_mshr_count() == 0);
-    // Pin must now be cleared: a miss to a different tag mapping to set 0
-    // should not see LINE_PINNED stall.
     f.end_cycle();
-    auto rX = make_results();
+
+    // Plan 2 (write-ack pinning): store A's fill and store C's drain each
+    // queued a write-through for line 0, so set 0 stays write-ack-pinned
+    // even after the chain pin clears. Drain those write-throughs and let
+    // their write acks be consumed so the pin fully releases.
+    for (uint32_t i = 0; i < 200 && !f.cache.is_idle(); ++i) {
+        f.cache.evaluate();
+        f.mem_if.evaluate();
+        f.cache.drain_write_buffer();
+        f.cache.commit();
+        f.mem_if.commit();
+    }
+    REQUIRE(f.cache.is_idle());
+
+    // Both pins now clear: a miss to a different tag mapping to set 0 must
+    // not see a LINE_PINNED stall.
     uint32_t conflict_line = NUM_SETS; // different tag, same set 0
     REQUIRE(f.cache.process_store(conflict_line, 0, 10, 0, 0));
     f.cache.commit();

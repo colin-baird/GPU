@@ -12,6 +12,7 @@ constexpr uint32_t CACHE_SIZE = 4096;
 constexpr uint32_t LINE_SIZE = 128;
 constexpr uint32_t NUM_MSHRS = 4;
 constexpr uint32_t WB_DEPTH = 4;
+constexpr uint32_t MAX_OUTSTANDING_WRITES = 32;
 constexpr uint32_t NUM_WARPS = 4;
 constexpr uint32_t MEM_LATENCY = 10;
 constexpr uint32_t FULL_MASK = 0xFFFFFFFFu;
@@ -22,7 +23,8 @@ struct CacheFixture {
     Stats stats;
     FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
-    L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if, gather_file, stats};
+    L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
+                  mem_if, gather_file, stats};
 
     // Advance the external memory interface by N cycles. Phase M5: the
     // request staged via set_next_*_request needs commit() to flip
@@ -41,6 +43,19 @@ struct CacheFixture {
     // next_port_claimed_ flag at end-of-cycle).
     void end_cycle() {
         cache.commit();
+        gather_file.commit();
+    }
+
+    // One full cache+memory tick: cache.evaluate() (incl. handle_responses,
+    // which consumes one write ack), memory advances, one write-buffer entry
+    // drains to memory, then all stages commit. Used to drain write-throughs
+    // and let their write acks release the write-ack pin.
+    void pump() {
+        cache.evaluate();
+        mem_if.evaluate();
+        cache.drain_write_buffer();
+        cache.commit();
+        mem_if.commit();
         gather_file.commit();
     }
 
@@ -577,9 +592,12 @@ TEST_CASE("Cache: store hit racing an evicting fill retries into a miss", "[cach
     (void)f.gather_file.consume_result();
     f.end_cycle();
 
-    // Store-miss (write-allocate) to line B — its fill evicts A from set 0.
-    REQUIRE(f.cache.process_store(line_b, 0, 2, 0, 0));
-    REQUIRE(f.stats.store_misses == 1);
+    // Load-miss to line B — its fill evicts A from set 0. (A load fill is
+    // used so the evicting line is installed unpinned: a store-miss fill
+    // would write-ack-pin set 0 and the racing store would then stall
+    // LINE_PINNED rather than retry into a clean miss.)
+    f.claim(1);
+    REQUIRE(f.cache.process_load(line_b * LINE_SIZE, 1, FULL_MASK, results, 2, 0, 0));
     f.tick_mem(MEM_LATENCY);
 
     // Stage a store to line A racing B's evicting fill. Pre-change this would
@@ -592,9 +610,12 @@ TEST_CASE("Cache: store hit racing an evicting fill retries into a miss", "[cach
     REQUIRE_FALSE(f.cache.next_cmd_ready());
     REQUIRE(f.stats.fill_conflict_retry_cycles == 1);
     REQUIRE(f.stats.store_hits == store_hits_before);   // did not hit doomed A
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();               // B's load fill data
     f.end_cycle();
 
-    // Retry: set 0 holds B; the store to A is correctly a miss (write-allocate).
+    // Retry: set 0 holds B (unpinned); the store to A is correctly a miss
+    // (write-allocate).
     f.cache.set_next_store_cmd(line_a, 0, 4, 0, 0);
     f.cache.commit();
     f.cache.evaluate();
@@ -646,4 +667,311 @@ TEST_CASE("Cache: command to a set with no fill is not spuriously retried",
     REQUIRE(f.cache.next_cmd_ready());
     REQUIRE(f.stats.fill_conflict_retry_cycles == 0);
     REQUIRE(f.stats.store_hits == 1);
+}
+
+// ----------------------------------------------------------------------------
+// eager-wobbling-pizza.md: write-ack line pinning. A cache line is kept pinned
+// (un-evictable) from the moment a write-through is queued for it until the
+// external write ack for that store is received.
+// ----------------------------------------------------------------------------
+
+TEST_CASE("Cache: a store hit pins its set until the write ack", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;            // set 0, tag 0
+    const uint32_t line_b = num_sets;     // set 0, tag 1
+
+    // Install line A in set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Store hit to A queues a write-through, which pins set 0 (write-ack pin).
+    REQUIRE(f.cache.process_store(line_a, 0, 2, 0, 0));
+    REQUIRE(f.stats.store_hits == 1);
+    f.end_cycle();   // commit: current_outstanding_writes_[0] becomes 1
+
+    // A conflicting different-tag miss to set 0 stalls LINE_PINNED on the
+    // write-ack pin — attributed to write_ack_pin_stall_cycles, not the
+    // chain-pin counter.
+    auto wap_before = f.stats.write_ack_pin_stall_cycles;
+    REQUIRE_FALSE(f.cache.process_store(line_b, 0, 3, 0, 0));
+    f.cache.commit();
+    REQUIRE(f.cache.next_stall_reason() == CacheStallReason::LINE_PINNED);
+    REQUIRE(f.stats.write_ack_pin_stall_cycles == wap_before + 1);
+    REQUIRE(f.stats.line_pin_stall_cycles == 0);   // no chain pin involved
+
+    // Drain A's write-through; once its ack is consumed the pin releases.
+    for (uint32_t i = 0; i < 200 && !f.cache.is_idle(); ++i) f.pump();
+    REQUIRE(f.cache.is_idle());
+
+    // The conflicting store is now accepted (write-allocate miss).
+    REQUIRE(f.cache.process_store(line_b, 0, 4, 0, 0));
+    REQUIRE(f.stats.store_misses == 1);
+}
+
+TEST_CASE("Cache: write-ack pin releases the cycle after the ack is consumed",
+          "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;
+    const uint32_t line_b = num_sets;
+
+    // Install line A, then a store hit pins set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+    REQUIRE(f.cache.process_store(line_a, 0, 2, 0, 0));
+    f.end_cycle();
+
+    // Drain A's write-through to memory and advance memory until the write
+    // ack is sitting in the interface — but do NOT let the cache consume it.
+    f.cache.drain_write_buffer();
+    f.cache.commit();
+    f.mem_if.commit();
+    for (uint32_t i = 0; i < MEM_LATENCY + 4 && !f.mem_if.current_has_write_ack(); ++i) {
+        f.mem_if.evaluate();
+    }
+    REQUIRE(f.mem_if.current_has_write_ack());
+
+    // The pin is still in force: a conflicting miss stalls LINE_PINNED.
+    REQUIRE_FALSE(f.cache.process_store(line_b, 0, 3, 0, 0));
+
+    // This evaluate() consumes the write ack (decrements next_), but the
+    // registered counter has not flipped yet — the pin is still observable.
+    f.cache.evaluate();
+    REQUIRE_FALSE(f.cache.process_store(line_b, 0, 4, 0, 0));   // still pinned
+    f.cache.commit();   // flip: current_outstanding_writes_[0] becomes 0
+
+    // The cycle AFTER the ack was consumed, the pin is gone.
+    REQUIRE(f.cache.process_store(line_b, 0, 5, 0, 0));
+    REQUIRE(f.stats.store_misses == 1);
+}
+
+TEST_CASE("Cache: a conflicting fill is deferred while a write-ack pin holds",
+          "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;
+    const uint32_t line_b = num_sets;
+
+    // Install line A in set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Load miss to line B (set 0, different tag) — allocate its MSHR and
+    // start its fetch BEFORE set 0 is pinned.
+    f.claim(1);
+    REQUIRE(f.cache.process_load(line_b * LINE_SIZE, 1, FULL_MASK, results, 2, 0, 0));
+    // Store hit to A pins set 0 before B's fill returns.
+    REQUIRE(f.cache.process_store(line_a, 0, 3, 0, 0));
+    f.end_cycle();
+
+    // B's fill returns. complete_fill must DEFER (set 0 is write-ack-pinned)
+    // and A must NOT be evicted — the core memory-ordering guarantee.
+    f.tick_mem(MEM_LATENCY);
+    f.cache.evaluate();
+    f.cache.commit();
+    REQUIRE(f.cache.current_last_fill_event().deferred);
+    REQUIRE(f.cache.current_pending_fill().valid);   // B still pending
+    REQUIRE(f.stats.write_ack_pin_stall_cycles > 0);
+    // A is still resident — a load to A still hits.
+    f.claim(2);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 2, FULL_MASK, results, 4, 0, 0));
+    REQUIRE(f.stats.load_hits == 1);
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // Drain A's write-through; once the pin clears B's deferred fill lands.
+    for (uint32_t i = 0; i < 400 && !f.cache.is_idle(); ++i) f.pump();
+    REQUIRE(f.cache.is_idle());
+    // B is now resident.
+    f.claim(3);
+    REQUIRE(f.cache.process_load(line_b * LINE_SIZE, 3, FULL_MASK, results, 5, 0, 0));
+    REQUIRE(f.stats.load_hits == 2);
+}
+
+TEST_CASE("Cache: deadlock regression — read fill deferred by a write-ack pin "
+          "still makes progress", "[cache]") {
+    // If write acks shared the read-fill response queue, a fill deferred on a
+    // write-ack pin could never be cleared (the ack would sit behind the
+    // deferred fill). handle_responses consumes the write ack on a separate
+    // channel UNCONDITIONALLY, before the deferred-fill early return — so the
+    // pin clears, the fill lands, and the sim terminates.
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;
+    const uint32_t line_b = num_sets;
+
+    // Install A; start B's fetch; store-hit A to pin set 0.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    f.claim(1);
+    REQUIRE(f.cache.process_load(line_b * LINE_SIZE, 1, FULL_MASK, results, 2, 0, 0));
+    REQUIRE(f.cache.process_store(line_a, 0, 3, 0, 0));
+    f.end_cycle();
+
+    // B's fill is now deferred behind the write-ack pin. Pump: the write ack
+    // is consumed unconditionally even while the fill is deferred, so the
+    // cache makes forward progress and reaches is_idle().
+    f.tick_mem(MEM_LATENCY);
+    bool was_deferred = false;
+    for (uint32_t i = 0; i < 400 && !f.cache.is_idle(); ++i) {
+        f.pump();
+        if (f.cache.current_pending_fill().valid) was_deferred = true;
+    }
+    REQUIRE(was_deferred);            // the fill genuinely was deferred
+    REQUIRE(f.cache.is_idle());       // ... yet the cache still drained
+}
+
+TEST_CASE("Cache: N outstanding writes keep a set pinned until every ack",
+          "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;
+    const uint32_t line_b = num_sets;
+    constexpr uint32_t kN = 3;        // N <= WB_DEPTH so all N hits enqueue
+
+    // Install line A.
+    f.claim(0);
+    REQUIRE(f.cache.process_load(line_a * LINE_SIZE, 0, FULL_MASK, results, 1, 0, 0));
+    f.tick_mem(MEM_LATENCY);
+    f.cache.handle_responses();
+    f.gather_file.commit();
+    (void)f.gather_file.consume_result();
+    f.end_cycle();
+
+    // N store hits to A: N outstanding write-throughs on set 0.
+    for (uint32_t i = 0; i < kN; ++i) {
+        REQUIRE(f.cache.process_store(line_a, 0, 2 + i, 0, 0));
+        f.end_cycle();
+    }
+
+    // Set 0 stays pinned while any of the N writes is unacked. Pump until the
+    // cache is idle (all N acks consumed, one per cycle); a conflicting store
+    // is rejected on every cycle before that and accepted only after.
+    uint32_t rejections = 0;
+    for (uint32_t i = 0; i < 400 && !f.cache.is_idle(); ++i) {
+        if (!f.cache.process_store(line_b, 0, 100, 0, 0)) ++rejections;
+        f.pump();
+    }
+    REQUIRE(f.cache.is_idle());
+    REQUIRE(rejections >= kN);        // pinned across at least N drain cycles
+    REQUIRE(f.cache.process_store(line_b, 0, 200, 0, 0));   // accepted now
+}
+
+TEST_CASE("Cache: chain pin hands off to the write-ack pin", "[cache]") {
+    CacheFixture f;
+    auto results = make_results();
+    const uint32_t num_sets = CACHE_SIZE / LINE_SIZE;
+    const uint32_t line_a = 0;
+    const uint32_t line_b = num_sets;
+
+    // Store-miss to A (primary) + store to A (secondary): a dependent chain.
+    REQUIRE(f.cache.process_store(line_a, 0, 1, 0, 0));
+    REQUIRE(f.cache.process_store(line_a, 0, 2, 0, 0));
+    REQUIRE(f.stats.mshr_merged_stores == 1);
+
+    // Deliver the fill. complete_fill installs A, sets the chain pin, and
+    // queues A's write-through (write-ack pin). The secondary then drains,
+    // queuing a second write-through and clearing the chain pin.
+    f.tick_mem(MEM_LATENCY);
+    f.cache.evaluate();   // primary fill
+    f.cache.commit();
+    f.cache.evaluate();   // secondary drain
+    f.cache.commit();
+    REQUIRE(f.cache.active_mshr_count() == 0);
+    // Chain fully drained — chain pin is clear (pinned_line_count counts only
+    // the chain pin) — but the set stays effectively pinned via the write-ack
+    // counter: a conflicting miss still stalls LINE_PINNED.
+    REQUIRE(f.cache.pinned_line_count() == 0);
+    auto wap_before = f.stats.write_ack_pin_stall_cycles;
+    REQUIRE_FALSE(f.cache.process_store(line_b, 0, 3, 0, 0));
+    REQUIRE(f.stats.write_ack_pin_stall_cycles == wap_before + 1);
+
+    // Once the write-throughs are acked, the set fully unpins.
+    for (uint32_t i = 0; i < 400 && !f.cache.is_idle(); ++i) f.pump();
+    REQUIRE(f.cache.is_idle());
+    REQUIRE(f.cache.process_store(line_b, 0, 4, 0, 0));
+}
+
+TEST_CASE("Cache: the outstanding-write cap refuses enqueue and throttles",
+          "[cache]") {
+    Stats stats;
+    FixedLatencyMemory mem_if{MEM_LATENCY, stats};
+    LoadGatherBufferFile gather_file{NUM_WARPS, stats};
+    // A small cap, below WB_DEPTH, so the cap — not write-buffer depth — is
+    // the binding constraint.
+    constexpr uint32_t kCap = 2;
+    L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, kCap,
+                  mem_if, gather_file, stats};
+    auto results = make_results();
+
+    // Install line 0.
+    gather_file.claim(0, 1, 0, 0, 0);
+    gather_file.commit();
+    gather_file.evaluate();
+    REQUIRE(cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
+    mem_if.commit();
+    for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
+    cache.handle_responses();
+    gather_file.commit();
+    (void)gather_file.consume_result();
+    cache.commit();
+    gather_file.commit();
+
+    // kCap store hits — kCap outstanding write-throughs — reach the cap.
+    for (uint32_t i = 0; i < kCap; ++i) {
+        REQUIRE(cache.process_store(0, 0, 2 + i, 0, 0));
+        cache.commit();
+    }
+    REQUIRE(cache.write_buffer_size() < WB_DEPTH);   // buffer still has room
+
+    // The next write-through is refused by the CAP, not by buffer depth:
+    // WRITE_BUFFER_FULL stall reason, write_throttle_stall_cycles bumped,
+    // write_buffer_stall_cycles NOT.
+    auto throttle_before = stats.write_throttle_stall_cycles;
+    auto wbfull_before = stats.write_buffer_stall_cycles;
+    REQUIRE_FALSE(cache.process_store(0, 0, 99, 0, 0));
+    cache.commit();
+    REQUIRE(cache.next_stall_reason() == CacheStallReason::WRITE_BUFFER_FULL);
+    REQUIRE(stats.write_throttle_stall_cycles == throttle_before + 1);
+    REQUIRE(stats.write_buffer_stall_cycles == wbfull_before);
+
+    // Each write ack returns a credit; drain to idle, then the store succeeds.
+    for (uint32_t i = 0; i < 400 && !cache.is_idle(); ++i) {
+        cache.evaluate();
+        mem_if.evaluate();
+        cache.drain_write_buffer();
+        cache.commit();
+        mem_if.commit();
+        gather_file.commit();
+    }
+    REQUIRE(cache.is_idle());
+    REQUIRE(cache.process_store(0, 0, 100, 0, 0));
 }

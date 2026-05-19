@@ -41,6 +41,15 @@ void SimConfig::validate() const {
     if (write_buffer_depth < 1) {
         throw std::invalid_argument("write_buffer_depth must be >= 1");
     }
+    if (max_outstanding_writes < 1) {
+        throw std::invalid_argument("max_outstanding_writes must be >= 1");
+    }
+    if (max_outstanding_writes < write_buffer_depth) {
+        throw std::invalid_argument(
+            "max_outstanding_writes (" + std::to_string(max_outstanding_writes) +
+            ") must be >= write_buffer_depth (" + std::to_string(write_buffer_depth) +
+            "); a smaller cap leaves part of the write buffer unreachable");
+    }
     if (lookup_table_entries < 1) {
         throw std::invalid_argument("lookup_table_entries must be >= 1");
     }
@@ -174,6 +183,7 @@ SimConfig SimConfig::from_json(const std::string& path) {
         else if (key == "cache_line_size_bytes") config.cache_line_size_bytes = num;
         else if (key == "num_mshrs") config.num_mshrs = num;
         else if (key == "write_buffer_depth") config.write_buffer_depth = num;
+        else if (key == "max_outstanding_writes") config.max_outstanding_writes = num;
         else if (key == "lookup_table_entries") config.lookup_table_entries = num;
         else if (key == "external_memory_latency_cycles") config.external_memory_latency_cycles = num;
         else if (key == "external_memory_size_bytes") config.external_memory_size_bytes = num;
@@ -252,6 +262,7 @@ void SimConfig::apply_cli_overrides(int argc, char* argv[]) {
         else if (key == "l1_cache_size_bytes") l1_cache_size_bytes = num;
         else if (key == "num_mshrs") num_mshrs = num;
         else if (key == "write_buffer_depth") write_buffer_depth = num;
+        else if (key == "max_outstanding_writes") max_outstanding_writes = num;
         else if (key == "lookup_table_entries") lookup_table_entries = num;
         else if (key == "external_memory_latency_cycles") external_memory_latency_cycles = num;
         else if (key == "external_memory_size_bytes") external_memory_size_bytes = num;

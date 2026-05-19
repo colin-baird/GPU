@@ -851,12 +851,16 @@ TEST_CASE("MemoryInterface: fixed latency responses preserve submission order", 
     mem_if.evaluate();
     REQUIRE(mem_if.next_has_response());
 
+    // Reads complete on the response channel.
     auto first = mem_if.get_response();
     REQUIRE_FALSE(first.is_write);
     REQUIRE(first.line_addr == 10);
     REQUIRE(first.mshr_id == 1);
+    REQUIRE_FALSE(mem_if.next_has_response());
 
-    auto second = mem_if.get_response();
+    // Writes complete on the separate write-ack channel (Plan 2).
+    REQUIRE(mem_if.current_has_write_ack());
+    auto second = mem_if.get_write_ack();
     REQUIRE(second.is_write);
     REQUIRE(second.line_addr == 20);
     REQUIRE(mem_if.is_idle());

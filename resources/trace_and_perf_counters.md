@@ -425,6 +425,8 @@ Emitted for each of `alu_stats`, `mul_stats`, `div_stats`, `ldst_stats`,
 | `line_pin_stall_cycles` | Cycles a miss stalled because the target set was pinned by a different line. |
 | `secondary_drain_cycles` | Cycles spent draining dependent chains after a primary fill. |
 | `fill_conflict_retry_cycles` | Cycles a load or store command was rejected because a fill installed into its set the same cycle (registered tag array fill-conflict retry). |
+| `write_ack_pin_stall_cycles` | Cycles a miss/fill stalled `LINE_PINNED` because the target set held a write-ack pin (an outstanding write-through), as opposed to a chain pin. |
+| `write_throttle_stall_cycles` | Cycles a write-through enqueue was refused because the global outstanding-write cap (`max_outstanding_writes`) was reached. |
 
 #### Writeback
 

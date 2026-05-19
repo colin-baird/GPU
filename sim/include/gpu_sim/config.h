@@ -27,6 +27,15 @@ struct SimConfig {
     uint32_t cache_line_size_bytes = 128;
     uint32_t num_mshrs = 4;
     uint32_t write_buffer_depth = 4;
+    // Global ceiling on enqueued-but-unacked write-throughs. A write-through
+    // pins its cache set from the moment it is queued until its external
+    // write ack is received; this caps how many such writes can be in flight
+    // at once (enqueue backpressure). Must be >= 1 (a cap of 0 deadlocks all
+    // stores) and should be >= write_buffer_depth (otherwise part of the
+    // write buffer is structurally unreachable). The default is sized well
+    // above write_buffer_depth and the external-memory latency window so it
+    // does not bottleneck store throughput.
+    uint32_t max_outstanding_writes = 32;
 
     // Lookup table
     uint32_t lookup_table_entries = 1024;

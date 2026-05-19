@@ -74,11 +74,15 @@ void FixedLatencyMemory::evaluate() {
         resp.line_addr = req.line_addr;
         resp.mshr_id = req.mshr_id;
         resp.is_write = req.is_write;
-        if (!req.is_write) {
+        // Reads complete onto the response queue; writes complete onto the
+        // separate write-ack channel the cache drains unconditionally.
+        if (req.is_write) {
+            write_acks_.push_back(resp);
+        } else {
             stats_.external_read_latency_total += latency_;
             stats_.external_read_latency_count++;
+            responses_.push_back(resp);
         }
-        responses_.push_back(resp);
         in_flight_.pop_front();
     }
 }
@@ -97,9 +101,16 @@ MemoryResponse FixedLatencyMemory::get_response() {
     return resp;
 }
 
+MemoryResponse FixedLatencyMemory::get_write_ack() {
+    MemoryResponse resp = write_acks_.front();
+    write_acks_.pop_front();
+    return resp;
+}
+
 void FixedLatencyMemory::reset() {
     in_flight_.clear();
     responses_.clear();
+    write_acks_.clear();
     current_read_request_ = PendingMemoryRequest{};
     next_read_request_ = PendingMemoryRequest{};
     current_write_request_ = PendingMemoryRequest{};

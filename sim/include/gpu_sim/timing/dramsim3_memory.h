@@ -40,6 +40,9 @@ public:
 
     bool current_has_response() const override { return !responses_.empty(); }
     MemoryResponse get_response() override;
+    bool current_has_write_ack() const override { return !write_acks_.empty(); }
+    MemoryResponse get_write_ack() override;
+    size_t write_ack_count() const override { return write_acks_.size(); }
     bool is_idle() const override;
     size_t in_flight_count() const override;
     size_t response_count() const override { return responses_.size(); }
@@ -49,7 +52,9 @@ public:
     uint32_t chunks_per_line() const { return chunks_per_line_; }
     size_t dram_ticks() const { return dram_ticks_; }
     size_t max_observed_response_queue() const { return max_response_queue_; }
-    uint32_t response_queue_capacity() const { return response_queue_capacity_; }
+    uint32_t read_response_queue_capacity() const { return read_response_queue_capacity_; }
+    size_t max_observed_write_ack_queue() const { return max_write_ack_queue_; }
+    uint32_t write_ack_queue_capacity() const { return write_ack_queue_capacity_; }
 
 private:
     struct PendingChunk {
@@ -93,12 +98,16 @@ private:
     // larger is wasteful; anything smaller violates the architectural bound.
     uint32_t request_fifo_depth_;
     uint32_t write_region_capacity_;
-    // Architectural bound on the response queue depth: at most one read
-    // response per in-flight MSHR plus the writes that may finalize between
-    // two consecutive cache drains (bounded by write_buffer_depth distinct
-    // line slots plus a chunks_per_line cushion for in-evaluate completions).
-    // Push sites assert against this to catch any violation immediately.
-    uint32_t response_queue_capacity_;
+    // Architectural bounds on the two completion queues, each asserted at
+    // its push site:
+    //   - read responses: at most one per in-flight MSHR, so num_mshrs.
+    //   - write acks: the cache caps enqueued-but-unacked write-throughs at
+    //     max_outstanding_writes (eager-wobbling-pizza.md Steps 1-2) and the
+    //     write-ack queue holds a subset of those, plus a chunks_per_line
+    //     cushion for an in-evaluate completion and the bounded same-cycle
+    //     multi-enqueue overshoot. So max_outstanding_writes + chunks_per_line.
+    uint32_t read_response_queue_capacity_;
+    uint32_t write_ack_queue_capacity_;
 
     // DRAM ticks per fabric tick. Fractional ratios accumulate in `phase_`.
     double ticks_per_fabric_;
@@ -110,8 +119,10 @@ private:
     // so submit_write can enforce the write-region bound in O(1).
     uint32_t write_chunks_in_fifo_ = 0;
 
-    // Response FIFO (DRAM clock producer; fabric clock consumer).
+    // Response FIFO (DRAM clock producer; fabric clock consumer). Reads only.
     std::deque<MemoryResponse> responses_;
+    // Write-ack FIFO — write completions, drained unconditionally by the cache.
+    std::deque<MemoryResponse> write_acks_;
 
     // Per-MSHR read reassembly. Indexed by mshr_id; sized to cfg.num_mshrs.
     std::vector<ReadAssembly> read_assembly_;
@@ -131,9 +142,10 @@ private:
 
     // Total DRAMSim3 ClockTicks issued since construction or last reset.
     size_t dram_ticks_ = 0;
-    // Peak response queue depth observed; used by tests to assert the
-    // architectural bound is respected under stress.
+    // Peak queue depths observed; used by tests to assert the architectural
+    // bounds are respected under stress.
     size_t max_response_queue_ = 0;
+    size_t max_write_ack_queue_ = 0;
 
     // Phase M5: REGISTERED request slots.
     PendingMemoryRequest current_read_request_;

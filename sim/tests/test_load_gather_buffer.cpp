@@ -15,6 +15,7 @@ constexpr uint32_t LINE_SIZE = 128;
 constexpr uint32_t CACHE_SIZE = 4096;
 constexpr uint32_t NUM_MSHRS = 32;
 constexpr uint32_t WB_DEPTH = 16;
+constexpr uint32_t MAX_OUTSTANDING_WRITES = 64;
 constexpr uint32_t MEM_LATENCY = 4;
 constexpr uint32_t FULL_MASK = 0xFFFFFFFFu;
 
@@ -121,8 +122,8 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     Stats stats;
     FixedLatencyMemory mem_if(MEM_LATENCY, stats);
     LoadGatherBufferFile gather_file(NUM_WARPS, stats);
-    L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if,
-                  gather_file, stats);
+    L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
+                  mem_if, gather_file, stats);
 
     // Pre-install the line that lane 0's address will map to, via a separate
     // warp so we don't perturb warp 0's gather buffer.
@@ -210,8 +211,8 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
     Stats stats;
     FixedLatencyMemory mem_if(MEM_LATENCY, stats);
     LoadGatherBufferFile gather_file(NUM_WARPS, stats);
-    L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, mem_if,
-                  gather_file, stats);
+    L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
+                  mem_if, gather_file, stats);
     LdStUnit ldst(8, 4, stats);
     CoalescingUnit coal(ldst, cache, gather_file, LINE_SIZE, stats);
 

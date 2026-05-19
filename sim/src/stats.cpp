@@ -95,6 +95,8 @@ void Stats::report(std::ostream& out, uint32_t num_warps) const {
     out << "Line pin stall cycles:     " << line_pin_stall_cycles << "\n";
     out << "Secondary drain cycles:    " << secondary_drain_cycles << "\n";
     out << "Fill conflict retry cycles:" << fill_conflict_retry_cycles << "\n";
+    out << "Write-ack pin stall cycles:" << write_ack_pin_stall_cycles << "\n";
+    out << "Write throttle stall cycles:" << write_throttle_stall_cycles << "\n";
     if (total_loads_completed > 0) {
         out << "Avg load latency:          " << std::fixed << std::setprecision(1)
             << static_cast<double>(total_load_latency) / static_cast<double>(total_loads_completed)
@@ -181,6 +183,8 @@ void Stats::report_json(std::ostream& out, uint32_t num_warps) const {
     out << "  \"line_pin_stall_cycles\": " << line_pin_stall_cycles << ",\n";
     out << "  \"secondary_drain_cycles\": " << secondary_drain_cycles << ",\n";
     out << "  \"fill_conflict_retry_cycles\": " << fill_conflict_retry_cycles << ",\n";
+    out << "  \"write_ack_pin_stall_cycles\": " << write_ack_pin_stall_cycles << ",\n";
+    out << "  \"write_throttle_stall_cycles\": " << write_throttle_stall_cycles << ",\n";
 
     // Writeback
     out << "  \"fixed_writeback_preempted_cycles\": "

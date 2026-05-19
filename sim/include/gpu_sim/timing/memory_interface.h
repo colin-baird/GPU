@@ -64,6 +64,16 @@ public:
     virtual bool current_has_response() const = 0;
     bool next_has_response() const { return current_has_response(); }
     virtual MemoryResponse get_response() = 0;
+
+    // Separate write-ack channel. External memory delivers write
+    // completions here, NOT on the read-fill response queue, so the cache
+    // can drain write acks unconditionally every cycle (the deadlock fix:
+    // a write-ack pin would otherwise never clear when a fill is deferred).
+    // REGISTERED forward edge, mirroring current_has_response/get_response.
+    virtual bool current_has_write_ack() const = 0;
+    virtual MemoryResponse get_write_ack() = 0;
+    virtual size_t write_ack_count() const = 0;
+
     virtual bool is_idle() const = 0;
     virtual size_t in_flight_count() const = 0;
     virtual size_t response_count() const = 0;
@@ -88,8 +98,11 @@ public:
 
     bool current_has_response() const override { return !responses_.empty(); }
     MemoryResponse get_response() override;
+    bool current_has_write_ack() const override { return !write_acks_.empty(); }
+    MemoryResponse get_write_ack() override;
+    size_t write_ack_count() const override { return write_acks_.size(); }
     bool is_idle() const override {
-        return in_flight_.empty() && responses_.empty()
+        return in_flight_.empty() && responses_.empty() && write_acks_.empty()
                && !current_read_request_.valid && !next_read_request_.valid
                && !current_write_request_.valid && !next_write_request_.valid;
     }
@@ -101,6 +114,9 @@ private:
     Stats& stats_;
     std::deque<MemoryRequest> in_flight_;
     std::deque<MemoryResponse> responses_;
+    // Write completions land here, separate from the read-fill responses_
+    // queue, so the cache can drain them unconditionally each cycle.
+    std::deque<MemoryResponse> write_acks_;
     // Phase M5: REGISTERED request slots.
     PendingMemoryRequest current_read_request_;
     PendingMemoryRequest next_read_request_;
