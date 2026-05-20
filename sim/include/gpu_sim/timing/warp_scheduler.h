@@ -144,13 +144,13 @@ private:
     // Wired by TimingModel via set_dependencies(). Tests that only construct a
     // WarpScheduler may leave these null (no scoreboard/branch hazard; the
     // LDST FIFO gate treats an absent ldst_ as an empty FIFO).
-    Scoreboard* scoreboard_ = nullptr;
-    BranchShadowTracker* branch_tracker_ = nullptr;
-    LdStUnit* ldst_ = nullptr;
+    Scoreboard* scoreboard_ = nullptr;              // back-pointer
+    BranchShadowTracker* branch_tracker_ = nullptr; // back-pointer
+    LdStUnit* ldst_ = nullptr;                      // back-pointer
     // Phase 10B.3: wired via set_writeback_arbiter(). Null in unit tests => no
     // writeback stall ever (evaluate() never early-returns, commit() never
     // gates).
-    WritebackArbiter* wb_arbiter_ = nullptr;
+    WritebackArbiter* wb_arbiter_ = nullptr;        // back-pointer
 
     // ---- Phase 10B.0 issue scoreboard --------------------------------------
     // Phase 4 (reg.h migration): every cross-cycle register is a Reg<T>. The

@@ -341,3 +341,20 @@ Inventory matches HEAD `6d5be5a`. Ready to dispatch Phase 1.
   - **Phase markers density (deferred to Phase 8).** `timing_model.cpp` has 71 phase-marker comments. The doc-sync pass in Phase 8 can collapse these to one per logical block + push rationale into `timing_discipline.md`.
   - **`InstructionBuffer::commit(bool flush_request)`** parameter signature is the only commit-with-parameter in the timing model — documented as a deliberate ergonomic exception in the Phase 8 doc-sync.
   - **Verification spot-checks (no issues).** Cross-stage FIFO ownership pattern consistent across Phases 3-5; `RegFifo<T>` `pops_` + `staged_pushes_` extensions correctly applied at commit and cleared on reset; sweep order consistent across panic and non-panic branches; the DRAMSim3 fabric/DRAM Reg-mutation split is hazard-free (only `write_chunks_in_fifo_` is written by both halves, legal because both ungated under one `commit_all()`); the peek-ahead via `pops_staged()` in the DRAM stage is correct; the two duplicate `cache.handle_responses()` calls Phase 5 removed were the only such pattern.
+
+### Phase 7
+
+- **Delta:** zero against the Phase-5 baseline. ctest 31/31 pass.
+- **Change.** Extended `tools/lint_timing_naming.py` with a strict-compliance per-member classification check. Every field of a class that derives `RegisteredStage` OR holds any timing-primitive (`Reg<T>` / `RegFifo<T>` / `PulseReg<T>` / `Wire<T>`) must be one of:
+  - A primitive (`Reg`/`RegFifo`/`PulseReg`/`Wire`).
+  - A reference (`T&`) — inherently non-state.
+  - `const`-qualified (config after construction).
+  - Carry one of the recognized annotations on its declaration line: `// sim-instrumentation`, `// test-only-override`, `// back-pointer`, `// config`, `// timing-naming-allow: <reason>`.
+
+  Legacy annotation forms (`// staging`, `// scratch`, `// internal scheduling`) are explicitly rejected as state-shape labels; the lint flags them with a clear migration message. Pure POD value structs (`MemoryRequest`, `BufferEntry`, etc.) without primitives or `RegisteredStage` are skipped — they're sub-objects that own their own state and don't qualify as timing-model state holders.
+- **Parser fix.** Added paren-depth tracking to `_parse_header` so multi-line function signatures' parameter rows are not mis-parsed as field declarations (one false positive on `WarpScheduler::multiply_pipeline_stages` constructor parameter was caught and fixed before any annotation was burned on it).
+- **Annotations added.** 37 pre-existing legitimate non-state fields received explicit `// back-pointer`, `// config`, or `// test-only-override` annotations across `alu_unit.h`, `coalescing_unit.h`, `decode_stage.h`, `divide_unit.h`, `fetch_stage.h`, `instruction_buffer.h`, `ldst_unit.h`, `multiply_unit.h`, `operand_collector.h`, `timing_model.h`, `tlookup_unit.h`, `warp_scheduler.h`, `writeback_arbiter.h`. One field (`TimingModel::warps_`) used `// timing-naming-allow:` with an explanatory note — it's a container of state-holding sub-objects driven manually by `TimingModel::tick()`.
+- **Spot-check.** Injected `bool test_injected_field_ = false;` into `ALUUnit`; lint correctly flagged it with the new state-shape message. Reverted and lint stays clean.
+- **DELIBERATE_NON_REGISTER set.** Empty — no field needed an explicit fully-qualified-name allowlist entry. The taxonomy is closed.
+- **Files modified:** `tools/lint_timing_naming.py`, 13 timing headers.
+- **Latitude policy invocations:** none. No primitive extensions or scope creep.

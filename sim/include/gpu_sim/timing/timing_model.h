@@ -87,8 +87,14 @@ private:
     Stats& stats_;
     TimingTraceOptions trace_options_;
 
-    // Per-warp state
-    std::vector<WarpState> warps_;
+    // Per-warp state. WarpState is a state-holding sub-object (Reg<uint32_t>
+    // pc_, Reg<bool> active_, InstructionBuffer instr_buffer) — its
+    // seed_next/commit lifecycle is driven manually from TimingModel::tick()
+    // for every warp on every cycle, equivalent to a RegisteredStage's
+    // seed_all/commit_all loop. The container holds these sub-objects rather
+    // than primitives directly; the strict-compliance lint exempts
+    // sub-object containers via this annotation.
+    std::vector<WarpState> warps_;  // timing-naming-allow: container of state-holding sub-objects driven by TimingModel::tick()
     std::unique_ptr<BranchPredictor> branch_predictor_;
 
     // Pipeline components

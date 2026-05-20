@@ -120,14 +120,14 @@ private:
     // same-cycle effect.
     void apply_redirect(uint32_t warp_id, uint32_t target_pc);
 
-    uint32_t num_warps_;
-    WarpState* warps_;
-    const InstructionMemory& imem_;
-    BranchPredictor& predictor_;
-    Stats& stats_;
-    const DecodeStage* decode_ = nullptr;
-    const ALUUnit* alu_ = nullptr;
-    BranchShadowTracker* branch_tracker_ = nullptr;
+    uint32_t num_warps_;                                // config
+    WarpState* warps_;                                  // back-pointer
+    const InstructionMemory& imem_;                     // back-pointer
+    BranchPredictor& predictor_;                        // back-pointer
+    Stats& stats_;                                      // back-pointer
+    const DecodeStage* decode_ = nullptr;               // back-pointer
+    const ALUUnit* alu_ = nullptr;                      // back-pointer
+    BranchShadowTracker* branch_tracker_ = nullptr;     // back-pointer
 
     // Round-robin warp pointer. A clock-edge register: evaluate() reads the
     // committed (pre-advance) value and stages the advanced value; commit()
@@ -143,13 +143,13 @@ private:
 
     // Test-only overrides; default state is "ready, no pending warp" so a
     // FetchStage exercised in isolation behaves like the previous default.
-    bool has_pending_override_ = false;
-    std::optional<uint32_t> decode_pending_warp_override_;
-    bool has_ready_override_ = false;
-    bool decode_ready_override_ = true;
+    bool has_pending_override_ = false;                       // test-only-override
+    std::optional<uint32_t> decode_pending_warp_override_;    // test-only-override
+    bool has_ready_override_ = false;                         // test-only-override
+    bool decode_ready_override_ = true;                       // test-only-override
 
     // Phase 5 test hook: redirect-request override for unit tests.
-    std::optional<RedirectRequest> redirect_override_;
+    std::optional<RedirectRequest> redirect_override_;        // test-only-override
 
     // Phase 2: per-warp deactivation-request Wire (owned by TimingModel; see
     // set_deactivation_request above). Read combinationally during the

@@ -81,9 +81,9 @@ private:
     Wire<bool> accepted_this_cycle_;
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
-    OperandCollector* opcoll_ = nullptr;
-    WritebackArbiter* wb_arbiter_ = nullptr;
-    const uint64_t* sim_cycle_ = nullptr;
+    OperandCollector* opcoll_ = nullptr;     // back-pointer
+    WritebackArbiter* wb_arbiter_ = nullptr; // back-pointer
+    const uint64_t* sim_cycle_ = nullptr;    // back-pointer
 };
 
 } // namespace gpu_sim

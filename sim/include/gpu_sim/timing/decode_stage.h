@@ -93,9 +93,9 @@ private:
     // Drops the staged pending entry if it belongs to the redirected warp.
     void apply_redirect_invalidate(uint32_t warp_id);
 
-    WarpState* warps_;
-    FetchStage& fetch_;
-    const ALUUnit* alu_ = nullptr;
+    WarpState* warps_;                  // back-pointer
+    FetchStage& fetch_;                 // back-pointer
+    const ALUUnit* alu_ = nullptr;      // back-pointer
 
     // Pending decode result. Phase 10D.0: explicitly double-buffered.
     // evaluate() consumes its prior-cycle committed value (the `if
@@ -125,7 +125,7 @@ private:
     Reg<PendingDecode> pending_;
 
     // Phase 5 test hook field.
-    std::optional<RedirectRequest> redirect_override_;
+    std::optional<RedirectRequest> redirect_override_;  // test-only-override
 };
 
 } // namespace gpu_sim

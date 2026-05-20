@@ -107,8 +107,8 @@ private:
     Wire<bool> busy_this_cycle_;
 
     // Phase 10B.1/10B.2 back-pointers. nullptr-tolerant for unit tests.
-    WarpScheduler* scheduler_ = nullptr;
-    WritebackArbiter* wb_arbiter_ = nullptr;
+    WarpScheduler* scheduler_ = nullptr;     // back-pointer
+    WritebackArbiter* wb_arbiter_ = nullptr; // back-pointer
 };
 
 } // namespace gpu_sim

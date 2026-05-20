@@ -44,11 +44,11 @@ public:
     }
 
 private:
-    LdStUnit& ldst_;
-    L1Cache& cache_;
-    LoadGatherBufferFile& gather_file_;
-    uint32_t line_size_;
-    Stats& stats_;
+    LdStUnit& ldst_;                     // back-pointer
+    L1Cache& cache_;                     // back-pointer
+    LoadGatherBufferFile& gather_file_;  // back-pointer
+    uint32_t line_size_;                 // config
+    Stats& stats_;                       // back-pointer
 
     // Phase 6 of current_mut() elimination: durable cross-cycle coalescing
     // state, wrapped as Reg<T> for type-system enforcement of the

@@ -156,7 +156,7 @@ private:
     // register_state (Wire is not a RegBase).
     Wire<RedirectRequest> next_redirect_;
     // Test-only override; when set, evaluate() reads it into next_redirect_.
-    std::optional<RedirectRequest> redirect_override_;
+    std::optional<RedirectRequest> redirect_override_;  // test-only-override
 
     // Phase 10B.3: control state guarding branch-resolution side-effects.
     // Branch resolution is combinational (the clock-enable gates state
@@ -190,12 +190,12 @@ private:
     Reg<bool> branch_resolved_;
 
     // Wired post-construction; nullptr-tolerant for unit tests in isolation.
-    BranchShadowTracker* branch_tracker_ = nullptr;
-    BranchPredictor* branch_predictor_ = nullptr;
+    BranchShadowTracker* branch_tracker_ = nullptr;  // back-pointer
+    BranchPredictor* branch_predictor_ = nullptr;    // back-pointer
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
-    OperandCollector* opcoll_ = nullptr;
-    WritebackArbiter* wb_arbiter_ = nullptr;
-    const uint64_t* sim_cycle_ = nullptr;
+    OperandCollector* opcoll_ = nullptr;     // back-pointer
+    WritebackArbiter* wb_arbiter_ = nullptr; // back-pointer
+    const uint64_t* sim_cycle_ = nullptr;    // back-pointer
 };
 
 } // namespace gpu_sim

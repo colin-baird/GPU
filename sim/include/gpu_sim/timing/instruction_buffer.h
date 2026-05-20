@@ -100,7 +100,7 @@ public:
     void reset() { entries_.reset(); }
 
 private:
-    uint32_t max_depth_;
+    uint32_t max_depth_;  // config
     // InstructionBuffer does not derive RegisteredStage: WarpState owns one
     // InstructionBuffer per warp and is stored in a std::vector<WarpState>
     // (see warp_state.h). The class must remain movable for the vector's

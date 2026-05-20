@@ -135,9 +135,9 @@ public:
     uint32_t current_fifo_total_pushes() const { return fifo_total_pushes_; }
 
 private:
-    uint32_t num_ldst_units_;
-    uint32_t fifo_depth_;
-    Stats& stats_;
+    uint32_t num_ldst_units_;  // config
+    uint32_t fifo_depth_;      // config
+    Stats& stats_;             // back-pointer
 
     // Phase 3 (reg.h migration): the per-cycle iterative state is wrapped in
     // Reg<T>. The addr-gen FIFO itself is a RegFifo declared on TimingModel
@@ -185,9 +185,9 @@ private:
     Wire<bool> push_staged_this_cycle_;
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
-    OperandCollector* opcoll_ = nullptr;
-    WritebackArbiter* wb_arbiter_ = nullptr;
-    const uint64_t* sim_cycle_ = nullptr;
+    OperandCollector* opcoll_ = nullptr;     // back-pointer
+    WritebackArbiter* wb_arbiter_ = nullptr; // back-pointer
+    const uint64_t* sim_cycle_ = nullptr;    // back-pointer
 };
 
 } // namespace gpu_sim

@@ -453,6 +453,12 @@ def _parse_header(path: Path) -> list[ClassInfo]:
     cls: ClassInfo | None = None
     cls_brace_open: int | None = None
     brace_depth = 0
+    # Track parenthesis depth across lines so a multi-line constructor
+    # signature's parameter rows are not mis-parsed as field declarations.
+    # A row like `uint32_t param = default);` looks like a field at the
+    # token level but lives inside a function signature whose opening `(`
+    # is on a prior line.
+    paren_depth = 0
     access = "private"  # default for class; we'll override on entry
 
     i = 0
@@ -497,6 +503,17 @@ def _parse_header(path: Path) -> list[ClassInfo]:
         if cls is not None:
             opens = compact.count("{")
             closes = compact.count("}")
+            # Snapshot paren depth at the START of this line. Field
+            # detection below uses paren_depth_before (we treat a line
+            # that closes a multi-line function signature as still inside
+            # that signature for the purpose of "is this a field?" — the
+            # line is a parameter row, not a class member).
+            paren_depth_before = paren_depth
+            paren_opens = compact.count("(")
+            paren_closes = compact.count(")")
+            paren_depth += paren_opens - paren_closes
+            if paren_depth < 0:
+                paren_depth = 0
             if cls_brace_open is None and opens > 0:
                 cls_brace_open = brace_depth + 1
             brace_depth_before = brace_depth
@@ -528,13 +545,17 @@ def _parse_header(path: Path) -> list[ClassInfo]:
                         cls.methods.append(
                             (name, i + 1, ret, access)
                         )
-                    elif brace_depth == cls_brace_open:
+                    elif (brace_depth == cls_brace_open
+                          and paren_depth_before == 0
+                          and paren_depth == 0):
                         # Field declaration heuristic: only recognize
                         # lines that don't change brace depth (so we
                         # don't mistake a method body opener for a
                         # field), end with `;`, and aren't
                         # function-shaped (no `(` outside template
-                        # args).
+                        # args). Also require paren_depth == 0 so a
+                        # row inside a multi-line constructor signature
+                        # (whose `(` is on a prior line) doesn't match.
                         if (";" in compact and "(" not in compact
                                 and "operator" not in compact):
                             fm = FIELD_RE.match(compact)
@@ -869,6 +890,161 @@ def _check_reg_members_enrolled(
             ))
 
 
+# Strict-compliance per-member classification (sparkling-dazzling-starfish
+# Phase 7). Recognized annotation forms — every plain field in a
+# timing-model class must either be a primitive (Reg / RegFifo / PulseReg /
+# Wire), a reference (T&), a const-qualified config, derive its kind from
+# a sub-object that holds its own state, OR carry one of these
+# annotations on the declaration line.
+_RECOGNIZED_ANNOTATION_RE = re.compile(
+    r"//\s*(?:"
+    r"sim-instrumentation"
+    r"|test-only-override"
+    r"|back-pointer"
+    r"|config"
+    r"|timing-naming-allow:"
+    r")"
+)
+
+# Legacy annotation forms rejected as state-shape labels. These predate
+# the strict-compliance taxonomy and are no longer valid on a field
+# declaration (their use was banned in the close-the-Reg-family migration
+# — sparkling-dazzling-starfish.md Phase 7).
+_LEGACY_ANNOTATION_RE = re.compile(
+    r"//\s*(?:staging|scratch|internal scheduling)\b"
+)
+
+# Plain "data-shaped" field types that the strict-compliance rule
+# considers state-bearing and therefore requires a primitive wrap or an
+# annotation. Excludes user-defined class types (those are sub-objects
+# that own their own state and aren't covered by this rule).
+_PLAIN_DATA_TYPE_RE = re.compile(
+    r"^\s*(?:const\s+|static\s+|mutable\s+)*"
+    r"(?:"
+    r"bool|char|short|int|long|float|double|size_t|ptrdiff_t"
+    r"|u?int(?:8|16|32|64)_t"
+    r"|std::(?:deque|vector|array|optional|unordered_map|map|set|"
+    r"unordered_set|string|bitset|pair|tuple|atomic|function)"
+    r")"
+    r"\b"
+)
+
+
+def _is_primitive_state_type(type_: str) -> bool:
+    return bool(
+        _REG_TYPE_RE.search(type_)
+        or _PULSEREG_TYPE_RE.search(type_)
+        or _REGFIFO_TYPE_RE.search(type_)
+        or re.search(r"\bWire\s*<", type_)
+    )
+
+
+def _is_reference_type(type_: str) -> bool:
+    # Match T& but not T&& (no rvalue refs in this codebase, but be safe).
+    return bool(re.search(r"&(?!&)", type_))
+
+
+def _is_pointer_type(type_: str) -> bool:
+    return "*" in type_
+
+
+def _is_const_qualified(type_: str) -> bool:
+    return bool(re.match(r"^\s*const\b", type_))
+
+
+def _is_plain_data_type(type_: str) -> bool:
+    return bool(_PLAIN_DATA_TYPE_RE.match(type_))
+
+
+def _class_holds_timing_state(cls: ClassInfo) -> bool:
+    """True iff this class is a timing-model state holder.
+
+    A class is in scope for the strict-compliance taxonomy if it derives
+    `RegisteredStage` OR holds at least one primitive (Reg/RegFifo/
+    PulseReg/Wire) member. Pure POD value structs (MemoryRequest,
+    BufferEntry, etc.) hold no primitives and are out of scope.
+    """
+    if "RegisteredStage" in cls.bases:
+        return True
+    for (_name, _line, type_, _access) in cls.fields:
+        if _is_primitive_state_type(type_):
+            return True
+        if re.search(r"\bWire\s*<", type_):
+            return True
+    return False
+
+
+def _check_strict_taxonomy(
+    cls: ClassInfo, header: list[str], path: Path,
+    findings: list[Finding],
+) -> None:
+    """Strict-compliance per-member classification (sparkling-dazzling-
+    starfish Phase 7).
+
+    For every member field of a timing-model state-holding class, the
+    field must be exactly one of:
+      (a) a primitive (Reg<T> / RegFifo<T> / PulseReg<T> / Wire<T>);
+      (b) a reference (T&) — inherently non-state;
+      (c) a pointer (T*) annotated `// back-pointer` or
+          `// timing-naming-allow:`;
+      (d) const-qualified (config after construction);
+      (e) carries one of the recognized annotations on the declaration
+          line: `// sim-instrumentation`, `// test-only-override`,
+          `// back-pointer`, `// config`, `// timing-naming-allow:`.
+
+    A field carrying a legacy annotation form (`// staging`, `// scratch`,
+    `// internal scheduling counter`) is flagged separately so it can be
+    migrated to one of the recognized forms.
+    """
+    if not _class_holds_timing_state(cls):
+        return
+    for (name, line, type_, _access) in cls.fields:
+        line_text = header[line - 1]
+        # Legacy annotation rejection comes first so the recommendation
+        # is "pick a recognized annotation", not "wrap as a primitive".
+        if _LEGACY_ANNOTATION_RE.search(line_text):
+            findings.append(Finding(
+                file=path, line=line, rule="state-shape",
+                message=(
+                    f"{cls.name}::{name} — legacy annotation form on a "
+                    f"field declaration is rejected by the strict-"
+                    f"compliance taxonomy. Use one of: "
+                    f"`// sim-instrumentation`, `// test-only-override`, "
+                    f"`// back-pointer`, `// config`, or "
+                    f"`// timing-naming-allow: <reason>`. See "
+                    f"sparkling-dazzling-starfish.md Phase 7."
+                ),
+            ))
+            continue
+        # Recognized primitive / reference / pointer / const / annotated.
+        if _is_primitive_state_type(type_):
+            continue
+        if _is_reference_type(type_):
+            continue
+        if _is_const_qualified(type_):
+            continue
+        if _RECOGNIZED_ANNOTATION_RE.search(line_text):
+            continue
+        # Sub-object value field of a user-defined class type — out of
+        # scope (the sub-object owns its own state).
+        if not _is_plain_data_type(type_) and not _is_pointer_type(type_):
+            continue
+        # Plain-data field with no recognized annotation — flag.
+        findings.append(Finding(
+            file=path, line=line, rule="state-shape",
+            message=(
+                f"{cls.name}::{name} — plain field of a timing-model "
+                f"state-holding class must be wrapped in a primitive "
+                f"(Reg<T> / RegFifo<T> / PulseReg<T> / Wire<T>) or "
+                f"annotated with one of: `// sim-instrumentation`, "
+                f"`// test-only-override`, `// back-pointer`, "
+                f"`// config`, or "
+                f"`// timing-naming-allow: <reason>`. See "
+                f"sparkling-dazzling-starfish.md Phase 7."
+            ),
+        ))
+
+
 def lint_header(path: Path) -> list[Finding]:
     """Lint a single header file and return findings."""
     findings: list[Finding] = []
@@ -889,6 +1065,11 @@ def lint_header(path: Path) -> list[Finding]:
         # helper classes like MSHRFile.
         _check_no_raw_current_next_pair(cls, lines, path, findings)
         _check_reg_members_enrolled(cls, lines, path, findings)
+        # Phase 7 (sparkling-dazzling-starfish): strict-compliance
+        # per-member classification on every timing-model state-holding
+        # class. Pure POD structs (no primitives, no RegisteredStage)
+        # are skipped — they're sub-objects that own their own state.
+        _check_strict_taxonomy(cls, lines, path, findings)
     return findings
 
 

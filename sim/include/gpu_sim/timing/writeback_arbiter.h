@@ -58,9 +58,9 @@ private:
     // The single fixed-latency source with a result this cycle, or nullptr.
     ExecutionUnit* first_fixed_with_result() const;
 
-    Scoreboard& scoreboard_;
-    Stats& stats_;
-    std::vector<ExecutionUnit*> sources_;
+    Scoreboard& scoreboard_;                  // back-pointer
+    Stats& stats_;                            // back-pointer
+    std::vector<ExecutionUnit*> sources_;     // back-pointer (vector of wired execution-unit pointers)
 
     // Phase 6 of current_mut() elimination: the previous std::optional pair
     // (committed_ / pending_commit_) was a hand-rolled current/next double

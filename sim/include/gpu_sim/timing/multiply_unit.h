@@ -76,8 +76,8 @@ private:
         uint32_t cycles_remaining;
     };
 
-    uint32_t pipeline_stages_;
-    Stats& stats_;
+    uint32_t pipeline_stages_;  // config
+    Stats& stats_;              // back-pointer
     // Phase 3 (reg.h migration): the multiply pipeline and result buffer are
     // both Reg<T>. accept() / evaluate() write only the staged slot; commit()
     // latches. Phase 10B.3: the result buffer is a plain double-buffered
@@ -99,9 +99,9 @@ private:
     Wire<bool> accepted_this_cycle_;
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
-    OperandCollector* opcoll_ = nullptr;
-    WritebackArbiter* wb_arbiter_ = nullptr;
-    const uint64_t* sim_cycle_ = nullptr;
+    OperandCollector* opcoll_ = nullptr;     // back-pointer
+    WritebackArbiter* wb_arbiter_ = nullptr; // back-pointer
+    const uint64_t* sim_cycle_ = nullptr;    // back-pointer
 };
 
 } // namespace gpu_sim
