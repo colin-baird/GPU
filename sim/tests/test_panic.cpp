@@ -125,10 +125,16 @@ TEST_CASE("PanicController: state machine progression", "[panic]") {
     REQUIRE_FALSE(panic.is_done());
     panic.evaluate();
     REQUIRE(panic.is_done());
+    // Phase 2 (close-the-Reg-family-migration): active_ is Reg<bool>;
+    // panic_->evaluate() step 3 stages set_next(false), so a commit is
+    // required before the committed accessor reads false. (In production,
+    // TimingModel::tick()'s panic-branch commit phase calls warp.commit()
+    // for every warp.)
+    for (auto& w : warps) w.commit();
 
     // Both warps should be inactive
-    REQUIRE_FALSE(warps[0].active);
-    REQUIRE_FALSE(warps[1].active);
+    REQUIRE_FALSE(warps[0].active_.current());
+    REQUIRE_FALSE(warps[1].active_.current());
 }
 
 TEST_CASE("Panic: committed writeback stays frozen once panic is active", "[panic]") {

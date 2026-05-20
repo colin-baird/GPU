@@ -84,6 +84,19 @@ public:
         has_ready_override_ = true;
     }
 
+    // Phase 2 (close-the-Reg-family-migration): wire the per-warp
+    // deactivation-request Wire owned by `TimingModel`. The ECALL-retirement
+    // path drives a per-warp bit during the execute phase of the same tick
+    // in which fetch.evaluate() reads warp eligibility; fetch combinationally
+    // masks `warps_[w].active_.current()` against `!deactivation_request_[w]`
+    // so the deactivated warp is treated as inactive the same cycle the
+    // request is asserted. Nullptr-tolerant: tests that exercise FetchStage
+    // in isolation see no deactivation request asserted.
+    void set_deactivation_request(
+        const Wire<std::array<bool, MAX_WARPS>>* req) {
+        deactivation_request_ = req;
+    }
+
 private:
     bool query_decode_ready() const;
     std::optional<uint32_t> query_decode_pending_warp() const;
@@ -124,6 +137,12 @@ private:
 
     // Phase 5 test hook: redirect-request override for unit tests.
     std::optional<RedirectRequest> redirect_override_;
+
+    // Phase 2: per-warp deactivation-request Wire (owned by TimingModel; see
+    // set_deactivation_request above). Read combinationally during the
+    // eligibility scan so an ECALL-retirement deactivation asserted earlier
+    // in this same tick masks the warp out of the fetch pick.  // back-pointer
+    const Wire<std::array<bool, MAX_WARPS>>* deactivation_request_ = nullptr;
 };
 
 } // namespace gpu_sim

@@ -124,6 +124,20 @@ private:
     // Wire<bool> encodes the transient semantics — the reset() in the
     // commit cascade replaces the prior `= false`.
     Wire<bool> pending_panic_flush_;
+    // Phase 2 (close-the-Reg-family-migration): per-warp ECALL deactivation
+    // request. The ECALL-retirement path (off opcoll's committed output)
+    // drives a per-warp bit mid-tick BEFORE fetch.evaluate() reads warp
+    // eligibility; fetch combinationally masks
+    // `warps_[w].active_.current() && !deactivation_request_[w]`. On the
+    // next tick the staged `active_.set_next(false)` has committed, so the
+    // wire is no longer needed for the same-cycle visibility — reset at the
+    // top of every tick (the `next_redirect_` convention; the wire's role
+    // is one tick: producer is ECALL-retire, consumer is fetch.evaluate,
+    // both within the same tick). The panic path does not drive this wire:
+    // panic_->evaluate() drives `active_.set_next(false)` directly and
+    // fetch.evaluate() does not run in the panic branch, so no same-cycle
+    // mask is required.
+    Wire<std::array<bool, MAX_WARPS>> deactivation_request_;
     // Construction-time flag pair; set by enable_*_trace() helpers called
     // once at config time and read throughout the tick. Effectively config
     // after construction.

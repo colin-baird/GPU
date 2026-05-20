@@ -108,8 +108,13 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
     warps[0].instr_buffer.push(BufferEntry{});
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    // Phase 2 (close-the-Reg-family-migration): pc_ / active_ are Reg<T>;
+    // drive seed_next/commit on the warp alongside fetch.evaluate/commit
+    // (the existing pattern used for Scoreboard / BranchShadowTracker).
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
 
     REQUIRE(fetch.current_output().has_value());
     // Phase 10E: the redirect is now COMBINATIONAL-backward and applied at the
@@ -119,12 +124,14 @@ TEST_CASE("FetchStage: redirect flushes buffered state for a warp", "[timing]") 
     // at the top of its evaluate()). evaluate() applies the flush; commit()
     // flips the (now-empty) output register.
     fetch.set_redirect_request_override(true, 0, 16);
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     fetch.clear_redirect_request_override();
 
     REQUIRE_FALSE(fetch.current_output().has_value());
-    REQUIRE(warps[0].pc == 16);
+    REQUIRE(warps[0].pc_.current() == 16);
     REQUIRE(warps[0].instr_buffer.is_empty());
 }
 
@@ -139,13 +146,15 @@ TEST_CASE("FetchStage: backward branch prediction steers the warp PC", "[timing]
     warps[0].reset(0x100);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
 
     REQUIRE(fetch.current_output().has_value());
     REQUIRE(fetch.current_output()->prediction.predicted_taken);
     REQUIRE(fetch.current_output()->prediction.predicted_target == 0x0F8);
-    REQUIRE(warps[0].pc == 0x0F8);
+    REQUIRE(warps[0].pc_.current() == 0x0F8);
 }
 
 TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
@@ -208,9 +217,14 @@ TEST_CASE("DecodeStage: redirect drops carried-forward pending decode", "[timing
     // Clear the fetch output so the invalidating decode.evaluate() does not
     // re-stage a fresh entry — in the real pipeline fetch.evaluate() clears
     // its own output for the redirected warp earlier in the same tick.
-    warps[0].active = false;
+    // Phase 2: active_ is Reg<bool>; initialize sets both committed and
+    // staged slots — the post-fetch eligibility scan must observe the warp
+    // as inactive immediately.
+    warps[0].active_.initialize(false);
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     REQUIRE_FALSE(fetch.current_output().has_value());
 
     // Phase 10E: the redirect-invalidate now runs at the top of evaluate()
@@ -281,26 +295,32 @@ TEST_CASE("Fetch stalls when decode has unconsumed output", "[timing]") {
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
 
     // First fetch succeeds — PC advances to 4
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     REQUIRE(fetch.current_output().has_value());
-    uint32_t pc_after_first = warps[0].pc;
+    uint32_t pc_after_first = warps[0].pc_.current();
     REQUIRE(pc_after_first == 4);
 
     // Simulate decode being blocked via the Phase 3 READY/STALL signal.
     // Second fetch should stall (backpressure) — PC must not advance.
     fetch.set_decode_ready_override(false);
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     REQUIRE(fetch.current_output().has_value());  // retains first output
-    REQUIRE(warps[0].pc == pc_after_first);       // PC unchanged
+    REQUIRE(warps[0].pc_.current() == pc_after_first);  // PC unchanged
 
     // Decode becomes ready — next fetch should proceed.
     fetch.set_decode_ready_override(true);
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     REQUIRE(fetch.current_output().has_value());
-    REQUIRE(warps[0].pc == 8);  // PC advanced to next instruction
+    REQUIRE(warps[0].pc_.current() == 8);  // PC advanced to next instruction
 }
 
 TEST_CASE("BranchPredictor: backward branches taken, forward branches not taken", "[timing]") {

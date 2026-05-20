@@ -108,16 +108,27 @@ void FetchStage::evaluate() {
         if (current_output_warp.has_value() && *current_output_warp == w) inflight_to_w++;
         const bool will_be_full = buf.is_full() ||
             (buf.size() + inflight_to_w + 1 > buf.capacity());
-        if (warps_[w].active && !will_be_full) {
-            uint32_t pc = warps_[w].pc;
+        // Phase 2 (close-the-Reg-family-migration): active_ is Reg<bool>;
+        // committed read via .current(). The ECALL-retirement path runs
+        // earlier in this same tick and drives next_=false; the
+        // deactivation_request_ Wire combinationally forwards that intent so
+        // the deactivated warp is masked out the same cycle (the staged-false
+        // will become visible via .current() at the next cycle's commit
+        // boundary).
+        const bool deactivating =
+            deactivation_request_ && (*deactivation_request_).value()[w];
+        if (warps_[w].active_.current() && !deactivating && !will_be_full) {
+            uint32_t pc = warps_[w].pc_.current();
             FetchOutput out;
             out.raw_instruction = imem_.read(pc);
             out.warp_id = w;
             out.pc = pc;
             out.prediction = predictor_.predict(pc, out.raw_instruction);
             output_.set_next(out);
-            warps_[w].pc = out.prediction.predicted_taken ? out.prediction.predicted_target
-                                                          : (pc + 4);
+            // pc_ is the sole-writer Reg for this stage: stage next-cycle's PC.
+            warps_[w].pc_.set_next(out.prediction.predicted_taken
+                                       ? out.prediction.predicted_target
+                                       : (pc + 4));
             fetched = true;
             break;
         }
@@ -156,7 +167,11 @@ void FetchStage::reset() {
 }
 
 void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
-    warps_[warp_id].pc = target_pc;
+    // Phase 2 (close-the-Reg-family-migration): pc_ is Reg<uint32_t>; stage
+    // next-cycle's PC. The redirected warp is also skipped by the eligibility
+    // scan above (via req.targets(w)), so no fetch this cycle reads the
+    // staged value before commit() flips it.
+    warps_[warp_id].pc_.set_next(target_pc);
     warps_[warp_id].instr_buffer.flush();
     // Invalidate any in-flight fetch for this warp. The staged-slot clear
     // suffices: the rest of evaluate() either re-stages (advance path) or holds

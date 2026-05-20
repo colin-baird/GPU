@@ -492,27 +492,33 @@ TEST_CASE("Fetch: will_be_full gate skips warp when decode-pending + buf near fu
     fetch.set_decode_pending_warp_override(0);  // decode holds a pending entry for warp 0
 
     uint64_t skip_all_full_before = stats.fetch_skip_all_full;
-    uint32_t pc_before = warps[0].pc;
+    // Phase 2 (close-the-Reg-family-migration): pc_ is Reg<uint32_t>;
+    // committed read.
+    uint32_t pc_before = warps[0].pc_.current();
     uint32_t buf_size_before = warps[0].instr_buffer.size();
 
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
 
     // Fetch must NOT produce an output — the will_be_full gate blocks this
     // warp as the only eligible warp.
     REQUIRE_FALSE(fetch.current_output().has_value());
     REQUIRE(stats.fetch_skip_all_full == skip_all_full_before + 1);
-    REQUIRE(warps[0].pc == pc_before);                    // PC did not advance
+    REQUIRE(warps[0].pc_.current() == pc_before);  // PC did not advance
     REQUIRE(warps[0].instr_buffer.size() == buf_size_before);
 
     // Clear decode-pending — same buffer occupancy is now eligible, so fetch
     // succeeds.  This flips the gate condition and demonstrates the gate is
     // specifically responsible for the earlier skip.
     fetch.set_decode_pending_warp_override(std::nullopt);
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     REQUIRE(fetch.current_output().has_value());
-    REQUIRE(warps[0].pc == pc_before + 4);  // fetched => PC advanced
+    REQUIRE(warps[0].pc_.current() == pc_before + 4);  // fetched => PC advanced
 
     // Self-check: if the decode-pending-warp arm of the `will_be_full`
     // expression in fetch_stage.cpp:25-28 were removed (so will_be_full

@@ -132,7 +132,12 @@ void WarpScheduler::evaluate() {
     for (uint32_t i = 0; i < num_warps_; ++i) {
         uint32_t w = (rr_pointer_.next() + i) % num_warps_;
 
-        if (!warps_[w].active) {
+        // Phase 2 (close-the-Reg-family-migration): active_ is Reg<bool>;
+        // read committed state. The scheduler runs after the ECALL-retirement
+        // path (which uses the deactivation_request_ Wire for fetch's same-
+        // cycle mask) — by the time the next tick's scheduler.evaluate()
+        // runs, active_.current() has already been flipped by commit().
+        if (!warps_[w].active_.current()) {
             diagnostics_.next_mut()[w] = SchedulerIssueOutcome::INACTIVE;
             continue;
         }

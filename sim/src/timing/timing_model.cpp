@@ -130,6 +130,11 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
       trace_options_(std::move(trace_options)),
       trace_enabled_(config.trace_enabled) {
 
+    // Reserve before emplace so per-warp Reg<T> members (added in Phase 2)
+    // are constructed in their final storage location — defensive even though
+    // Reg<T> is movable, to keep the warps_[].pc_/active_ addresses stable
+    // for any future migration that makes WarpState non-movable.
+    warps_.reserve(config.num_warps);
     for (uint32_t w = 0; w < config.num_warps; ++w) {
         warps_.emplace_back(config.instruction_buffer_depth);
         warps_.back().reset(config.start_pc);
@@ -139,6 +144,9 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     fetch_ = std::make_unique<FetchStage>(config.num_warps, warps_.data(),
                                           func_model.instruction_memory(),
                                           *branch_predictor_, stats);
+    // Phase 2: wire the per-warp ECALL deactivation request so fetch's
+    // eligibility check observes the in-tick deactivation combinationally.
+    fetch_->set_deactivation_request(&deactivation_request_);
     decode_ = std::make_unique<DecodeStage>(warps_.data(), *fetch_);
     // Phase 3: wire decode into fetch so fetch.evaluate() can query
     // decode->current_busy() and decode->current_pending_warp() directly,
@@ -321,7 +329,7 @@ void TimingModel::discard_writeback_results() {
 
 bool TimingModel::all_warps_done() const {
     for (uint32_t w = 0; w < config_.num_warps; ++w) {
-        if (warps_[w].active) {
+        if (warps_[w].active_.current()) {
             return false;
         }
     }
@@ -332,8 +340,14 @@ bool TimingModel::tick() {
     cycle_++;
     stats_.total_cycles = cycle_;
 
+    // Phase 2: per-warp ECALL deactivation Wire — top-of-tick de-assert
+    // (next_redirect_ convention). On a stalled re-evaluation the wire
+    // re-asserts when the ECALL path re-fires below; on cycles with no
+    // ECALL retirement it stays de-asserted and fetch's mask is a no-op.
+    deactivation_request_.reset();
+
     for (uint32_t w = 0; w < config_.num_warps; ++w) {
-        if (warps_[w].active) {
+        if (warps_[w].active_.current()) {
             stats_.warp_cycles_active[w]++;
         }
     }
@@ -351,6 +365,13 @@ bool TimingModel::tick() {
         // Phase 6 of current_mut() elimination: seed coalescing's durable
         // Reg state.
         coalescing_->seed_next();
+        // Phase 2 (close-the-Reg-family-migration): seed per-warp pc_ /
+        // active_ Regs. panic_->evaluate()'s step 3 will set_next(false)
+        // for every warp; absent that write, seed copies current_ forward
+        // unchanged.
+        for (auto& warp : warps_) {
+            warp.seed_next();
+        }
         // Phase M2: apply any deferred claim before cache evaluates so that
         // FILL/secondary writes deposited this cycle observe the freshly-
         // applied claim metadata. In the panic path this is a no-op when
@@ -386,8 +407,13 @@ bool TimingModel::tick() {
         // Phase 5 of current_mut() elimination: apply per-warp instr_buffer
         // staged ops (rare in panic path — decode/scheduler typically idle
         // — but kept for consistency with the non-panic commit phase).
+        // Phase 2: also commit per-warp pc_ / active_. In the panic flow
+        // pc_ never changes (fetch does not run), so its commit is
+        // idempotent; active_ flips false at step 3 and that flip is
+        // visible to the post-commit snapshot below.
         for (auto& warp : warps_) {
             warp.instr_buffer.commit();
+            warp.commit();
         }
 
         record_cycle_trace(false);
@@ -452,6 +478,15 @@ bool TimingModel::tick() {
     // issue/execute stages above, the gather buffer is NOT frozen by the
     // writeback stall — it seed_next()s and commit()s every cycle.
     gather_file_->seed_next();
+    // Phase 2 (close-the-Reg-family-migration): seed per-warp pc_ / active_
+    // so unmodified warps carry their committed value forward. Fetch is the
+    // sole writer of pc_ (and writes only for the one warp it picks);
+    // active_ is written by the ECALL-retirement block below for the one
+    // retiring warp.  Warps not touched this cycle latch current_ -> next_
+    // via seed, so their commit() at end-of-tick is a no-op identity flip.
+    for (auto& warp : warps_) {
+        warp.seed_next();
+    }
     // Phase 6 of current_mut() elimination: CoalescingUnit's durable fields
     // (processing_, current_entry_, is_coalesced_, serial_index_,
     // cmd_in_flight_) are now Reg<T>; seed_next() copies current_ -> next_
@@ -575,10 +610,24 @@ bool TimingModel::tick() {
     // perform is done here off opcoll's committed output. The opcoll is
     // frozen during a writeback stall, so re-running this on a stalled cycle
     // is idempotent (deactivating an already-inactive warp is a no-op).
+    //
+    // Phase 2 (close-the-Reg-family-migration): active_ is Reg<bool>. Stage
+    // the deactivation via set_next(false) so commit() flips it at the
+    // cycle boundary. The same-cycle fetch.evaluate() that runs at line
+    // ~600 below reads current_ (still true on this cycle), so an
+    // additional combinational signal is required to mask the retiring warp
+    // from the fetch eligibility scan within this same tick. That is the
+    // deactivation_request_ Wire (reset at top-of-tick, driven here on the
+    // retiring warp's bit). On a writeback-stalled cycle the wire is reset
+    // at the next tick's top and re-driven from the still-pending opcoll
+    // output — idempotent.
     if (const auto& dispatched = opcoll_->current_output()) {
         if (dispatched->decoded.target_unit == ExecUnit::SYSTEM &&
             dispatched->trace.is_ecall) {
-            warps_[dispatched->warp_id].active = false;
+            warps_[dispatched->warp_id].active_.set_next(false);
+            auto bits = deactivation_request_.value();
+            bits[dispatched->warp_id] = true;
+            deactivation_request_.drive(bits);
         }
     }
 
@@ -621,8 +670,14 @@ bool TimingModel::tick() {
     // scheduler.evaluate). The buffer commit is pop-then-push, capacity-
     // checked. This replaces decode.commit()'s post-flip direct buffer push
     // + pending_.current_mut().valid=false clear.
+    //
+    // Phase 2 (close-the-Reg-family-migration): commit each warp's pc_ /
+    // active_. pc_ flipped only for the one warp fetch picked this cycle
+    // (others' next_ == current_ via seed); active_ flipped only for the
+    // one warp that retired an ECALL this cycle (others held identity).
     for (auto& warp : warps_) {
         warp.instr_buffer.commit();
+        warp.commit();
     }
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage
@@ -699,10 +754,14 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
     for (uint32_t w = 0; w < config_.num_warps; ++w) {
         auto& warp = snapshot.warps[w];
         warp.warp_id = w;
-        warp.active = warps_[w].active;
-        warp.pc = warps_[w].pc;
+        // Phase 2 (close-the-Reg-family-migration): pc_ / active_ are
+        // Reg<T>. Snapshots are built post-commit (record_cycle_trace runs
+        // after every commit_all / per-warp warp.commit()), so .current()
+        // is the freshly-latched value.
+        warp.active = warps_[w].active_.current();
+        warp.pc = warps_[w].pc_.current();
 
-        if (!warps_[w].active) {
+        if (!warps_[w].active_.current()) {
             warp.state = WarpTraceState::RETIRED;
             continue;
         }
@@ -728,7 +787,8 @@ CycleTraceSnapshot TimingModel::build_cycle_snapshot() const {
             return;
         }
         auto& warp = snapshot.warps[warp_id];
-        warp.active = warps_[warp_id].active;
+        // Phase 2: post-commit committed read.
+        warp.active = warps_[warp_id].active_.current();
         warp.state = state;
         warp.rest_reason = reason;
         warp.pc = pc;

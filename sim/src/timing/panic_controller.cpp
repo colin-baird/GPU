@@ -42,8 +42,17 @@ void PanicController::evaluate() {
     }
     case 3:
         // Halt the full SM once the pipeline has drained.
+        // Phase 2 (close-the-Reg-family-migration): active_ is Reg<bool>;
+        // stage next-cycle's deactivation for every warp. In the panic flow
+        // fetch.evaluate() does not run, so the deactivation_request_ Wire is
+        // not needed here — TimingModel::tick()'s panic branch commits
+        // warps_[w].active_ in its commit phase and the staged-false becomes
+        // current_=false in time for the post-commit snapshot to observe an
+        // inactive warp. Subsequent panic ticks (which re-run panic_->
+        // evaluate at step 3 if not yet done) repeat the staged write
+        // idempotently.
         for (uint32_t w = 0; w < num_warps_; ++w) {
-            warps_[w].active = false;
+            warps_[w].active_.set_next(false);
         }
         done_ = true;
         break;
