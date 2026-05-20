@@ -125,6 +125,18 @@ private:
     Reg<AddrGenFIFOEntry> pending_entry_;
     // Phase M1: REGISTERED address-gen FIFO. Mutated only at the commit phase
     // — push applied here (gated), pop applied by coalescing (ungated).
+    // deliberate-non-register: asymmetric cross-stage commit gating. See
+    // the long comment above (public section) — LdStUnit's commit is gated
+    // by the writeback stall and applies the staged push, while
+    // CoalescingUnit's commit is ungated and pops the front directly. The
+    // Phase 3 reg.h migration attempted to wrap this as RegFifo<T> and
+    // measured cycle-count deltas across all six workload benchmarks; the
+    // RegFifo's atomic pop-then-push at one owner's commit cannot model
+    // the cross-stage gating asymmetry. A Reg<std::deque<T>> wrap was
+    // re-considered during the Phase 6 audit but the same constraint
+    // applies. Annotated and kept as a documented deliberate exception
+    // until the cross-stage handshake itself is redesigned with a Wire-
+    // mediated coalescing-pop signal.
     std::deque<AddrGenFIFOEntry> addr_gen_fifo_;
     std::optional<AddrGenFIFOEntry> next_push_;
     // Phase 10B.0: monotonic push counter. Incremented in commit() on the

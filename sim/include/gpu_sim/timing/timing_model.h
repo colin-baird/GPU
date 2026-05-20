@@ -110,18 +110,28 @@ private:
     std::unique_ptr<PanicController> panic_;
     std::unique_ptr<ChromeTraceWriter> structured_trace_;
 
-    uint64_t cycle_ = 0;
-    // Phase 6: latched at the top of the tick when the REGISTERED ebreak
-    // request is observed. The panic-flush cascade
-    // (scheduler/opcoll/gather_file/wb_arbiter -> flush()) runs at the
-    // commit-phase boundary at the end of the same tick, replacing the
-    // prior mid-evaluate reset() cascade.
-    bool pending_panic_flush_ = false;
-    bool trace_enabled_ = false;
-    bool trace_metadata_written_ = false;
-    std::optional<CycleTraceSnapshot> last_cycle_snapshot_;
-    std::vector<ActiveTraceSlice> warp_trace_slices_;
-    std::vector<ActiveTraceSlice> hardware_trace_slices_;
+    // The simulator's notion of elapsed time, not a hardware register. In a
+    // real GPU there would be a clocked cycle counter; this field is the
+    // simulator's meta-observation of its own progress (the simulated cycle
+    // number), incremented at the top of every tick and read by trace
+    // timestamps, stats, and snapshot builders. Stays plain per the
+    // sim-instrumentation taxonomy (Phase 6 audit classification corrected
+    // from the initial Reg<uint64_t> suggestion).
+    uint64_t cycle_ = 0;  // sim-instrumentation
+    // Phase 6 of current_mut() elimination: pending_panic_flush_ is an
+    // evaluate→commit handoff within a single tick (set at top of tick when
+    // ebreak observed, read at commit-phase cascade, cleared). Logically a
+    // Wire<bool>, scheduled for conversion in Phase 7 alongside the rest of
+    // the scratch fields.
+    bool pending_panic_flush_ = false;  // scratch
+    // Construction-time flag pair; set by enable_*_trace() helpers called
+    // once at config time and read throughout the tick. Effectively config
+    // after construction.
+    bool trace_enabled_ = false;            // config (write-once at init)
+    bool trace_metadata_written_ = false;   // sim-instrumentation (per-run latch)
+    std::optional<CycleTraceSnapshot> last_cycle_snapshot_;  // sim-instrumentation
+    std::vector<ActiveTraceSlice> warp_trace_slices_;        // sim-instrumentation
+    std::vector<ActiveTraceSlice> hardware_trace_slices_;    // sim-instrumentation
 
     void trace_cycle() const;
 };

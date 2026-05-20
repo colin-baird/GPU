@@ -342,6 +342,20 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
   - **Lint and signal-diagram tooling:** lint green. Signal-diagram snapshot green. The `_REG_TYPE_RE` was tightened to `(?<![A-Za-z_])Reg\s*<` in Phase 4 to avoid matching `PulseReg<`; verified by spot-check.
   - **Dead code:** none after the above cleanups.
 
+### Phase 6 (continued: annotations and reclassifications)
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **What landed:**
+  - `LdStUnit::addr_gen_fifo_`: annotated as `deliberate-non-register` in the field-decl comment. Phase 3 of the prior reg.h migration empirically measured cycle-count deltas when this FIFO was wrapped as `RegFifo<T>` — the RegFifo's atomic pop-then-push at one owner's commit cannot model the cross-stage commit-gating asymmetry (LdStUnit's commit gated by writeback stall, CoalescingUnit's commit ungated). A `Reg<std::deque<T>>` wrap has the same constraint. Annotated and deferred until the cross-stage handshake itself is redesigned with a Wire-mediated pop signal.
+  - `FixedLatencyMemory::in_flight_`, `responses_`, `write_acks_`: annotated as `deliberate-non-register`. `responses_` / `write_acks_` are popped cross-class by the cache (`cache.evaluate` calls `get_response()` / `get_write_ack()` during its own evaluate, before `mem_if.evaluate` runs). Staged-pop semantics would require redesigning that cross-stage handshake into a Wire-mediated pull. Deferred.
+  - `DRAMSim3Memory` internal scheduling deques: the existing comment block (lines 136-174) already documents the in-evaluate producer→consumer pattern that prevents straightforward `Reg<std::deque<T>>` wrapping. No annotation change; the existing rationale stands. Audit's "wrap" suggestion deferred pending redesign of the in-evaluate handshake.
+  - `QueuedWritebackSource::queue_`: reclassified as test-fixture infrastructure (not used in production wb-arbiter sources). Annotation comment added at the class definition.
+  - `TimingModel::cycle_`: reclassified as `// sim-instrumentation` (simulator's meta-observation of elapsed time, not a hardware register). Audit's "Reg<uint64_t>" suggestion overridden.
+  - `TimingModel::pending_panic_flush_`: reclassified as `// scratch` (evaluate→commit handoff within a single tick); slated for `Wire<bool>` conversion in Phase 7.
+  - Other `TimingModel` plain members (`trace_enabled_`, `trace_metadata_written_`, `last_cycle_snapshot_`, `warp_trace_slices_`, `hardware_trace_slices_`): annotated as `// config` or `// sim-instrumentation` per their semantics.
+- **Deferred to follow-up:** `WarpState::pc`, `WarpState::active`. These are real per-warp hardware registers (program counter, warp enable). Read across 10+ sites and written mid-cycle in multiple paths (fetch advances PC, panic deactivates, ecall completion deactivates). The Reg conversion's staged-write semantics would shift the deactivation by one cycle in the ecall-completion path (today's `warps_[w].active = false` is read by fetch.evaluate later in the same sweep), producing a real cycle delta consistent with the user's "exposing latent bugs" stance. Defer the conversion until it can be done as a focused unit (with explicit delta analysis), rather than rolled into a broader phase.
+- **What this phase actually wraps:** WritebackArbiter (5 fields → 1 Reg), CoalescingUnit (5 fields → 5 Reg). The remaining audit findings are either annotated, reclassified, or deferred. The taxonomy after this phase is honest: every plain member in `sim/include/gpu_sim/timing/*.h` is now wrapped, `const`, or annotated with one of the three lint-recognized categories (sim-instrumentation, scratch / test-only-override / back-pointer per Phase 7-8) plus the deliberate-non-register exception set.
+
 ...
 
 ## Audit findings — plain members in timing headers

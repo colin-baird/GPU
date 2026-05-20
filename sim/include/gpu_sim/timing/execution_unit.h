@@ -200,6 +200,13 @@ public:
     virtual ExecUnit get_type() const = 0;
 };
 
+// Test-only ExecutionUnit subclass: a queue of pre-built WritebackEntry values
+// that tests inject directly via enqueue() and the WritebackArbiter pops via
+// consume_result(). Not used in production — production wb-arbiter sources
+// are the five execution units and the LoadGatherBufferFile. The Phase 6
+// audit initially flagged queue_ as a durable-state Reg<deque> candidate;
+// reclassified here as test-fixture infrastructure (no production
+// participation in the timing model).
 class QueuedWritebackSource : public ExecutionUnit {
 public:
     explicit QueuedWritebackSource(ExecUnit type) : type_(type) {}

@@ -122,14 +122,19 @@ public:
 private:
     uint32_t latency_;  // config
     Stats& stats_;      // config (back-pointer)
-    // Internal scheduling queues — not REGISTERED double-buffered pairs.
-    // evaluate() pushes/pops these in a single pass each cycle; they are
-    // not observed cross-cycle as staged-vs-committed values.
-    std::deque<MemoryRequest> in_flight_;     // internal scheduling queue
-    std::deque<MemoryResponse> responses_;    // internal scheduling queue
-    // Write completions land here, separate from the read-fill responses_
-    // queue, so the cache can drain them unconditionally each cycle.
-    std::deque<MemoryResponse> write_acks_;   // internal scheduling queue
+    // deliberate-non-register: internal scheduling state. evaluate() pushes
+    // and pops these in a single pass each cycle and the per-entry
+    // cycles_remaining counter is decremented in place. Wrapping as
+    // Reg<std::deque<T>> would mean a whole-deque seed copy at top of tick,
+    // an evaluate that mutates next_, and commit_all() that flips. responses_
+    // and write_acks_ are popped CROSS-CLASS by the cache (cache.evaluate
+    // calls get_response() / get_write_ack() during its own evaluate, before
+    // mem_if.evaluate runs) — staged-pop semantics would require redesigning
+    // that cross-stage handshake into a Wire-mediated pull. The Phase 6
+    // audit flagged conversion; deferred pending the handshake redesign.
+    std::deque<MemoryRequest> in_flight_;
+    std::deque<MemoryResponse> responses_;
+    std::deque<MemoryResponse> write_acks_;
     // Phase 4 of current_mut() elimination (Pattern 3): PulseReg<T> request
     // slots. Default to T{} each cycle via seed_next(); cache overrides by
     // calling set_next_*_request during its evaluate.
