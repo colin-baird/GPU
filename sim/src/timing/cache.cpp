@@ -17,14 +17,13 @@ L1Cache::L1Cache(uint32_t cache_size, uint32_t line_size, uint32_t num_mshrs,
     // A cap of 0 deadlocks every store (no write-through could ever be
     // enqueued). SimConfig::validate() also enforces this.
     assert(max_outstanding_writes_ >= 1);
-    // Phase 5a: enroll every Reg / RegFifo so reset_all() / commit_all()
-    // drive them uniformly. The cache intentionally has no seed_next() —
-    // it self-seeds the carry-forward fields in-place at the top of
-    // evaluate() (see the seed block) so that load_cmd_ / store_cmd_, which
-    // are NOT seed-friendly (auto-seed would re-latch the consumed cmd
-    // when coalescing does not re-stage), keep their memoryless-consumer
-    // semantics. See cache.h above register declarations and
-    // resources/timing_discipline.md.
+    // Enroll every Reg / RegFifo / PulseReg so reset_all() / commit_all()
+    // drive them uniformly. The cache has no seed_next() — it self-seeds
+    // the carry-forward Regs in-place at the top of evaluate() (see the
+    // seed block). The load_cmd_ / store_cmd_ slots are PulseReg<T>, which
+    // is self-clearing at commit (Phase 4 of current_mut() elimination), so
+    // they need no entry in the in-place seed block. See cache.h above
+    // register declarations and resources/timing_discipline.md.
     register_state(&tags_, &write_buffer_, &pending_fill_,
                    &outstanding_writes_, &outstanding_writes_total_,
                    &last_miss_event_, &last_fill_event_,
@@ -572,11 +571,12 @@ void L1Cache::evaluate() {
     // copies forward; complete_fill clears pending_fill_.next_mut().valid on
     // success, leaving pending_fill_.current() set across the cycle.
     //
-    // Phase 5a: in-place seeding instead of seed_all(). load_cmd_ / store_cmd_
-    // are NOT seed-friendly (today's commit clears the staged slot, so
-    // auto-seed would re-latch the consumed cmd when coalescing did not
-    // re-stage). The other registered fields are seeded by hand, faithful
-    // to the pre-migration code.
+    // In-place seeding is used here rather than seed_all() because the
+    // trace-event Regs need both a seed AND an immediate clear of .valid
+    // (an un-driven cycle commits valid=false) — a behavior the generic
+    // seed_all() cannot express in one call. load_cmd_ / store_cmd_ are
+    // PulseReg<T>, which is self-clearing at commit (Phase 4 of
+    // current_mut() elimination), so they need no entry below.
     //
     // Phase 7: stalled_ / stall_reason_ / fill_installed_set_ are Wire<T>;
     // reset() at the top of evaluate de-asserts them (default false /
@@ -725,11 +725,6 @@ void L1Cache::commit() {
     // RegisteredStage list).
     commit_all();
     mshrs_.commit();
-    // Phase 4 of current_mut() elimination: load_cmd_ / store_cmd_ are
-    // PulseReg<T>. seed_next() at the top of the next tick defaults next_
-    // to T{}, replacing the previous explicit tail set_next(T{}) clear.
-    // Coalescing's processing_/current_entry_ holds the source data and
-    // re-stages on a hold.
     // fill_installed_set_ is COMBINATIONAL same-tick scratch (Wire<int32_t>,
     // default -1) — reset it at the tick boundary so it cannot leak into the
     // next tick. evaluate() also resets it at the top of the tick (the

@@ -15,17 +15,21 @@ struct BufferEntry {
 
 // Per-warp instruction buffer between decode and the scheduler.
 //
-// Phase 5 of current_mut() elimination (Pattern 2): the buffer now has a
-// RegFifo-style commit-disciplined API on top of the underlying deque.
-// Production code stages pushes (decode.evaluate) and pops (scheduler.evaluate)
-// via stage_push() / stage_pop(); TimingModel::tick() iterates warps_ and
-// calls commit() per buffer in the commit phase, which applies pop-then-push.
-// This replaces the previous decode.commit() pattern that pushed directly into
-// the committed deque and then cleared pending_.current_mut() — a Pattern-2
+// Phase 5 of current_mut() elimination (Pattern 2): decode stages its push
+// via stage_push(); TimingModel::tick() iterates warps_ and calls commit()
+// per buffer in the commit phase, applying the staged push. This replaces
+// the previous decode.commit() pattern that pushed directly into the
+// committed deque and then cleared pending_.current_mut() — a Pattern-2
 // same-cycle write to committed register state.
 //
-// Tests still use push() / pop() as immediate-write helpers for fixture setup;
-// production code uses the staged API.
+// Asymmetric discipline: push is staged, pop is immediate. The scheduler
+// is the last consumer in the back-to-front evaluate sweep, so an immediate
+// pop is observationally equivalent to a staged one. Tests bypass tick()'s
+// per-warp commit, so push() (immediate) is used for fixture setup. The
+// immediate-pop and flush() entries_.clear() are deferred-Phase-6
+// strict-compliance items — both are same-cycle committed-state writes;
+// neither is currently expressible without a Wire-mediated handshake that
+// the scheduler does not yet have.
 class InstructionBuffer {
 public:
     explicit InstructionBuffer(uint32_t depth) : max_depth_(depth) {}
@@ -38,24 +42,24 @@ public:
     const BufferEntry& front() const { return entries_.front(); }
     BufferEntry& front() { return entries_.front(); }
 
-    // Production: stage a push / pop intent. Applied at commit().
+    // Production: stage a push intent. Applied at commit().
     void stage_push(const BufferEntry& entry) {
         push_ = entry;
         has_push_ = true;
     }
-    void stage_pop() { pop_ = true; }
 
-    // Apply staged ops: pop-then-push, capacity-checked. Caller (TimingModel
-    // tick's commit phase) drives this once per cycle per warp.
+    // Apply the staged push, capacity-checked. Caller (TimingModel tick's
+    // commit phase) drives this once per cycle per warp.
     void commit() {
-        if (pop_ && !entries_.empty()) entries_.pop_front();
         if (has_push_ && entries_.size() < max_depth_) entries_.push_back(push_);
         has_push_ = false;
-        pop_ = false;
     }
 
-    // Test-setup immediate writes — bypass staging. Used by tests to arm
-    // initial buffer state.
+    // Same-cycle immediate writes:
+    //  - push(): test-setup direct-write to arm initial buffer state.
+    //  - pop():  scheduler's same-cycle pop during scheduler.evaluate (the
+    //            last stage in the sweep, so no consumer reads the buffer
+    //            this cycle after the pop).
     void push(const BufferEntry& entry) {
         if (!is_full()) entries_.push_back(entry);
     }
@@ -63,15 +67,13 @@ public:
         if (!entries_.empty()) entries_.pop_front();
     }
 
-    // Synchronous flush — clears committed entries AND any staged ops.
-    // Called by fetch.apply_redirect to discard wrong-path state. (The
-    // direct entries_.clear() is itself a same-cycle committed-state write
-    // and is a candidate for future strict-compliance cleanup, but is out
-    // of scope for the Pattern-2 elimination.)
+    // Synchronous flush — clears committed entries AND any staged push.
+    // Called by fetch.apply_redirect to discard wrong-path state. Same-cycle
+    // committed-state write, paired with pop() above as a deferred-Phase-6
+    // strict-compliance item.
     void flush() {
         entries_.clear();
         has_push_ = false;
-        pop_ = false;
     }
     void reset() { flush(); }
 
@@ -80,7 +82,6 @@ private:
     std::deque<BufferEntry> entries_;
     BufferEntry push_{};
     bool has_push_ = false;
-    bool pop_ = false;
 };
 
 } // namespace gpu_sim

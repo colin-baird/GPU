@@ -331,6 +331,17 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **`InstructionBuffer::flush()`** still does immediate `entries_.clear()`. This is a same-cycle direct mutation of committed state — a deferred Phase 6 finding (durable plain state cleanup, redirect-flush handling), not in scope for Pattern 2 elimination.
 - **All 11 production `current_mut()` call sites eliminated.** The only remaining occurrence is the method declaration in `reg.h:84` itself, which Phase 8 will delete with the lint rule extension.
 
+### Consolidation review #2 (opus, Phases 4-5)
+
+- **Range:** `555084b..5cc797f`.
+- **Findings:**
+  - **Drift risk (acted on).** Stale "auto-seed would re-latch the consumed cmd" comments in `cache.cpp` constructor (lines 21-26) and `evaluate()` seed block (lines 575-579) were rewritten to reflect that `PulseReg<T>` is self-clearing at commit and the in-place seeding is now retained only for the trace-event Regs' "seed then clear .valid" idiom (which generic `seed_all()` cannot express in one call). Dead-code comment in `cache.cpp:728-732` referencing the removed `load_cmd_.set_next(LoadCommand{})` tail clear was deleted. Byte-identical.
+  - **API sprawl (acted on).** `InstructionBuffer::stage_pop()` had zero callers in production (scheduler kept immediate `pop()`); removed `stage_pop()` and the `pop_` field. `commit()` simplified to apply staged push only. Class doc-comment rewritten to describe the asymmetric push-staged / pop-immediate discipline and pair the immediate `pop()` and `flush()` as the two deferred-Phase-6 strict-compliance items in this class.
+  - **Drift risk (deferred).** Triplicated `PulseReg::commit()` reset rationale in `reg.h` (class preamble + `seed()` doc + `commit()` doc) — minor, deferred.
+  - **Phase-vs-plan conformance:** Phase 4 implementation moved the `next_ = T{}` reset from "seed_next at top of tick" to "inside PulseReg::commit." Plan's Per-phase findings entry for Phase 4 documents this revision; the rationale (test-fixture compatibility + hardware-faithful "D-input mux defaults at every clock edge") is sound. Phase 5 implementation kept the `InstructionBuffer` wrapper class rather than converting to `RegFifo<T>` directly. Pragmatic: lets tests keep using `push`/`pop`/`size`/`is_full` without churn. The Per-phase findings entry already captures this. Both deviations are recorded; the original Phasing-section descriptions are not updated to avoid rewriting history.
+  - **Lint and signal-diagram tooling:** lint green. Signal-diagram snapshot green. The `_REG_TYPE_RE` was tightened to `(?<![A-Za-z_])Reg\s*<` in Phase 4 to avoid matching `PulseReg<`; verified by spot-check.
+  - **Dead code:** none after the above cleanups.
+
 ...
 
 ## Audit findings — plain members in timing headers
