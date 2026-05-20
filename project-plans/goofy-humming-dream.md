@@ -297,6 +297,16 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **`claim_request_.current_mut().valid = false`** at `load_gather_buffer.cpp:146` still stands — that's Pattern 3, handled in Phase 4.
 - **4 of 11 `current_mut()` call sites eliminated.** Remaining: Pattern 2 (decode commit consumed-mark, 1 site), Pattern 3 (memoryless-consumer slots, 7 sites).
 
+### Consolidation review #1 (opus, Phases 1-3)
+
+- **Range:** `10177f2..989a671`.
+- **Findings:**
+  - **Drift risk (acted on).** Phase 2's redirect-doomed mask was open-coded in two places (`fetch_stage.cpp` gate and eligibility scan, `decode_stage.cpp` fetch-pull guard). Extracted as `RedirectRequest::targets(warp_id)` on the struct itself; all three sites updated. Removed the now-unused `redirected_warp` local in `fetch_stage.cpp`. Byte-identical, ctest green. Single cleanup commit.
+  - **Drift risk (deferred).** Wire-reset convention (`commit()` for `just_claimed_` and `next_port_claimed_` vs evaluate-top for `next_redirect_` etc.) is documented per-field but not consolidated in `resources/timing_discipline.md`. Plan already schedules this in Phase 8's doc-sync. Deferred.
+  - **API sprawl (deferred).** `tools/lint_timing_naming.py:_REG_TYPE_RE` is `\bReg\s*<`, does not match `PulseReg<`. Benign today (no `PulseReg<T>` field exists yet). Plan schedules the lint extension at Phase 4 when the first `PulseReg<T>` member lands. Deferred.
+  - **Dead code:** none.
+  - **Phase-vs-plan conformance:** all four commits (`a9fecc3`, `d4175db`, `1dffcc7`, `989a671`) stayed in scope. One minor data-structure deviation: Phase 3 used `std::array<bool, MAX_WARPS>` instead of the plan's `std::bitset<MAX_WARPS>`. Functionally equivalent.
+
 ...
 
 ## Audit findings — plain members in timing headers

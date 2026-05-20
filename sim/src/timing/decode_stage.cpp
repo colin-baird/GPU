@@ -58,10 +58,10 @@ void DecodeStage::evaluate() {
     // edges). The doomed value still sits in fetch.current_output() this cycle;
     // skip it here. The synthesis encoding is "consumer ANDs its read of the
     // producer's Q with !redirect_for_this_warp." Fetch applies the same mask
-    // in its own evaluate (gate + eligibility scan), preserving the observable
-    // pre-Phase-2 behavior where the doomed output was invisible everywhere
-    // mid-cycle.
-    if (req.valid && fetch_out->warp_id == req.warp_id) return;
+    // (via req.targets()) in its own evaluate (gate + eligibility scan),
+    // preserving the observable pre-Phase-2 behavior where the doomed output
+    // was invisible everywhere mid-cycle.
+    if (req.targets(fetch_out->warp_id)) return;
 
     DecodedInstruction decoded = Decoder::decode(fetch_out->raw_instruction);
 

@@ -146,6 +146,14 @@ struct RedirectRequest {
     bool valid = false;
     uint32_t warp_id = 0;
     uint32_t target_pc = 0;
+
+    // Combinational gate used by every same-cycle consumer of a register
+    // whose committed value may belong to a doomed warp this cycle (fetch's
+    // READY/STALL gate, fetch's eligibility-scan inflight_to_w term, decode's
+    // pull of fetch.current_output, ...). The synthesis-faithful "consumer
+    // ANDs its read of Q with !redirect_for_this_warp" mask. Single helper so
+    // future consumers can't drift from each other.
+    bool targets(uint32_t w) const { return valid && warp_id == w; }
 };
 
 class ExecutionUnit {

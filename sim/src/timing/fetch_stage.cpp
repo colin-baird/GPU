@@ -43,8 +43,6 @@ void FetchStage::evaluate() {
     } else if (alu_) {
         req = alu_->next_redirect();
     }
-    const std::optional<uint32_t> redirected_warp =
-        req.valid ? std::optional<uint32_t>(req.warp_id) : std::nullopt;
     if (req.valid) {
         apply_redirect(req.warp_id, req.target_pc);
     }
@@ -61,9 +59,7 @@ void FetchStage::evaluate() {
     // gate's purposes so the hold path doesn't re-stage the doomed value.
     const bool decode_ready = query_decode_ready();
     const bool current_is_doomed =
-        output_.current().has_value() &&
-        redirected_warp.has_value() &&
-        *redirected_warp == output_.current()->warp_id;
+        output_.current().has_value() && req.targets(output_.current()->warp_id);
     if (output_.current().has_value() && !current_is_doomed && !decode_ready) {
         output_.set_next(output_.current());  // retain — REGISTERED hold
         stats_.fetch_skip_count++;
@@ -105,7 +101,7 @@ void FetchStage::evaluate() {
         // was just flushed and its PC reset to the resolved target; the
         // earliest a correct-path fetch may issue for it is the NEXT cycle
         // (the mispredict shadow: resolve+flush N -> fetch N+1).
-        if (redirected_warp.has_value() && *redirected_warp == w) continue;
+        if (req.targets(w)) continue;
         auto& buf = warps_[w].instr_buffer;
         uint32_t inflight_to_w = 0;
         if (decode_pending_warp.has_value() && *decode_pending_warp == w) inflight_to_w++;
