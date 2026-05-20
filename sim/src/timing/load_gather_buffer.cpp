@@ -15,11 +15,15 @@ LoadGatherBufferFile::LoadGatherBufferFile(uint32_t num_warps, Stats& stats)
 }
 
 bool LoadGatherBufferFile::current_busy(uint32_t warp_id) const {
-    // Coalescing's per-warp claim gate (memory plan M2). evaluate() writes the
-    // freshly-applied claim's busy flag into buffers_.current_mut() as well as
-    // buffers_.next_mut(), so a claim applied earlier in this same tick is
-    // visible here even though the commit-phase flip has not run yet.
-    return buffers_.current()[warp_id].busy;
+    // Coalescing's per-warp claim gate (memory plan M2). Combines the
+    // committed busy flag (latched at last commit) with this cycle's
+    // just_claimed_ Wire — driven by evaluate() when a deferred claim is
+    // applied earlier in this tick (gather.evaluate runs at sweep position
+    // #2, coalescing.evaluate at #6, so the wire reflects this tick's
+    // claim by the time coalescing reads). Synthesis-faithful combinational
+    // forwarding; previously a buffers_.current_mut() dual-write achieved
+    // the same observation by mutating Q mid-cycle.
+    return buffers_.current()[warp_id].busy || just_claimed_.value()[warp_id];
 }
 
 void LoadGatherBufferFile::claim(uint32_t warp_id, uint8_t dest_reg, uint32_t pc,
@@ -111,38 +115,37 @@ void LoadGatherBufferFile::evaluate() {
     // runs before cache.evaluate() in tick(), so any FILL/secondary write
     // deposited this cycle observes the freshly-applied claim metadata.
     //
-    // Phase 10D: the claim is written into BOTH the committed buffers
-    // (buffers_.current_mut()) and the staged buffers (buffers_.next_mut()).
-    // The committed write makes the busy flag visible to coalescing's
-    // same-cycle current_busy() gate (memory plan M2); the staged write
-    // carries the claim across the commit-phase flip. seed_next() ran
-    // earlier this tick (next == old current), so both copies start
-    // consistent; writing both keeps them consistent through commit(). A
-    // fresh claim lands on an idle buffer, so the per-lane fill fields are
-    // already cleared (the prior consume_result/release reset them) and need
-    // no touch here.
-    //
-    // Phase 5b: the committed-state write uses the documented
-    // Reg::current_mut() escape hatch (a redirect-style mid-cycle override
-    // of committed state). The staged-state write is a normal next_mut()
-    // staged write.
+    // Phase 3 of current_mut() elimination: the claim writes ONLY into the
+    // staged buffers (buffers_.next_mut()); commit() latches. Coalescing's
+    // same-cycle current_busy() gate observes the fresh claim via the
+    // just_claimed_ Wire — synthesis-faithful combinational forwarding,
+    // replacing the previous dual-write to both committed and staged buffer
+    // copies. A fresh claim lands on an idle buffer, so the per-lane fill
+    // fields are already cleared (the prior consume_result/release reset
+    // them) and need no touch here.
     if (claim_request_.current().valid) {
         const auto& req = claim_request_.current();
-        auto& current_buffers = buffers_.current_mut();
-        auto& next_buffers = buffers_.next_mut();
-        assert(!current_buffers[req.warp_id].busy &&
+        assert(!buffers_.current()[req.warp_id].busy &&
                "deferred claim landing on a busy gather buffer");
-        for (auto* buffers : {&current_buffers, &next_buffers}) {
-            auto& buf = (*buffers)[req.warp_id];
-            buf.busy = true;
-            buf.dest_reg = req.dest_reg;
-            buf.pc = req.pc;
-            buf.issue_cycle = req.issue_cycle;
-            buf.raw_instruction = req.raw_instruction;
-        }
+
+        auto& buf = buffers_.next_mut()[req.warp_id];
+        buf.busy = true;
+        buf.dest_reg = req.dest_reg;
+        buf.pc = req.pc;
+        buf.issue_cycle = req.issue_cycle;
+        buf.raw_instruction = req.raw_instruction;
+
+        // Drive the per-warp "claim applied this cycle" bit. Coalescing's
+        // current_busy(warp_id) reads (committed[warp].busy || wire[warp]).
+        std::array<bool, MAX_WARPS> bits{};
+        bits[req.warp_id] = true;
+        just_claimed_.drive(bits);
+
         // Memoryless-consumer mid-cycle invalidation of committed state — the
         // documented Reg::current_mut() escape hatch (Phase 5a precedent in
-        // L1Cache: `load_cmd_.current_mut().valid = false`).
+        // L1Cache: `load_cmd_.current_mut().valid = false`). Pattern 3; will
+        // be eliminated in the next phase when claim_request_ becomes
+        // PulseReg<GatherClaimRequest>.
         claim_request_.current_mut().valid = false;
     }
 }
@@ -154,6 +157,14 @@ void LoadGatherBufferFile::commit() {
     // the whole tick (FILL/secondary/HIT all run within one tick), only
     // clearing at the cycle boundary. Preserves pre-Phase-7 timing exactly.
     next_port_claimed_.reset();
+    // Phase 3 of current_mut() elimination: reset just_claimed_ at the cycle
+    // boundary. The wire encodes "claim applied THIS cycle"; by end of tick,
+    // gather.evaluate and coalescing.evaluate have both run (positions #2 and
+    // #6 in the sweep), so the wire's role is done. Reset here (not at top
+    // of evaluate) so a reader that calls current_busy() between commit() and
+    // the next evaluate() — for example a test asserting the post-release
+    // committed state — observes the cycle as ended.
+    just_claimed_.reset();
 
     // Phase 10D: apply the REGISTERED buffer release staged by
     // consume_result() this cycle. This is the commit-phase effect that
@@ -219,6 +230,7 @@ void LoadGatherBufferFile::reset() {
     // Phase 7: Wire<bool>::reset() de-asserts (default false) — equivalent
     // to the prior `= false` clear.
     next_port_claimed_.reset();
+    just_claimed_.reset();
     next_release_ = GatherReleaseRequest{};
 }
 

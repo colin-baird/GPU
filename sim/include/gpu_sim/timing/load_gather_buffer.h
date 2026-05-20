@@ -167,6 +167,20 @@ private:
     // within one tick), only clearing at the cycle boundary.
     Wire<bool> next_port_claimed_;
 
+    // Phase 3 of current_mut() elimination (Pattern 4): per-warp "claim
+    // applied this cycle" signal. Driven by evaluate() when a deferred claim
+    // is applied (the warp_id's bit is set; the rest stay false). Read by
+    // current_busy(warp_id), combinationally OR'd with the committed busy
+    // flag — synthesis-faithful encoding of "coalescing sees the fresh claim
+    // the same cycle." Reset point is the OWNER'S commit() (the same
+    // convention as next_port_claimed_ above, not the cross-stage Wire's
+    // top-of-evaluate reset) because the wire's role is one full tick:
+    // producer (gather) runs at sweep position #2, consumer (coalescing) at
+    // #6, both within the same tick, and the wire should de-assert at the
+    // cycle boundary. Replaces the previous buffers_.current_mut() dual-write
+    // at the claim-apply site.
+    Wire<std::array<bool, MAX_WARPS>> just_claimed_;
+
     // Phase M2 + 5b: REGISTERED claim-request slot. claim() writes
     // claim_request_.next_mut(); commit() flips next -> current; evaluate()
     // consumes the committed slot at the top of the next tick.

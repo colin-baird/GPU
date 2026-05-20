@@ -289,6 +289,14 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Change:** `FetchStage::apply_redirect` no longer writes `output_.current_mut()` (the Pattern 1 `current_mut()` use). The staged-slot clear stays. `FetchStage::evaluate()` adds a combinational mask (`current_is_doomed`) on its READY/STALL gate and its `current_output_warp` eligibility-scan term, so the residual committed output for a redirected warp is treated as cleared for this cycle's decisions. `DecodeStage::evaluate()` adds a matching combinational mask when reading `fetch_.current_output()` — the synthesis-faithful encoding of "consumer ANDs its read of Q with !redirect_for_this_warp." Doc comments updated in both files to describe the new shape.
 - **3 of 11 `current_mut()` call sites eliminated.** Remaining patterns: 2 (decode commit consumed-mark), 3 (7 memoryless-consumer sites), 4 (gather dual-write).
 
+### Phase 3
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change:** Pattern 4 eliminated. `LoadGatherBufferFile::evaluate()` no longer writes `buffers_.current_mut()` in the deferred-claim apply step; the claim writes only to the staged buffer. A new `Wire<std::array<bool, MAX_WARPS>> just_claimed_` is driven with the warp's bit set when the claim is applied; `current_busy(warp_id)` now returns `buffers_.current()[warp_id].busy OR just_claimed_.value()[warp_id]` — synthesis-faithful combinational forwarding. The previous mid-cycle Q dual-write is replaced by a backward combinational signal.
+- **Wire-reset placement.** The initial design reset `just_claimed_` at the top of `evaluate()` following the cross-stage Wire convention. That failed one test (`test_load_gather_buffer:279`) that reads `current_busy()` after commit but before the next evaluate. Moved the reset to `commit()` instead, matching the existing intra-class `next_port_claimed_` convention (a wire whose scope is one full tick rather than "asserted during evaluate, gone by next cycle"). Documented in the field's header comment. Not a latent fidelity bug — a design-choice between two valid Wire-reset conventions; commit() is correct here because the wire encodes "this cycle's claim" and must de-assert at the cycle boundary regardless of whether the next evaluate has run.
+- **`claim_request_.current_mut().valid = false`** at `load_gather_buffer.cpp:146` still stands — that's Pattern 3, handled in Phase 4.
+- **4 of 11 `current_mut()` call sites eliminated.** Remaining: Pattern 2 (decode commit consumed-mark, 1 site), Pattern 3 (memoryless-consumer slots, 7 sites).
+
 ...
 
 ## Audit findings — plain members in timing headers
