@@ -372,6 +372,13 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Pattern uniform across all five execution units:** drive in `accept()` (`accepted_this_cycle_`) or in `evaluate()` body (`busy_this_cycle_`), read `.value()` in `commit()` for stats, reset at end of `commit()`.
 - **No `Wire`-API change required.** Existing `Wire<T>::reset()` and `Wire<T>::drive()` are unchanged.
 
+### Phase 8
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **`Reg<T>::current_mut()` deleted** from `sim/include/gpu_sim/timing/reg.h`. The five-pattern escape-hatch comment block is replaced by a brief historical note enumerating the hardware-faithful encoding that replaced each pattern (combinational Wire gating, PulseReg<T>, staged set_next/next_mut, etc.) and pointing at this plan file.
+- **Lint extension** (`tools/lint_timing_naming.py`): new `lint_no_current_mut_calls(sim_root)` scans every `.cpp` and `.h` (excluding `reg.h` itself, which contains the historical note) for `current_mut(` and reports each occurrence as a `no-current-mut` finding. Failure-mode verified: an injected `load_cmd_.current_mut()` call in `cache.cpp` was caught with a clear message pointing at the plan; the file was restored and the lint is green.
+- **What's deferred:** the full strict-compliance taxonomy rule (every plain timing-header member must be `Reg`-family / `Wire` / `const` / annotated) — this requires new classification logic in the lint that's more invasive than this commit. Annotations on every member are already in place (the Phase 6 annotation pass); the lint just doesn't yet machine-verify the rule. A follow-up should extend the lint with the per-member-classification check.
+
 ...
 
 ## Audit findings — plain members in timing headers

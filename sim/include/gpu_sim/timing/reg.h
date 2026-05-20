@@ -49,39 +49,25 @@ public:
     // Committed read — the normal cross-cycle / cross-stage read.
     const T& current() const { return current_; }
 
-    // Committed read-write. Narrow escape hatch for the five patterns that
-    // legitimately need a mutation of the committed slot outside the normal
-    // staged-write-then-commit flow. Use only at a documented site:
-    //   (1) Redirect-flush: a backward control signal (a branch mispredict
-    //       resolved this same cycle) forces an upstream stage to invalidate
-    //       committed state mid-evaluate() — the flush is the redirect's
-    //       same-cycle effect (e.g. FetchStage clearing current_output_).
-    //   (2) Post-commit consumed-mark: a stage's commit() applies its
-    //       pop-then-push, then marks the now-consumed slot invalid in the
-    //       committed deque (e.g. DecodeStage clearing pending_.valid after
-    //       the buffer push). Equivalent to a mid-cycle write because no
-    //       reader has run since the commit_all() flip.
-    //   (3) Memoryless-consumer mid-evaluate invalidation: a stage whose
-    //       Reg is a single-cycle command slot (the producer must re-stage
-    //       every cycle) clears the committed slot mid-evaluate() after
-    //       consuming it (e.g. L1Cache load_cmd_/store_cmd_; the memory
-    //       interfaces' read_request_/write_request_; LoadGatherBufferFile
-    //       claim_request_). Paired with a tail-of-commit set_next(T{}) to
-    //       re-clear the staged slot and a deliberate seed-phase opt-out
-    //       (this Reg is NOT seeded by tick()'s seed phase).
-    //   (4) Deferred-claim dual-write: a stage's evaluate() applies a
-    //       committed-state claim into BOTH the committed and staged slots
-    //       so a same-cycle reader of the committed view (e.g. coalescing's
-    //       current_busy()) observes the claim immediately, AND the claim
-    //       survives the commit-phase flip (e.g. LoadGatherBufferFile).
-    //   (5) Test-hook dual-write: a test pre-arms state through a public
-    //       hook (test_set_unit_busy / test_reserve_writeback_slot) that
-    //       writes both current_ and next_ so the subsequent evaluate()
-    //       observes the armed value regardless of whether the test calls
-    //       seed_next() in between.
-    // Not a normal staged write — ordinary updates stage via set_next() /
-    // next_mut() and latch at commit().
-    T& current_mut() { return current_; }
+    // current_mut() does not exist on this type and will not be added.
+    // A register's Q output does not change between clock edges, so a
+    // mid-cycle write to the committed slot has no synthesis analog. The
+    // five patterns that previously needed an escape hatch are each
+    // replaced by a hardware-faithful encoding:
+    //   (1) Redirect-flush -> combinational gate at the consumer (mask its
+    //       read of Q against the same redirect Wire).
+    //   (2) Post-commit consumed-mark -> stage both the push and the
+    //       pending-clear at evaluate; the per-warp instr_buffer.commit()
+    //       latches both together.
+    //   (3) Memoryless-consumer slots -> PulseReg<T>, whose commit()
+    //       resets next_ to T{} after the flip. A cycle on which the
+    //       producer is silent latches T{} into current_.
+    //   (4) Deferred-claim dual-write -> Wire<bitset>; current_busy() ORs
+    //       the committed flag with the same-cycle wire.
+    //   (5) Test-hook dual-write -> tests call seed_next() before arming
+    //       the staged slot.
+    // History: this hatch was removed in the current_mut()-elimination
+    // refactor (project-plans/goofy-humming-dream.md).
 
     // Staged read. INTRA-STAGE self-reads only: a producer reading back a
     // value it staged earlier in this same evaluate(). A cross-module next()

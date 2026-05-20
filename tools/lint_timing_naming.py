@@ -892,6 +892,55 @@ def lint_header(path: Path) -> list[Finding]:
     return findings
 
 
+def lint_no_current_mut_calls(sim_root: Path) -> list[Finding]:
+    """Phase 8 of current_mut() elimination: `Reg<T>::current_mut()` is
+    deleted from `reg.h`. Any call site re-introducing it is a build
+    error from the compiler too, but the lint provides a clearer message
+    by reporting *where* and pointing to the elimination plan. Scans
+    every .cpp and .h under `sim_root` for `current_mut(` and flags each
+    occurrence outside reg.h's own historical-context comment."""
+    findings: list[Finding] = []
+    pattern = re.compile(r"\bcurrent_mut\s*\(")
+    for path in sorted(sim_root.rglob("*.cpp")):
+        text = path.read_text()
+        for i, line in enumerate(text.splitlines(), start=1):
+            # Skip comments — historical references in doc comments are fine.
+            stripped = line.lstrip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            if pattern.search(line):
+                findings.append(Finding(
+                    file=path, line=i, rule="no-current-mut",
+                    message=(
+                        f"current_mut() call site — the method was deleted "
+                        f"in Phase 8 of current_mut() elimination "
+                        f"(project-plans/goofy-humming-dream.md). Use the "
+                        f"hardware-faithful encoding documented in reg.h "
+                        f"(combinational Wire gating, PulseReg<T> for "
+                        f"memoryless slots, staged set_next/next_mut for "
+                        f"the rest)."
+                    ),
+                ))
+    for path in sorted(sim_root.rglob("*.h")):
+        # reg.h's own removal comment is allowed to mention current_mut.
+        if path.name == "reg.h":
+            continue
+        text = path.read_text()
+        for i, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            if pattern.search(line):
+                findings.append(Finding(
+                    file=path, line=i, rule="no-current-mut",
+                    message=(
+                        f"current_mut() call site — see Phase 8 of "
+                        f"current_mut() elimination."
+                    ),
+                ))
+    return findings
+
+
 def lint_directory(header_dir: Path) -> list[Finding]:
     """Lint every .h file under `header_dir` and return findings sorted
     by (file, line)."""
@@ -1216,6 +1265,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Header-naming layers.
     findings = lint_directory(args.header_dir)
+    # Phase 8 of current_mut() elimination: ensure no caller has re-introduced
+    # the deleted method.
+    findings.extend(lint_no_current_mut_calls(args.sim_root))
     cross_module_unavailable = False
 
     # Cross-module-read layer (Phase 10F).
