@@ -34,13 +34,13 @@ DRAMSim3Memory::DRAMSim3Memory(const SimConfig& cfg, Stats& stats)
         throw std::invalid_argument(
             "DRAMSim3Memory: cache_line_size_bytes < dramsim3_bytes_per_burst");
     }
-    // Phase 6 (reg.h migration): enroll the REGISTERED request slots so
-    // commit_all() / reset_all() drive them uniformly. The backend
-    // intentionally has no seed_next() and is not in TimingModel::tick()'s
-    // seed phase — read_request_ / write_request_ are memoryless-consumer
-    // slots (evaluate consumes whatever sits in current() and clears it via
-    // current_mut(); auto-seeding next from current would re-latch the
-    // consumed request). See memory_interface.h for the full discipline.
+    // Phase 4 of current_mut() elimination (Pattern 3): the REGISTERED
+    // request slots are PulseReg<PendingMemoryRequest>. Enrolled in
+    // register_state so commit_all() / reset_all() drive them uniformly.
+    // DRAMSim3Memory is NOT in TimingModel::tick()'s seed phase — the
+    // default-to-T{} mechanism is PulseReg::commit()'s own internal
+    // `next_ = T{}` reset after the current_ = next_ flip (see reg.h).
+    // See memory_interface.h for the full discipline.
     register_state(&read_request_, &write_request_);
     rebuild_memory_system();
 }
@@ -159,9 +159,9 @@ bool DRAMSim3Memory::next_request_stall() const {
 void DRAMSim3Memory::evaluate() {
     // Phase M5 + Phase 4 of current_mut() elimination: drain current_*_request_
     // into the request FIFO at top of evaluate. No mid-cycle Q write — the
-    // PulseReg<PendingMemoryRequest> slot defaults to T{} via seed_next() at
-    // the top of the next tick, so the cache must re-stage to keep the slot
-    // live.
+    // PulseReg<PendingMemoryRequest> slot defaults to T{} via
+    // PulseReg::commit()'s post-flip reset (see reg.h), so the cache must
+    // re-stage to keep the slot live.
     if (read_request_.current().valid) {
         submit_read(read_request_.current().line_addr,
                     read_request_.current().mshr_id);
@@ -207,8 +207,8 @@ void DRAMSim3Memory::evaluate() {
 
 void DRAMSim3Memory::commit() {
     // Phase 4 of current_mut() elimination: PulseReg<T> slots latch via
-    // commit_all(); seed_next() at the top of the next tick defaults next_
-    // to T{}. No tail set_next(T{}) clear needed.
+    // commit_all() and PulseReg::commit() resets next_ to T{} after the
+    // flip. No tail set_next(T{}) clear needed.
     commit_all();
 }
 

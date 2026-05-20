@@ -6,13 +6,13 @@ FixedLatencyMemory::FixedLatencyMemory(uint32_t latency, Stats& stats)
     : latency_(latency), stats_(stats) {
     // Phase 4 of current_mut() elimination (Pattern 3): the REGISTERED
     // request slots are PulseReg<PendingMemoryRequest>. Enrolled in
-    // register_state so seed_all() / commit_all() / reset_all() drive them
-    // uniformly. seed_next() at the top of each tick (now called from
-    // TimingModel::tick()) defaults next_ to T{} via PulseReg::seed(); the
-    // cache overrides by calling set_next_*_request during its evaluate.
+    // register_state so commit_all() / reset_all() drive them uniformly.
+    // FixedLatencyMemory is NOT in TimingModel::tick()'s seed phase — the
+    // default-to-T{} mechanism is PulseReg::commit()'s own internal
+    // `next_ = T{}` reset after the current_ = next_ flip (see reg.h).
     // The previous shape relied on a mid-cycle current_mut().valid=false
     // clear by the consumer plus a tail-of-commit set_next(T{}) by the
-    // owner; both are replaced by PulseReg's seed-to-T{}.
+    // owner; both are replaced by PulseReg's commit-time reset.
     register_state(&read_request_, &write_request_);
 }
 
@@ -106,9 +106,10 @@ void FixedLatencyMemory::evaluate() {
 
 void FixedLatencyMemory::commit() {
     // Phase 4 of current_mut() elimination (Pattern 3): commit_all() flips
-    // next_ -> current_ on the PulseReg<PendingMemoryRequest> slots. No tail
-    // set_next(T{}) is needed — PulseReg::seed() at the top of the next tick
-    // defaults next_ to T{}, replacing the previous explicit clear.
+    // next_ -> current_ on the PulseReg<PendingMemoryRequest> slots, and
+    // PulseReg::commit() also resets next_ to T{} after the flip — so no
+    // tail set_next(T{}) is needed. A cycle on which the cache does not
+    // re-stage a request latches T{} into current_ at the next commit.
     commit_all();
 }
 

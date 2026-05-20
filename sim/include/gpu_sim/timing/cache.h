@@ -293,12 +293,13 @@ private:
     // FILL > secondary > HIT priority ladder).
     //
     // Phase 4 of current_mut() elimination (Pattern 3): wrapped as
-    // PulseReg<T>. seed_next() at the top of each tick defaults next_ to T{},
+    // PulseReg<T>. PulseReg::commit() resets next_ to T{} after the flip,
     // so a cycle on which coalescing does not stage a fresh command latches
-    // the slot to invalid at commit — the memoryless-consumer contract
-    // encoded in the type. Previous shape was Reg<T> with the consumer's
-    // mid-cycle current_mut().valid=false clear plus a tail-of-commit
-    // set_next(T{}) reset; both are replaced by PulseReg's seed-to-T{}.
+    // T{} into current_ at the next commit — the memoryless-consumer
+    // contract encoded in the type. Previous shape was Reg<T> with the
+    // consumer's mid-cycle current_mut().valid=false clear plus a tail-of-
+    // commit set_next(T{}) reset; both are replaced by PulseReg's commit-
+    // time reset.
     PulseReg<LoadCommand> load_cmd_;
     PulseReg<StoreCommand> store_cmd_;
     // Phase M3 (valid/ready): consumer-side ready signal. Reset to false

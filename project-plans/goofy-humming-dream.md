@@ -379,6 +379,20 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Lint extension** (`tools/lint_timing_naming.py`): new `lint_no_current_mut_calls(sim_root)` scans every `.cpp` and `.h` (excluding `reg.h` itself, which contains the historical note) for `current_mut(` and reports each occurrence as a `no-current-mut` finding. Failure-mode verified: an injected `load_cmd_.current_mut()` call in `cache.cpp` was caught with a clear message pointing at the plan; the file was restored and the lint is green.
 - **What's deferred:** the full strict-compliance taxonomy rule (every plain timing-header member must be `Reg`-family / `Wire` / `const` / annotated) — this requires new classification logic in the lint that's more invasive than this commit. Annotations on every member are already in place (the Phase 6 annotation pass); the lint just doesn't yet machine-verify the rule. A follow-up should extend the lint with the per-member-classification check.
 
+### Consolidation review #3 (opus, final pre-ship, Phases 6-8)
+
+- **Range:** `c88a5bf..52d6bff`.
+- **Sign-off:** ship-ready on the primary contract. All 11 production `current_mut()` call sites eliminated; the method deleted from `reg.h`; lint flags any re-introduction; all 6 workload benchmarks byte-identical to baseline `10177f2` across all 9 phase commits.
+- **Findings (acted on):**
+  - **Stale comments attributing PulseReg's default to "seed_next()" mechanism.** Five sites referenced `seed_next()` at top of tick as the active mechanism, but neither L1Cache nor FixedLatencyMemory nor DRAMSim3Memory are in `TimingModel::tick()`'s seed phase. The actual mechanism is `PulseReg::commit()`'s own `next_ = T{}` reset after the flip. Rewritten at `memory_interface.h:85-93`, `memory_interface.cpp:7-14, 108-114`, `dramsim3_memory.h:189-194`, `dramsim3_memory.cpp:37-44, 159-163, 209-211`, and `cache.h:295-303`. The lingering `current_mut()` reference in `dramsim3_memory.cpp:42` is replaced.
+- **Findings (acknowledged-deferred to follow-up):**
+  - **Doc-sync to `resources/timing_discipline.md`, `resources/cpp_coding_standard.md`** — Phase 8 commit message claimed doc sync but those files weren't updated. The taxonomy + PulseReg + Wire-reset conventions live only in the per-field comments and this plan file. Follow-up: extend the docs.
+  - **Strict-compliance taxonomy lint rule** — Phase 8 explicitly deferred. Annotations on every plain member exist but several use unsanctioned forms (`// internal scheduling counter`, `// staging`). Lint extension would surface these.
+  - **`LoadGatherBufferFile::next_release_`** — plan called for Wire conversion in Phase 7; left plain. Annotated with `// staging` (not lint-recognized). Follow-up.
+  - **`WarpState::pc` / `WarpState::active` conversion** — deferred from Phase 6 due to cycle-delta risk in the ecall-completion path. Documented in Phase 6 findings.
+  - **`PulseReg<T>::set_next` and `::initialize`** unused in production (only `next_mut` is) — defensible symmetry with `Reg<T>` API.
+- **No drift / dead code remaining** after the stale-comment cleanup.
+
 ...
 
 ## Audit findings — plain members in timing headers

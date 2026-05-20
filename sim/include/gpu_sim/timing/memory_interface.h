@@ -83,13 +83,14 @@ public:
 // Original behavior: every request completes after exactly `latency` cycles.
 //
 // Phase 4 of current_mut() elimination (Pattern 3): the REGISTERED request
-// slots are wrapped as PulseReg<PendingMemoryRequest>. seed_next() at the
-// top of each tick defaults next_ to T{}, so a cycle on which the cache
-// does not stage a fresh request latches the slot to invalid at commit.
-// evaluate() reads current() (last cycle's request, if any) and drains it
-// into in_flight_; no mid-cycle Q write. The previous shape was Reg<T>
-// with a mid-cycle current_mut().valid=false clear plus a tail-of-commit
-// set_next(T{}) reset; both are replaced by PulseReg's seed-to-T{}.
+// slots are wrapped as PulseReg<PendingMemoryRequest>. PulseReg::commit()
+// flips current_ = next_ and ALSO resets next_ to T{} after the flip, so a
+// cycle on which the cache does not stage a fresh request latches T{}
+// into current_ at the next commit. evaluate() reads current() (last
+// cycle's request, if any) and drains it into in_flight_; no mid-cycle Q
+// write. The previous shape was Reg<T> with a mid-cycle
+// current_mut().valid=false clear plus a tail-of-commit set_next(T{})
+// reset; both are replaced by PulseReg's commit-time reset.
 class FixedLatencyMemory : public ExternalMemoryInterface, public RegisteredStage {
 public:
     FixedLatencyMemory(uint32_t latency, Stats& stats);
@@ -136,8 +137,9 @@ private:
     std::deque<MemoryResponse> responses_;
     std::deque<MemoryResponse> write_acks_;
     // Phase 4 of current_mut() elimination (Pattern 3): PulseReg<T> request
-    // slots. Default to T{} each cycle via seed_next(); cache overrides by
-    // calling set_next_*_request during its evaluate.
+    // slots. Default to T{} each cycle via PulseReg::commit()'s post-flip
+    // reset; cache overrides by calling set_next_*_request during its
+    // evaluate.
     PulseReg<PendingMemoryRequest> read_request_;
     PulseReg<PendingMemoryRequest> write_request_;
 };

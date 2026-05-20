@@ -188,9 +188,10 @@ private:
 
     // ── REGISTERED state ───────────────────────────────────────────────────
     // Phase 4 of current_mut() elimination (Pattern 3): PulseReg<T> request
-    // slots. seed_next() defaults them to T{} each tick; cache overrides via
-    // set_next_*_request. No mid-cycle current_mut() write, no tail-of-commit
-    // set_next(T{}) — the type's seed-to-T{} encodes the memoryless contract.
+    // slots. PulseReg::commit() defaults next_ to T{} after the flip; cache
+    // overrides by calling set_next_*_request during its evaluate. No
+    // mid-cycle current_mut() write, no tail-of-commit set_next(T{}) — the
+    // commit-time reset inside the type encodes the memoryless contract.
     PulseReg<PendingMemoryRequest> read_request_;
     PulseReg<PendingMemoryRequest> write_request_;
 };
