@@ -248,6 +248,89 @@ TEST_CASE("RegFifo: seed is a no-op; reset clears the queue and staging",
     REQUIRE(fifo.current_empty());       // discarded staged push did not survive
 }
 
+TEST_CASE("RegFifo: stage_pop counts and applies multiple pops at commit",
+          "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    // Seed three entries.
+    fifo.stage_push(10);
+    fifo.commit();
+    fifo.stage_push(20);
+    fifo.commit();
+    fifo.stage_push(30);
+    fifo.commit();
+    REQUIRE(fifo.current_size() == 3);
+
+    // Stage three pops in one cycle (Phase 5a — the multi-pop counter).
+    fifo.stage_pop();
+    REQUIRE(fifo.pops_staged() == 1);
+    fifo.stage_pop();
+    fifo.stage_pop();
+    REQUIRE(fifo.pops_staged() == 3);
+    // Reads during evaluate still see start-of-cycle state.
+    REQUIRE(fifo.current_size() == 3);
+    REQUIRE(fifo.current_front() == 10);
+
+    fifo.commit();
+    REQUIRE(fifo.current_empty());
+    // pops_ counter clears at commit.
+    REQUIRE(fifo.pops_staged() == 0);
+}
+
+TEST_CASE("RegFifo: pops_ is clamped to queue size at commit",
+          "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    fifo.stage_push(42);
+    fifo.commit();
+    REQUIRE(fifo.current_size() == 1);
+
+    // Over-stage pops (e.g. a DRAM-clock stage that ran ClockTick more times
+    // than the queue had entries this cycle).
+    fifo.stage_pop();
+    fifo.stage_pop();
+    fifo.stage_pop();
+    fifo.commit();
+    REQUIRE(fifo.current_empty());           // not a crash, not undefined
+    REQUIRE(fifo.pops_staged() == 0);
+}
+
+TEST_CASE("RegFifo: reset clears the multi-pop counter", "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    fifo.stage_push(1);
+    fifo.commit();
+    fifo.stage_pop();
+    fifo.stage_pop();
+    REQUIRE(fifo.pops_staged() == 2);
+    fifo.reset();
+    REQUIRE(fifo.pops_staged() == 0);
+    REQUIRE(fifo.current_empty());
+}
+
+TEST_CASE("RegFifo: pops_staged enables peek-ahead during multi-pop staging",
+          "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    fifo.stage_push(7);
+    fifo.commit();
+    fifo.stage_push(8);
+    fifo.commit();
+    fifo.stage_push(9);
+    fifo.commit();
+
+    // A DRAM-clock-style consumer stages pops one at a time and peeks at the
+    // next-to-pop entry via queue_[pops_staged()] before deciding whether to
+    // stage another. current() returns the committed deque so the consumer
+    // can index past the already-staged head pops.
+    REQUIRE(fifo.current()[fifo.pops_staged()] == 7);
+    fifo.stage_pop();
+    REQUIRE(fifo.current()[fifo.pops_staged()] == 8);
+    fifo.stage_pop();
+    REQUIRE(fifo.current()[fifo.pops_staged()] == 9);
+    fifo.stage_pop();
+    REQUIRE(fifo.pops_staged() == 3);
+
+    fifo.commit();
+    REQUIRE(fifo.current_empty());
+}
+
 TEST_CASE("RegFifo: single enqueue-port claim is first-come", "[reg][regfifo]") {
     RegFifo<int> fifo;
     REQUIRE_FALSE(fifo.port_claimed());

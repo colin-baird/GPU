@@ -286,3 +286,11 @@ Inventory matches HEAD `6d5be5a`. Ready to dispatch Phase 1.
 - **Test fixture updates.** `CacheFixture` and `MergeFixture` gained a `commit_mem_fifos()` helper; threaded through manual evaluate loops in `test_cache.cpp`, `test_cache_mshr_merging.cpp`, `test_load_gather_buffer.cpp`, `test_coalescing.cpp::CoalFixture::tick`, and the `FixedLatencyMemory` test in `test_timing_components.cpp`. `test_dramsim3_memory.cpp` got `pop_response` / `pop_write_ack` namespace helpers mirroring the pre-Phase-4 `get_*` shape (9 call sites updated).
 - **Files modified:** `sim/include/gpu_sim/timing/{memory_interface,dramsim3_memory,timing_model}.h`, `sim/src/timing/{memory_interface,dramsim3_memory,cache,timing_model}.cpp`, `sim/tests/{test_cache,test_cache_mshr_merging,test_coalescing,test_dramsim3_memory,test_load_gather_buffer,test_timing_components}.cpp`, `resources/perf_sim_arch.md`.
 - **Latitude policy invocations:** none on the FixedLatencyMemory path. DRAMSim3 byte-identicality was a *design choice* documented above (Phase 5 will produce the expected CDC fidelity deltas).
+
+### Phase 5a
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change.** `RegFifo<T>::pop_` (bool) → `pops_` (uint32_t). `stage_pop()` now increments the counter. `commit()` applies `min(pops_, queue_.size())` head pops then the staged push, then clears `pops_`. `reset()` also clears `pops_`. New accessor `pops_staged()` lets multi-pop consumers (Phase 5's DRAM-clock stage) peek at `current()[pops_staged()]` for the next-to-pop entry. Backward-compatible: every existing single-pop caller (cache `write_buffer_`, CoalescingUnit, Phase-4 cache `stage_response_pop()`) sees `pops_ == 1` after one call — same observable behavior.
+- **Test coverage.** Added 4 new cases to `sim/tests/test_reg.cpp`: multi-pop applies all staged pops at commit; over-staged pops clamp to queue size (no UB); reset clears the counter; `pops_staged()` enables peek-ahead during multi-pop staging.
+- **Files modified:** `sim/include/gpu_sim/timing/reg.h`, `sim/tests/test_reg.cpp`.
+- **Latitude policy invocations:** none. The extension is purely additive on the API and behavior-preserving for single-pop callers.

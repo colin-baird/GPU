@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <vector>
 
@@ -174,9 +175,21 @@ private:
     T next_{};
 };
 
-// A commit-disciplined FIFO. evaluate() stages a push and/or a pop intent;
-// commit() applies pop-then-push. The committed deque is the only state, so
-// seed() is a no-op. Reads during evaluate() see start-of-cycle state.
+// A commit-disciplined FIFO. evaluate() stages a push and/or one-or-more pop
+// intents; commit() applies all staged pops then the staged push. The
+// committed deque is the only state, so seed() is a no-op. Reads during
+// evaluate() see start-of-cycle state.
+//
+// Phase 5a (sparkling-dazzling-starfish.md) extended the pop side from a
+// single bool to a uint32_t counter so cross-clock-domain consumers (the
+// Phase 5 DRAM-clock stage that pops one chunk per ClockTick and may run N
+// times per fabric cycle) can stage multiple pops per cycle. Same-clock
+// callers that stage at most one pop per cycle see the same observable
+// behavior — `stage_pop()` increments the counter from 0 → 1, `commit()`
+// applies one head pop, then resets. The new `pops_staged()` accessor lets
+// a DRAM-clock-style consumer peek ahead into queue_[pops_staged()] when it
+// has already staged N pops this cycle and needs to inspect the next
+// not-yet-consumed entry before deciding to stage another.
 template <typename T>
 class RegFifo : public RegBase {
 public:
@@ -188,7 +201,11 @@ public:
 
     // Stage a push / pop to be applied at commit().
     void stage_push(const T& value) { push_ = value; has_push_ = true; }
-    void stage_pop() { pop_ = true; }
+    void stage_pop() { ++pops_; }
+    // How many pops have been staged this cycle. Used by multi-pop consumers
+    // (e.g. the Phase 5 DRAM-clock stage) to peek at the next-to-pop entry
+    // via queue_[pops_staged()] before deciding to stage another pop.
+    std::uint32_t pops_staged() const { return pops_; }
 
     // Single-enqueue-port claim — first claimer this cycle wins. The producer
     // checks port_claimed() before staging a push.
@@ -198,17 +215,19 @@ public:
     void seed() override {}  // the committed deque is the only state
 
     void commit() override {
-        if (pop_ && !queue_.empty()) queue_.pop_front();
+        std::uint32_t to_pop = pops_;
+        if (to_pop > queue_.size()) to_pop = static_cast<std::uint32_t>(queue_.size());
+        for (std::uint32_t i = 0; i < to_pop; ++i) queue_.pop_front();
         if (has_push_) queue_.push_back(push_);
         has_push_ = false;
-        pop_ = false;
+        pops_ = 0;
         port_claimed_ = false;
     }
 
     void reset() override {
         queue_.clear();
         has_push_ = false;
-        pop_ = false;
+        pops_ = 0;
         port_claimed_ = false;
     }
 
@@ -216,7 +235,7 @@ private:
     std::deque<T> queue_;
     T push_{};
     bool has_push_ = false;
-    bool pop_ = false;
+    std::uint32_t pops_ = 0;
     bool port_claimed_ = false;
 };
 
