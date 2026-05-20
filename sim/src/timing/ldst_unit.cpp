@@ -24,7 +24,7 @@ void LdStUnit::accept(const DispatchInput& input, uint64_t cycle) {
     pe.issue_cycle = cycle;
     // Phase 10B.0.5: ldst_stats.instructions is incremented in commit()
     // (gated on accepted_this_cycle_), not here.
-    accepted_this_cycle_ = true;
+    accepted_this_cycle_.drive(true);
 }
 
 void LdStUnit::evaluate() {
@@ -41,7 +41,7 @@ void LdStUnit::evaluate() {
     // at the top of the tick, possibly updated by accept() earlier this tick).
     // Phase 10B.0.5: capture the per-cycle busy flag before the body may
     // clear next_busy_; ldst_stats.busy_cycles is incremented at commit().
-    busy_this_cycle_ = busy_.next();
+    busy_this_cycle_.drive(busy_.next());
     if (busy_.next()) {
         if (cycles_remaining_.next() > 0) {
             cycles_remaining_.next_mut()--;
@@ -55,7 +55,7 @@ void LdStUnit::evaluate() {
             // when the FIFO is full and coalescing pops same-tick is the
             // documented parity.
             if (addr_gen_fifo_.size() < fifo_depth_) {
-                next_push_ = pending_entry_.next();
+                next_push_.drive(pending_entry_.next());
                 pending_entry_.next_mut().valid = false;
                 busy_.set_next(false);
             }
@@ -78,23 +78,23 @@ void LdStUnit::commit() {
     // Phase 10B.0.5: Stats increments relocated here from evaluate()/accept().
     // Both per-cycle flags are consumed and cleared at commit() so a commit()
     // not preceded by an evaluate() never re-counts a stale flag.
-    if (busy_this_cycle_) {
+    if (busy_this_cycle_.value()) {
         stats_.ldst_stats.busy_cycles++;
-        busy_this_cycle_ = false;
     }
-    if (accepted_this_cycle_) {
+    if (accepted_this_cycle_.value()) {
         stats_.ldst_stats.instructions++;
-        accepted_this_cycle_ = false;
     }
+    busy_this_cycle_.reset();
+    accepted_this_cycle_.reset();
 
     // Phase M1: apply the staged push to the committed FIFO; advance the
     // monotonic push counter in lockstep with the push (the scheduler's
     // LDST FIFO-occupancy gate reads current_fifo_total_pushes()).
-    if (next_push_) {
-        addr_gen_fifo_.push_back(*next_push_);
-        next_push_.reset();
+    if (next_push_.value().has_value()) {
+        addr_gen_fifo_.push_back(*next_push_.value());
         ++fifo_total_pushes_;
     }
+    next_push_.reset();
 
     commit_all();
 }
@@ -107,8 +107,8 @@ void LdStUnit::reset() {
     // ldst_issued_total_ (both run in the panic-flush cascade) so the
     // (issued - pushed) difference restarts at zero.
     fifo_total_pushes_ = 0;
-    busy_this_cycle_ = false;
-    accepted_this_cycle_ = false;
+    busy_this_cycle_.reset();
+    accepted_this_cycle_.reset();
 }
 
 bool LdStUnit::current_has_result() const {

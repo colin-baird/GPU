@@ -101,7 +101,10 @@ private:
     // assigns it fresh (the busy condition); commit() consumes it to
     // increment operand_collector_busy_cycles, so a re-evaluated stalled cycle
     // does not double-count.
-    bool busy_this_cycle_ = false;  // scratch
+    // Phase 7 of current_mut() elimination: per-cycle scratch flag as
+    // Wire<bool>. evaluate() drives the busy condition; commit() reads
+    // .value() to increment operand_collector_busy_cycles.
+    Wire<bool> busy_this_cycle_;
 
     // Phase 10B.1/10B.2 back-pointers. nullptr-tolerant for unit tests.
     WarpScheduler* scheduler_ = nullptr;

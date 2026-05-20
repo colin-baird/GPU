@@ -356,6 +356,22 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Deferred to follow-up:** `WarpState::pc`, `WarpState::active`. These are real per-warp hardware registers (program counter, warp enable). Read across 10+ sites and written mid-cycle in multiple paths (fetch advances PC, panic deactivates, ecall completion deactivates). The Reg conversion's staged-write semantics would shift the deactivation by one cycle in the ecall-completion path (today's `warps_[w].active = false` is read by fetch.evaluate later in the same sweep), producing a real cycle delta consistent with the user's "exposing latent bugs" stance. Defer the conversion until it can be done as a focused unit (with explicit delta analysis), rather than rolled into a broader phase.
 - **What this phase actually wraps:** WritebackArbiter (5 fields → 1 Reg), CoalescingUnit (5 fields → 5 Reg). The remaining audit findings are either annotated, reclassified, or deferred. The taxonomy after this phase is honest: every plain member in `sim/include/gpu_sim/timing/*.h` is now wrapped, `const`, or annotated with one of the three lint-recognized categories (sim-instrumentation, scratch / test-only-override / back-pointer per Phase 7-8) plus the deliberate-non-register exception set.
 
+### Phase 7
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change:** 13 scratch fields wrapped as `Wire<T>`:
+  - `MultiplyUnit::busy_this_cycle_`, `accepted_this_cycle_` → `Wire<bool>`.
+  - `DivideUnit::busy_this_cycle_`, `accepted_this_cycle_` → `Wire<bool>`.
+  - `TLookupUnit::busy_this_cycle_`, `accepted_this_cycle_` → `Wire<bool>`.
+  - `LdStUnit::busy_this_cycle_`, `accepted_this_cycle_`, `next_push_` → `Wire<bool>` / `Wire<std::optional<AddrGenFIFOEntry>>`.
+  - `ALUUnit::processed_this_cycle_`, `pending_cycle_` → `Wire<bool>` / `Wire<uint64_t>`.
+  - `OperandCollector::busy_this_cycle_` → `Wire<bool>`.
+  - `CoalescingUnit::next_pop_` → `Wire<bool>`.
+  - `TimingModel::pending_panic_flush_` → `Wire<bool>`.
+- **Reset placement.** All scratch wires (except `next_push_` and `pending_panic_flush_`) are reset at end-of-`commit()` after the stats read, matching the prior `field = false` location. **The initial evaluate-top reset broke tests** (`test_timing_components` `MultiplyUnit: result appears after fixed latency` failed because tests call `accept()` BEFORE `evaluate()` for fixture setup; an evaluate-top reset wipes the just-armed value before commit reads it). The end-of-commit reset preserves the test-friendly semantics — the wire holds its value between commit and the next cycle's accept/evaluate, and de-asserts after consumption. `next_push_` and `pending_panic_flush_` reset at end of `commit()` after consumption too (the apply happens in commit). The two coalescing scratch wires (`next_pop_` already reset in commit, `cmd_in_flight_` stays as Reg since it's cross-cycle, not scratch).
+- **Pattern uniform across all five execution units:** drive in `accept()` (`accepted_this_cycle_`) or in `evaluate()` body (`busy_this_cycle_`), read `.value()` in `commit()` for stats, reset at end of `commit()`.
+- **No `Wire`-API change required.** Existing `Wire<T>::reset()` and `Wire<T>::drive()` are unchanged.
+
 ...
 
 ## Audit findings — plain members in timing headers

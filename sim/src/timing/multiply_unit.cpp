@@ -19,7 +19,7 @@ void MultiplyUnit::accept(const DispatchInput& input, uint64_t cycle) {
     pipeline_.next_mut().push_back(entry);
     // Phase 10B.0.5: mul_stats.instructions is incremented in commit()
     // (gated on accepted_this_cycle_), not here.
-    accepted_this_cycle_ = true;
+    accepted_this_cycle_.drive(true);
 }
 
 void MultiplyUnit::evaluate() {
@@ -40,7 +40,7 @@ void MultiplyUnit::evaluate() {
     // Phase 10B.0.5: assign the per-cycle busy flag fresh; mul_stats.busy_cycles
     // is incremented at commit() gated on it.
     auto& staged_pipeline = pipeline_.next_mut();
-    busy_this_cycle_ = !staged_pipeline.empty();
+    busy_this_cycle_.drive(!staged_pipeline.empty());
 
     // Phase 10B.3: the result buffer is a plain double-buffered pipeline
     // register — assign it fresh every cycle. There is no head-blocked hold:
@@ -78,14 +78,18 @@ void MultiplyUnit::commit() {
     // the accepted_this_cycle_ pattern), so a commit() not preceded by an
     // evaluate() in the same cycle — which the canonical lifecycle never
     // does, but isolated unit tests can — never re-counts a stale flag.
-    if (busy_this_cycle_) {
+    if (busy_this_cycle_.value()) {
         stats_.mul_stats.busy_cycles++;
-        busy_this_cycle_ = false;
     }
-    if (accepted_this_cycle_) {
+    if (accepted_this_cycle_.value()) {
         stats_.mul_stats.instructions++;
-        accepted_this_cycle_ = false;
     }
+    // Phase 7: de-assert the wires after consuming. Reset at end-of-commit
+    // (matching the prior `= false` location) rather than at top-of-evaluate
+    // — accept() may be called by tests BEFORE evaluate(), so an evaluate-
+    // top reset would wipe the just-armed value before commit() reads it.
+    busy_this_cycle_.reset();
+    accepted_this_cycle_.reset();
 
     commit_all();
 }

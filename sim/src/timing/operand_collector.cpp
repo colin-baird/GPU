@@ -43,7 +43,7 @@ void OperandCollector::evaluate() {
     // arrival), next_* now holds the freshly-issued payload.
     // Phase 10B.0.5: assign the per-cycle busy flag fresh;
     // operand_collector_busy_cycles is incremented at commit() gated on it.
-    busy_this_cycle_ = busy_.next();
+    busy_this_cycle_.drive(busy_.next());
     if (!busy_.next()) return;
 
     cycles_remaining_.next_mut()--;
@@ -74,9 +74,8 @@ void OperandCollector::commit() {
     // evaluate() — counting at commit() (skipped on a stalled cycle) means a
     // re-evaluated cycle is not double-counted. Byte-identical while no stall
     // exists.
-    if (busy_this_cycle_) {
+    if (busy_this_cycle_.value()) {
         stats_.operand_collector_busy_cycles++;
-        busy_this_cycle_ = false;
     }
 
     commit_all();
@@ -84,7 +83,7 @@ void OperandCollector::commit() {
 
 void OperandCollector::reset() {
     reset_all();
-    busy_this_cycle_ = false;
+    busy_this_cycle_.reset();
 }
 
 void OperandCollector::flush() {

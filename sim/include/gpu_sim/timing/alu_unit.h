@@ -133,18 +133,17 @@ private:
     Reg<WritebackEntry> result_buffer_;
     Reg<bool> has_pending_;
     Reg<DispatchInput> pending_input_;
-    // Phase 10B.0.5: not double-buffered. accept() writes it and evaluate()
-    // reads it within the same tick (into result_buffer_.next_mut().issue_cycle);
-    // no consumer ever reads a prior committed value, so it carries no
-    // cross-cycle information for a 1-cycle ALU and needs no Reg wrapper.
-    uint64_t pending_cycle_ = 0;         // scratch (single-tick latch)
+    // Phase 7 of current_mut() elimination: single-tick latches as Wire<T>.
+    // pending_cycle_ is written by accept() and read by evaluate() in the
+    // same tick into result_buffer_.next_mut().issue_cycle. Wire<uint64_t>
+    // encodes the intra-tick semantics.
+    Wire<uint64_t> pending_cycle_;
 
-    // Phase 10B.0.5: per-cycle scratch flag. evaluate() sets it to whether it
-    // processed an instruction this cycle; commit() consumes it to relocate
-    // the alu_stats.busy_cycles / .instructions increments out of evaluate()
-    // (a re-evaluated stalled cycle must not double-count Stats artifacts).
-    // Not a double-buffered field — evaluate() assigns it fresh each cycle.
-    bool processed_this_cycle_ = false;  // scratch
+    // Phase 7 of current_mut() elimination: per-cycle scratch flag as
+    // Wire<bool>. evaluate() drives it; commit() reads .value() to relocate
+    // alu_stats increments out of evaluate (so a stalled re-evaluated cycle
+    // does not double-count).
+    Wire<bool> processed_this_cycle_;
 
     // Phase 10E COMBINATIONAL-backward redirect signal. Single transient
     // slot, reset at the top of evaluate() and asserted on a mispredicted

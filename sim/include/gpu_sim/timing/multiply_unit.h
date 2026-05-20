@@ -53,7 +53,7 @@ public:
     void seed_next() override { seed_all(); }
     void evaluate() override;
     void commit() override;
-    void reset() override { reset_all(); busy_this_cycle_ = false; accepted_this_cycle_ = false; }
+    void reset() override { reset_all(); busy_this_cycle_.reset(); accepted_this_cycle_.reset(); }
     bool current_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::MULTIPLY; }
@@ -88,14 +88,15 @@ private:
     Reg<std::deque<PipelineEntry>> pipeline_;
     Reg<WritebackEntry> result_buffer_;
 
-    // Phase 10B.0.5: per-cycle scratch flags for Stats relocation. evaluate()
-    // assigns busy_this_cycle_ fresh (the pipeline-non-empty condition);
-    // accept() sets accepted_this_cycle_. Both are consumed at commit() to
-    // perform the mul_stats increments, so a re-evaluated stalled cycle does
-    // not double-count. commit() clears accepted_this_cycle_ (accept() may
-    // not run every cycle); busy_this_cycle_ is assigned fresh by evaluate().
-    bool busy_this_cycle_ = false;       // scratch
-    bool accepted_this_cycle_ = false;   // scratch
+    // Phase 7 of current_mut() elimination: per-cycle scratch flags for
+    // Stats relocation wrapped as Wire<bool>. evaluate() drives
+    // busy_this_cycle_ (pipeline-non-empty); accept() drives
+    // accepted_this_cycle_. Both consumed at commit() to perform the
+    // mul_stats increments. Reset at the top of evaluate() so a no-accept
+    // cycle defaults to false. Replaces the previous `// scratch` plain
+    // bool annotation with type-encoded transient semantics.
+    Wire<bool> busy_this_cycle_;
+    Wire<bool> accepted_this_cycle_;
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
     OperandCollector* opcoll_ = nullptr;

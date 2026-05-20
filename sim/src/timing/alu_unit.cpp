@@ -10,7 +10,7 @@ void ALUUnit::accept(const DispatchInput& input, uint64_t cycle) {
     // this cycle, latched at commit).
     has_pending_.set_next(true);
     pending_input_.set_next(input);
-    pending_cycle_ = cycle;
+    pending_cycle_.drive(cycle);
 }
 
 void ALUUnit::evaluate() {
@@ -45,10 +45,11 @@ void ALUUnit::evaluate() {
         next_redirect_.drive(*redirect_override_);
     }
 
-    // Phase 10B.0.5: assign the per-cycle scratch flag fresh every cycle so a
-    // re-evaluated stalled cycle recomputes it from scratch. commit()
-    // consumes it to perform the Stats increments.
-    processed_this_cycle_ = has_pending_.next();
+    // Phase 7 of current_mut() elimination: processed_this_cycle_ is
+    // driven unconditionally from has_pending_.next() (so reset would be
+    // redundant). pending_cycle_ was driven by accept() (this cycle or
+    // a prior one if has_pending_ carries).
+    processed_this_cycle_.drive(has_pending_.next());
 
     // Read has_pending_.next() here: this is the input written THIS cycle by
     // accept() (combinational forward inside the unit). Cross-cycle state
@@ -79,7 +80,7 @@ void ALUUnit::evaluate() {
         rb.source_unit = ExecUnit::ALU;
         rb.pc = in.pc;
         rb.raw_instruction = in.decoded.raw;
-        rb.issue_cycle = pending_cycle_;
+        rb.issue_cycle = pending_cycle_.value();
         // Phase 10B.0.5: alu_stats.busy_cycles / .instructions are incremented
         // in commit() (gated on processed_this_cycle_), not here.
 
@@ -148,11 +149,11 @@ void ALUUnit::commit() {
     // Phase 10B.0.5: Stats increments relocated here from evaluate(). Counting
     // them at commit() (which a stalled cycle skips) means a re-evaluated
     // cycle is not double-counted.
-    if (processed_this_cycle_) {
+    if (processed_this_cycle_.value()) {
         stats_.alu_stats.busy_cycles++;
         stats_.alu_stats.instructions++;
-        processed_this_cycle_ = false;
     }
+    processed_this_cycle_.reset();
 
     commit_all();
     // Phase 10E: the redirect is a COMBINATIONAL-backward transient — no
@@ -171,8 +172,8 @@ void ALUUnit::reset() {
     next_redirect_.reset();
     redirect_override_.reset();
     branch_resolved_ = false;
-    pending_cycle_ = 0;
-    processed_this_cycle_ = false;
+    pending_cycle_.reset();
+    processed_this_cycle_.reset();
 }
 
 bool ALUUnit::branch_mispredicted(const DispatchInput& input) {

@@ -118,12 +118,12 @@ private:
     // sim-instrumentation taxonomy (Phase 6 audit classification corrected
     // from the initial Reg<uint64_t> suggestion).
     uint64_t cycle_ = 0;  // sim-instrumentation
-    // Phase 6 of current_mut() elimination: pending_panic_flush_ is an
-    // evaluate→commit handoff within a single tick (set at top of tick when
-    // ebreak observed, read at commit-phase cascade, cleared). Logically a
-    // Wire<bool>, scheduled for conversion in Phase 7 alongside the rest of
-    // the scratch fields.
-    bool pending_panic_flush_ = false;  // scratch
+    // Phase 7 of current_mut() elimination: evaluate→commit handoff within
+    // a single tick. Driven at top-of-tick when the committed ebreak
+    // request is observed; read at the commit-phase panic-flush cascade.
+    // Wire<bool> encodes the transient semantics — the reset() in the
+    // commit cascade replaces the prior `= false`.
+    Wire<bool> pending_panic_flush_;
     // Construction-time flag pair; set by enable_*_trace() helpers called
     // once at config time and read throughout the tick. Effectively config
     // after construction.

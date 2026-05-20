@@ -59,13 +59,13 @@ private:
     // cycle semantics are register, not wire).
     Reg<bool> cmd_in_flight_;
 
-    // Phase M1: pop intent staged here at evaluate; applied at commit by
-    // calling ldst_.pop_front(). Producer (LdStUnit) only writes the back
-    // of the deque at its own commit, so the front this consumer reads at
-    // commit is identical to the front it observed at evaluate — the
-    // `current_fifo_empty()` defensive check below should never fire.
-    // Phase 7 candidate: Wire<bool> (evaluate→commit handoff).
-    bool next_pop_ = false;  // scratch
+    // Phase 7 of current_mut() elimination: pop intent staged at evaluate,
+    // applied at commit by calling ldst_.pop_front(). Producer (LdStUnit)
+    // only writes the back of the deque at its own commit, so the front
+    // this consumer reads at commit is identical to the front it observed
+    // at evaluate. Wired as Wire<bool> encoding the transient evaluate→
+    // commit handoff.
+    Wire<bool> next_pop_;
 };
 
 } // namespace gpu_sim

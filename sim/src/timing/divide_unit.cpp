@@ -18,7 +18,7 @@ void DivideUnit::accept(const DispatchInput& input, uint64_t cycle) {
     pr.issue_cycle = cycle;
     // Phase 10B.0.5: div_stats.instructions is incremented in commit()
     // (gated on accepted_this_cycle_), not here.
-    accepted_this_cycle_ = true;
+    accepted_this_cycle_.drive(true);
 }
 
 void DivideUnit::evaluate() {
@@ -37,7 +37,7 @@ void DivideUnit::evaluate() {
     result_buffer_.set_next(WritebackEntry{});
     // Phase 10B.0.5: capture the per-cycle busy flag before the body may
     // clear next_busy_; div_stats.busy_cycles is incremented at commit().
-    busy_this_cycle_ = busy_.next();
+    busy_this_cycle_.drive(busy_.next());
     if (busy_.next()) {
         cycles_remaining_.next_mut()--;
         if (cycles_remaining_.next() == 0) {
@@ -60,14 +60,14 @@ void DivideUnit::commit() {
     // Phase 10B.0.5: Stats increments relocated here from evaluate()/accept().
     // Both per-cycle flags are consumed and cleared at commit() so a commit()
     // not preceded by an evaluate() never re-counts a stale flag.
-    if (busy_this_cycle_) {
+    if (busy_this_cycle_.value()) {
         stats_.div_stats.busy_cycles++;
-        busy_this_cycle_ = false;
     }
-    if (accepted_this_cycle_) {
+    if (accepted_this_cycle_.value()) {
         stats_.div_stats.instructions++;
-        accepted_this_cycle_ = false;
     }
+    busy_this_cycle_.reset();
+    accepted_this_cycle_.reset();
 
     commit_all();
 }

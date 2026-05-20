@@ -37,7 +37,7 @@ public:
     void seed_next() override { seed_all(); }
     void evaluate() override;
     void commit() override;
-    void reset() override { reset_all(); busy_this_cycle_ = false; accepted_this_cycle_ = false; }
+    void reset() override { reset_all(); busy_this_cycle_.reset(); accepted_this_cycle_.reset(); }
     bool current_has_result() const override;
     WritebackEntry consume_result() override;
     ExecUnit get_type() const override { return ExecUnit::DIVIDE; }
@@ -75,8 +75,9 @@ private:
     // assigns busy_this_cycle_ fresh; accept() sets accepted_this_cycle_. Both
     // consumed at commit() so a re-evaluated stalled cycle does not
     // double-count div_stats.
-    bool busy_this_cycle_ = false;       // scratch
-    bool accepted_this_cycle_ = false;   // scratch
+    // Phase 7 of current_mut() elimination: per-cycle scratch flags as Wire<bool>.
+    Wire<bool> busy_this_cycle_;
+    Wire<bool> accepted_this_cycle_;
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
     OperandCollector* opcoll_ = nullptr;

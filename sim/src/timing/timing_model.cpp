@@ -472,7 +472,7 @@ bool TimingModel::tick() {
     bool panic_triggered_this_tick = false;
     if (ebreak_req.valid && !panic_->is_active()) {
         panic_->trigger(ebreak_req.warp_id, ebreak_req.pc);
-        pending_panic_flush_ = true;
+        pending_panic_flush_.drive(true);
         panic_triggered_this_tick = true;
     }
 
@@ -641,13 +641,13 @@ bool TimingModel::tick() {
     // commit-phase, fixing the discipline violation. The branch_tracker
     // is also reset to its pre-panic clean state, mirroring the prior
     // arm's behavior.
-    if (pending_panic_flush_) {
+    if (pending_panic_flush_.value()) {
         scheduler_->flush();
         opcoll_->flush();
         gather_file_->flush();
         wb_arbiter_->flush();
         branch_tracker_.reset();
-        pending_panic_flush_ = false;
+        pending_panic_flush_.reset();
     }
 
     if (trace_enabled_) {

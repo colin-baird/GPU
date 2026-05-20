@@ -138,7 +138,13 @@ private:
     // until the cross-stage handshake itself is redesigned with a Wire-
     // mediated coalescing-pop signal.
     std::deque<AddrGenFIFOEntry> addr_gen_fifo_;
-    std::optional<AddrGenFIFOEntry> next_push_;
+    // Phase 7 of current_mut() elimination: staged push to addr_gen_fifo_,
+    // an evaluate→commit handoff. Set in evaluate() when the addr-gen
+    // countdown completes; read at commit() to apply the push (gated by the
+    // writeback stall). Wire<std::optional<...>> encodes the transient
+    // semantics in the type — the previous plain optional was a `// scratch`
+    // member.
+    Wire<std::optional<AddrGenFIFOEntry>> next_push_;
     // Phase 10B.0: monotonic push counter. Incremented in commit() on the
     // cycle the staged push is applied — the same cycle the op becomes
     // visible in addr_gen_fifo_. Never decremented; the scheduler's
@@ -151,8 +157,9 @@ private:
     // assigns busy_this_cycle_ fresh; accept() sets accepted_this_cycle_. Both
     // consumed at commit() so a re-evaluated stalled cycle does not
     // double-count ldst_stats.
-    bool busy_this_cycle_ = false;       // scratch
-    bool accepted_this_cycle_ = false;   // scratch
+    // Phase 7 of current_mut() elimination: per-cycle scratch flags as Wire<bool>.
+    Wire<bool> busy_this_cycle_;
+    Wire<bool> accepted_this_cycle_;
 
     // Phase 10B.1/10B.3 back-pointers. nullptr-tolerant for unit tests.
     OperandCollector* opcoll_ = nullptr;

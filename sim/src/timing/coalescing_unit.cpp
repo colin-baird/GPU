@@ -61,9 +61,8 @@ void CoalescingUnit::evaluate() {
         }
 
         current_entry_.set_next(fifo_front);
-        // Phase M1: defer the pop to commit. Read remains a stable
-        // committed-state read.
-        next_pop_ = true;
+        // Phase M1 + Phase 7: defer the pop to commit (Wire<bool>).
+        next_pop_.drive(true);
         processing_.set_next(true);
 
         // All-or-nothing coalescing check.
@@ -146,11 +145,11 @@ void CoalescingUnit::commit() {
     // is ungated — coalescing is not part of the writeback-stall freeze, so a
     // pop may still drain the FIFO even when LdStUnit::commit is held; the
     // held push lands on the resumed cycle.
-    if (next_pop_) {
+    if (next_pop_.value()) {
         if (!ldst_.current_fifo_empty()) {
             ldst_.pop_front();
         }
-        next_pop_ = false;
+        next_pop_.reset();
     }
     // Phase 6 of current_mut() elimination: flip the wrapped Regs
     // (processing_, current_entry_, is_coalesced_, serial_index_,
@@ -160,7 +159,7 @@ void CoalescingUnit::commit() {
 
 void CoalescingUnit::reset() {
     reset_all();
-    next_pop_ = false;
+    next_pop_.reset();
 }
 
 } // namespace gpu_sim
