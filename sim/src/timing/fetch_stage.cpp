@@ -172,7 +172,22 @@ void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
     // scan above (via req.targets(w)), so no fetch this cycle reads the
     // staged value before commit() flips it.
     warps_[warp_id].pc_.set_next(target_pc);
-    warps_[warp_id].instr_buffer.flush();
+    // Phase 6 (sparkling-dazzling-starfish.md): drive the per-warp
+    // instruction-buffer flush-request Wire; the per-warp instr_buffer.commit()
+    // at the end of this tick's commit phase reads the wire and clears the
+    // buffer (discarding any same-cycle staged push/pop). When the wire is
+    // unwired (tests that exercise FetchStage in isolation), fall back to an
+    // immediate flush — the test's expectation is end-of-cycle visibility, and
+    // bypass-tick() fixtures don't drive a per-warp commit. Production code
+    // routes through the wire so the flush is hardware-faithful (staged at
+    // evaluate-time, applied at the cycle boundary).
+    if (instr_buffer_flush_request_ != nullptr) {
+        auto bits = instr_buffer_flush_request_->value();
+        bits[warp_id] = true;
+        instr_buffer_flush_request_->drive(bits);
+    } else {
+        warps_[warp_id].instr_buffer.flush();
+    }
     // Invalidate any in-flight fetch for this warp. The staged-slot clear
     // suffices: the rest of evaluate() either re-stages (advance path) or holds
     // current_ (the gate further down masks the redirected warp so the doomed

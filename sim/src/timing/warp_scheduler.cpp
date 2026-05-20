@@ -270,16 +270,19 @@ void WarpScheduler::evaluate() {
         out.prediction = selected_entry.prediction;
         output_.set_next(out);
 
-        // Phase 5 of current_mut() elimination (Pattern 2): the pop stays
-        // immediate. Scheduler is the last stage in the back-to-front
-        // evaluate sweep, so no other stage reads the buffer this cycle
-        // after the pop — an immediate pop and a staged pop are
-        // observationally equivalent. The push side (decode.stage_push)
-        // does stage to align with hardware semantics on the producer's
-        // committed-state write. Keeping pop immediate also lets unit-test
-        // fixtures (which bypass tick() and so don't call the per-warp
-        // buffer.commit) continue to work without modification.
-        warps_[selected_warp].instr_buffer.pop();
+        // Phase 6 (sparkling-dazzling-starfish.md): stage the pop. The
+        // scheduler is the last stage in the back-to-front evaluate sweep,
+        // so an immediate pop is observationally equivalent in production;
+        // staging the pop closes the discipline gap and keeps the buffer's
+        // committed state stable across the rest of this cycle's reads. The
+        // per-warp `instr_buffer.commit()` driven from TimingModel::tick()
+        // applies the pop atomically with any decode-side stage_push at the
+        // cycle boundary (pop-then-push, capacity-checked by the underlying
+        // RegFifo). Test fixtures that exercise the scheduler in isolation
+        // (bypassing tick() and the per-warp commit) drive the buffer's
+        // immediate `pop()` test helper directly when they need to observe
+        // the post-pop state — production no longer does that here.
+        warps_[selected_warp].instr_buffer.stage_pop();
 
         // ---- Issue-side bookkeeping for the selected warp ------------------
         const DecodedInstruction& d = selected_entry.decoded;

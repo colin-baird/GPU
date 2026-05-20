@@ -286,6 +286,11 @@ TEST_CASE("Branch: scheduler gates re-issue while branch is in flight", "[branch
     scheduler.commit();
     scoreboard.commit();
     branch_tracker.commit();
+    // Phase 6 (sparkling-dazzling-starfish.md): scheduler stages the buffer
+    // pop now; drive the per-warp instr_buffer.commit() to apply it (parallels
+    // the Phase 4 PulseReg precedent of interposing commit calls in
+    // bypass-tick() fixtures).
+    warps[0].instr_buffer.commit();
 
     // Now the follow-up ADDI must issue.
     REQUIRE(scheduler.current_output().has_value());

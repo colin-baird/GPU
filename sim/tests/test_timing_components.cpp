@@ -1411,6 +1411,10 @@ TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
         scoreboard.seed_next();
         scheduler.evaluate();
         scheduler.commit();
+        // Phase 6 (sparkling-dazzling-starfish.md): scheduler stages the pop;
+        // drive the per-warp instr_buffer.commit() to apply it (Phase 4
+        // PulseReg precedent: bypass-tick() fixtures interpose commit calls).
+        warps[0].instr_buffer.commit();
         REQUIRE(scheduler.current_output().has_value());
         REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::ISSUED);
     }
@@ -1420,6 +1424,7 @@ TEST_CASE("Depth-3 buffer sustains exactly 3 issues across a full fetch stall",
     scoreboard.seed_next();
     scheduler.evaluate();
     scheduler.commit();
+    warps[0].instr_buffer.commit();
     REQUIRE_FALSE(scheduler.current_output().has_value());
     REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::BUFFER_EMPTY);
     REQUIRE(stats.warp_stall_buffer_empty[0] == 1);
@@ -1457,12 +1462,17 @@ TEST_CASE("Depth-1 buffer starves immediately after one issue under fetch stall"
     scoreboard.seed_next();
     scheduler.evaluate();
     scheduler.commit();
+    // Phase 6 (sparkling-dazzling-starfish.md): apply the scheduler's staged
+    // buffer pop via the per-warp instr_buffer.commit() (bypass-tick() fixture
+    // pattern).
+    warps[0].instr_buffer.commit();
     REQUIRE(scheduler.current_output().has_value());
     REQUIRE(stats.total_instructions_issued == 1);
 
     scoreboard.seed_next();
     scheduler.evaluate();
     scheduler.commit();
+    warps[0].instr_buffer.commit();
     REQUIRE_FALSE(scheduler.current_output().has_value());
     REQUIRE(scheduler.current_diagnostics()[0] == SchedulerIssueOutcome::BUFFER_EMPTY);
     REQUIRE(stats.warp_stall_buffer_empty[0] == 1);

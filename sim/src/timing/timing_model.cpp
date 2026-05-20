@@ -144,6 +144,12 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     // Phase 2: wire the per-warp ECALL deactivation request so fetch's
     // eligibility check observes the in-tick deactivation combinationally.
     fetch_->set_deactivation_request(&deactivation_request_);
+    // Phase 6 (sparkling-dazzling-starfish.md): wire the per-warp
+    // instruction-buffer flush-request Wire so fetch.apply_redirect() defers
+    // the flush to the per-warp instr_buffer.commit() at the end of this
+    // tick (a hardware-faithful staged write, not a same-cycle committed-
+    // state mutation).
+    fetch_->set_instr_buffer_flush_request(&instr_buffer_flush_request_);
     decode_ = std::make_unique<DecodeStage>(warps_.data(), *fetch_);
     // Phase 3: wire decode into fetch so fetch.evaluate() can query
     // decode->current_busy() and decode->current_pending_warp() directly,
@@ -390,6 +396,13 @@ bool TimingModel::tick() {
     // re-asserts when the ECALL path re-fires below; on cycles with no
     // ECALL retirement it stays de-asserted and fetch's mask is a no-op.
     deactivation_request_.reset();
+    // Phase 6 (sparkling-dazzling-starfish.md): per-warp instruction-buffer
+    // flush-request Wire — top-of-tick de-assert (same convention).
+    // FetchStage::apply_redirect() drives bits during its evaluate(); the
+    // per-warp instr_buffer.commit() at the end of this tick reads the
+    // value. On a tick with no redirect the wire stays de-asserted and
+    // every per-warp commit is a normal apply-staged-ops path.
+    instr_buffer_flush_request_.reset();
 
     for (uint32_t w = 0; w < config_.num_warps; ++w) {
         if (warps_[w].active_.current()) {
@@ -460,13 +473,19 @@ bool TimingModel::tick() {
         // Phase 5 of current_mut() elimination: apply per-warp instr_buffer
         // staged ops (rare in panic path — decode/scheduler typically idle
         // — but kept for consistency with the non-panic commit phase).
+        // Phase 6 (sparkling-dazzling-starfish.md): honor a same-tick flush
+        // request from fetch.apply_redirect(). fetch.evaluate() does not run
+        // in the panic branch, so the wire is always de-asserted here — but
+        // the parameterized call shape matches the non-panic branch for
+        // discipline.
         // Phase 2: also commit per-warp pc_ / active_. In the panic flow
         // pc_ never changes (fetch does not run), so its commit is
         // idempotent; active_ flips false at step 3 and that flip is
         // visible to the post-commit snapshot below.
-        for (auto& warp : warps_) {
-            warp.instr_buffer.commit();
-            warp.commit();
+        const auto& flush_bits_panic = instr_buffer_flush_request_.value();
+        for (uint32_t w = 0; w < config_.num_warps; ++w) {
+            warps_[w].instr_buffer.commit(flush_bits_panic[w]);
+            warps_[w].commit();
         }
         // Phase 3 (close-the-Reg-family-migration): ungated cross-stage FIFO
         // commit pass. In the panic branch ldst_->evaluate / coalescing_->
@@ -593,15 +612,16 @@ bool TimingModel::tick() {
     //      scheduler
     //    Two amendments to the plan's literal back-to-front tail:
     //      * fetch.evaluate() runs BEFORE scheduler.evaluate() (a documented
-    //        ordering carve-out). The scheduler's evaluate() does an
-    //        instr_buffer.pop() — a committed-state mutation that fetch
-    //        observes via instr_buffer occupancy. fetch's will_be_full check
-    //        deliberately reads COMMITTED occupancy and does NOT credit a
-    //        same-cycle pop (Phase 10B.3). Running scheduler first would
-    //        create a combinational-forward edge into fetch, which is
-    //        discipline-wrong; running fetch first preserves the conservative
-    //        committed read. Analogous to the cache/mem_if/drain triple
-    //        carve-out.
+    //        ordering carve-out). The scheduler's evaluate() now stages an
+    //        instr_buffer.stage_pop() (Phase 6 of sparkling-dazzling-
+    //        starfish.md); the pop applies at the per-warp instr_buffer.commit()
+    //        at the end of this tick. fetch's will_be_full check reads
+    //        COMMITTED occupancy (start-of-cycle) and so naturally does NOT
+    //        credit a same-cycle pop. The ordering carve-out is now mostly
+    //        historical — even running scheduler first would not create a
+    //        same-cycle visibility edge into fetch, since pops are deferred —
+    //        but fetch-before-scheduler is preserved for sweep-order stability.
+    //        Analogous to the cache/mem_if/drain triple carve-out.
     //      * the execution units evaluate BEFORE fetch/decode/scheduler.
     //        Required so Phase 10E's combinational ALU->fetch/decode redirect
     //        works (ALU resolves before the frontend reads the redirect). At
@@ -742,13 +762,21 @@ bool TimingModel::tick() {
     // checked. This replaces decode.commit()'s post-flip direct buffer push
     // + pending_.current_mut().valid=false clear.
     //
+    // Phase 6 (sparkling-dazzling-starfish.md): honor a same-tick flush
+    // request from fetch.apply_redirect(). If the warp's bit is asserted,
+    // the commit clears the buffer and discards any same-cycle staged
+    // push/pop — the wrong-path state vanishes at this tick's cycle boundary
+    // (one cycle later than the prior immediate-flush behavior — see Phase 6
+    // findings for the cycle-delta analysis).
+    //
     // Phase 2 (close-the-Reg-family-migration): commit each warp's pc_ /
     // active_. pc_ flipped only for the one warp fetch picked this cycle
     // (others' next_ == current_ via seed); active_ flipped only for the
     // one warp that retired an ECALL this cycle (others held identity).
-    for (auto& warp : warps_) {
-        warp.instr_buffer.commit();
-        warp.commit();
+    const auto& flush_bits = instr_buffer_flush_request_.value();
+    for (uint32_t w = 0; w < config_.num_warps; ++w) {
+        warps_[w].instr_buffer.commit(flush_bits[w]);
+        warps_[w].commit();
     }
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage

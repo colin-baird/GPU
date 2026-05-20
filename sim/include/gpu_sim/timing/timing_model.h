@@ -147,6 +147,17 @@ private:
     // fetch.evaluate() does not run in the panic branch, so no same-cycle
     // mask is required.
     Wire<std::array<bool, MAX_WARPS>> deactivation_request_;
+    // Phase 6 (sparkling-dazzling-starfish.md): per-warp instruction-buffer
+    // flush-request Wire. Driven by `FetchStage::apply_redirect()` when a
+    // mispredict resolves and the warp's wrong-path buffer state must be
+    // discarded; consumed at the per-warp `instr_buffer.commit()` at the
+    // end of this tick's commit phase. Reset at top-of-tick (the
+    // `next_redirect_` / `deactivation_request_` convention) — the wire's
+    // role is one tick: producer is fetch.evaluate(), consumer is the
+    // per-warp instr_buffer.commit() driven from `TimingModel::tick()`
+    // both within the same tick. Both panic and non-panic branches drive
+    // the per-warp commit and so honor any in-tick flush request.
+    Wire<std::array<bool, MAX_WARPS>> instr_buffer_flush_request_;
     // Phase 3 (close-the-Reg-family-migration): cross-stage addr-gen FIFO.
     // The FIFO is a peer of LdStUnit (producer) and CoalescingUnit
     // (consumer), not a member of either stage. LdStUnit::evaluate() stages

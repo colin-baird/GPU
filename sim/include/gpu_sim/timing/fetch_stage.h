@@ -97,6 +97,19 @@ public:
         deactivation_request_ = req;
     }
 
+    // Phase 6 (sparkling-dazzling-starfish.md): wire the per-warp instruction-
+    // buffer flush-request Wire owned by `TimingModel`. apply_redirect() drives
+    // a per-warp bit during this tick; the per-warp `instr_buffer.commit()`
+    // (called from `TimingModel::tick()` at the end of the commit phase) reads
+    // the wire and clears the buffer if asserted, discarding any same-cycle
+    // staged push/pop. Reset at top-of-tick (next_redirect_ convention).
+    // Nullptr-tolerant: tests that exercise FetchStage in isolation perform
+    // the flush via the buffer's immediate `flush()` test helper.
+    void set_instr_buffer_flush_request(
+        Wire<std::array<bool, MAX_WARPS>>* req) {
+        instr_buffer_flush_request_ = req;
+    }
+
 private:
     bool query_decode_ready() const;
     std::optional<uint32_t> query_decode_pending_warp() const;
@@ -143,6 +156,13 @@ private:
     // eligibility scan so an ECALL-retirement deactivation asserted earlier
     // in this same tick masks the warp out of the fetch pick.  // back-pointer
     const Wire<std::array<bool, MAX_WARPS>>* deactivation_request_ = nullptr;
+
+    // Phase 6 (sparkling-dazzling-starfish.md): per-warp instruction-buffer
+    // flush-request Wire (owned by TimingModel; see set_instr_buffer_flush_
+    // request above). Driven by apply_redirect(); consumed at the per-warp
+    // instr_buffer.commit() in TimingModel::tick()'s commit phase.
+    // back-pointer
+    Wire<std::array<bool, MAX_WARPS>>* instr_buffer_flush_request_ = nullptr;
 };
 
 } // namespace gpu_sim
