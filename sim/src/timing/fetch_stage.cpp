@@ -29,9 +29,14 @@ void FetchStage::evaluate() {
     // back-to-front sweep runs execution units before the frontend), so
     // alu_->next_redirect() carries this cycle's fresh transient. The
     // test-only override takes precedence for isolated FetchStage tests.
-    // apply_redirect() mutates committed warp/buffer/output state directly —
-    // this is the redirect-flush moment; the redirected warp is then skipped
-    // by the fetch scan below (its buffer was just flushed and PC reset).
+    // apply_redirect() mutates committed warp PC and buffer state and clears
+    // the staged output slot; the committed output slot is NOT touched mid-
+    // cycle (Q does not change between clock edges). The READY/STALL gate
+    // and the eligibility scan below combinationally mask the redirected
+    // warp so the residual committed output is treated as cleared for this
+    // cycle's decisions; decode applies the same combinational mask when
+    // reading fetch.current_output(). The redirected warp is also skipped
+    // by the fetch scan (its buffer was just flushed, PC reset).
     RedirectRequest req;
     if (redirect_override_) {
         req = *redirect_override_;
@@ -48,8 +53,18 @@ void FetchStage::evaluate() {
     // output slot and decode is not ready to consume it this cycle, hold the
     // output (carry it into the staged slot) and do not fetch a new
     // instruction.
+    //
+    // Combinational redirect mask: a current_ output whose warp matches this
+    // cycle's redirect is doomed — its buffer was flushed, its PC reset, and
+    // decode will combinationally gate its read of fetch.current_output()
+    // against the same redirect signal. Treat the slot as cleared for the
+    // gate's purposes so the hold path doesn't re-stage the doomed value.
     const bool decode_ready = query_decode_ready();
-    if (output_.current().has_value() && !decode_ready) {
+    const bool current_is_doomed =
+        output_.current().has_value() &&
+        redirected_warp.has_value() &&
+        *redirected_warp == output_.current()->warp_id;
+    if (output_.current().has_value() && !current_is_doomed && !decode_ready) {
         output_.set_next(output_.current());  // retain — REGISTERED hold
         stats_.fetch_skip_count++;
         stats_.fetch_skip_backpressure++;
@@ -74,8 +89,12 @@ void FetchStage::evaluate() {
     // LDST saturated): fetch picks the same warp twice in a row, the second
     // push fails, decode goes pending, and fetch backpressures every cycle
     // until the warp drains.
+    // Same combinational mask as the READY/STALL gate above: a current_
+    // output whose warp matches this cycle's redirect is doomed and won't
+    // commit to decode, so it doesn't claim a buffer slot in the eligibility
+    // scan's inflight_to_w accounting.
     const std::optional<uint32_t> current_output_warp =
-        output_.current().has_value()
+        (output_.current().has_value() && !current_is_doomed)
             ? std::optional<uint32_t>(output_.current()->warp_id)
             : std::nullopt;
 
@@ -143,15 +162,16 @@ void FetchStage::reset() {
 void FetchStage::apply_redirect(uint32_t warp_id, uint32_t target_pc) {
     warps_[warp_id].pc = target_pc;
     warps_[warp_id].instr_buffer.flush();
-    // Invalidate any in-flight fetch for this warp. apply_redirect() runs at
-    // the top of evaluate(), so the committed-slot clear is read this same
-    // cycle by the backpressure gate and the eligibility scan below — the
-    // redirect-flush is a same-cycle effect of the backward control signal.
-    // The staged-slot clear mirrors the pre-migration behavior; evaluate()
-    // restages the slot on every code path afterward.
-    if (output_.current() && output_.current()->warp_id == warp_id) {
-        output_.current_mut() = std::nullopt;
-    }
+    // Invalidate any in-flight fetch for this warp. The staged-slot clear
+    // suffices: the rest of evaluate() either re-stages (advance path) or holds
+    // current_ (the gate further down masks the redirected warp so the doomed
+    // committed output is treated as cleared and the hold path is skipped).
+    // The committed slot is *not* modified here — Q does not change between
+    // clock edges. Downstream consumers (decode) combinationally gate their
+    // read of output_.current() against the same redirect Wire (the
+    // synthesis-faithful encoding of "consumer sees the slot as cleared
+    // mid-cycle"). The committed slot rolls to nullopt or the new fetch at
+    // this cycle's commit boundary.
     if (output_.next() && output_.next()->warp_id == warp_id) {
         output_.next_mut() = std::nullopt;
     }

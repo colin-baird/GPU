@@ -283,6 +283,12 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Change:** `WarpScheduler::test_set_unit_busy` and `test_reserve_writeback_slot` now write `next_mut()` only. The committed-side write (which was the Pattern 5 `current_mut()` use) is removed. The three callers in `sim/tests/test_warp_scheduler.cpp` (lines 254, 285-286, 307) now call `f.scheduler->seed_next()` BEFORE arming the hook — required order, since seeding after the arm would clobber the staged value. Doc comment block at `warp_scheduler.h:100-114` rewritten to document the required setup sequence.
 - **2 of 11 `current_mut()` call sites eliminated.** Remaining patterns: 1 (redirect-flush), 2 (decode commit consumed-mark), 3 (7 memoryless-consumer sites), 4 (gather dual-write).
 
+### Phase 2
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change:** `FetchStage::apply_redirect` no longer writes `output_.current_mut()` (the Pattern 1 `current_mut()` use). The staged-slot clear stays. `FetchStage::evaluate()` adds a combinational mask (`current_is_doomed`) on its READY/STALL gate and its `current_output_warp` eligibility-scan term, so the residual committed output for a redirected warp is treated as cleared for this cycle's decisions. `DecodeStage::evaluate()` adds a matching combinational mask when reading `fetch_.current_output()` — the synthesis-faithful encoding of "consumer ANDs its read of Q with !redirect_for_this_warp." Doc comments updated in both files to describe the new shape.
+- **3 of 11 `current_mut()` call sites eliminated.** Remaining patterns: 2 (decode commit consumed-mark), 3 (7 memoryless-consumer sites), 4 (gather dual-write).
+
 ...
 
 ## Audit findings — plain members in timing headers

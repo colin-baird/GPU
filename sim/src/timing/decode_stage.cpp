@@ -29,14 +29,12 @@ void DecodeStage::evaluate() {
     // Phase 10E: apply the COMBINATIONAL-backward redirect-invalidate at the
     // top of evaluate(), BEFORE the carry-forward guard. The ALU resolved the
     // branch earlier in this same tick (back-to-front sweep); fetch.evaluate()
-    // also already ran this cycle and flushed the redirected warp's buffer and
-    // cleared its fetch output. The invalidate targets next_pending_ — the
-    // slot evaluate() owns and commit() will flip into current_pending_ and
-    // push to the buffer. A shadow entry decoded last cycle is carried here in
-    // next_pending_ (seed_next() copied it from current_pending_); dropping it
-    // before the guard both prevents the shadow push and lets evaluate() pull
-    // a fresh correct-path fetch output (which fetch already cleared to
-    // nullopt for the redirected warp, so nothing wrong is re-staged).
+    // also already ran this cycle and flushed the redirected warp's buffer
+    // and cleared its staged fetch output. The invalidate targets next_pending_
+    // — the slot evaluate() owns and commit() will flip into current_pending_
+    // and push to the buffer. A shadow entry decoded last cycle is carried
+    // here in next_pending_ (seed_next() copied it from current_pending_);
+    // dropping it before the guard prevents the shadow push.
     RedirectRequest req;
     if (redirect_override_) {
         req = *redirect_override_;
@@ -54,6 +52,16 @@ void DecodeStage::evaluate() {
 
     const auto& fetch_out = fetch_.current_output();
     if (!fetch_out) return;
+
+    // Combinational redirect mask: fetch no longer clears its committed output
+    // mid-cycle when a redirect arrives (Q does not change between clock
+    // edges). The doomed value still sits in fetch.current_output() this cycle;
+    // skip it here. The synthesis encoding is "consumer ANDs its read of the
+    // producer's Q with !redirect_for_this_warp." Fetch applies the same mask
+    // in its own evaluate (gate + eligibility scan), preserving the observable
+    // pre-Phase-2 behavior where the doomed output was invisible everywhere
+    // mid-cycle.
+    if (req.valid && fetch_out->warp_id == req.warp_id) return;
 
     DecodedInstruction decoded = Decoder::decode(fetch_out->raw_instruction);
 
