@@ -34,6 +34,17 @@ public:
     void commit() override;
     void reset() override;
 
+    // Phase 4 (close-the-Reg-family-migration): cross-stage response FIFO
+    // back-pointers. DRAMSim3Memory accepts them for interface conformance
+    // but routes its completion path through its internal std::deque<>s
+    // for Phase-4 byte-identity; Phase 5 (CDC FIFO split) takes ownership
+    // of these slots and produces the documented memory-bound delta.
+    void set_response_queues(RegFifo<MemoryResponse>* responses,
+                             RegFifo<MemoryResponse>* write_acks) override {
+        (void)responses;
+        (void)write_acks;
+    }
+
     // Phase M5: REGISTERED forward request path.
     void set_next_read_request(uint32_t line_addr, uint32_t mshr_id) override;
     void set_next_write_request(uint32_t line_addr) override;
@@ -45,10 +56,18 @@ public:
     bool submit_read(uint32_t line_addr, uint32_t mshr_id) override;
     bool submit_write(uint32_t line_addr) override;
 
+    // Phase 4 (close-the-Reg-family-migration): peek + immediate-pop on
+    // the internal completion queues. The cache's stage_response_pop() and
+    // stage_write_ack_pop() take immediate effect against the internal
+    // deques (byte-identical with the pre-Phase-4 get_response() shape).
+    // Phase 5 will lift these onto the TimingModel-owned cross-stage
+    // RegFifos and surface the natural CDC traversal latency.
     bool current_has_response() const override { return !responses_.empty(); }
-    MemoryResponse get_response() override;
+    const MemoryResponse& current_response_front() const override { return responses_.front(); }
+    void stage_response_pop() override { if (!responses_.empty()) responses_.pop_front(); }
     bool current_has_write_ack() const override { return !write_acks_.empty(); }
-    MemoryResponse get_write_ack() override;
+    const MemoryResponse& current_write_ack_front() const override { return write_acks_.front(); }
+    void stage_write_ack_pop() override { if (!write_acks_.empty()) write_acks_.pop_front(); }
     size_t write_ack_count() const override { return write_acks_.size(); }
     bool is_idle() const override;
     size_t in_flight_count() const override;

@@ -212,18 +212,6 @@ void DRAMSim3Memory::commit() {
     commit_all();
 }
 
-MemoryResponse DRAMSim3Memory::get_response() {
-    MemoryResponse r = responses_.front();
-    responses_.pop_front();
-    return r;
-}
-
-MemoryResponse DRAMSim3Memory::get_write_ack() {
-    MemoryResponse r = write_acks_.front();
-    write_acks_.pop_front();
-    return r;
-}
-
 bool DRAMSim3Memory::is_idle() const {
     if (!request_fifo_.empty() || !responses_.empty() || !write_acks_.empty()) return false;
     if (!pending_write_acks_.empty()) return false;

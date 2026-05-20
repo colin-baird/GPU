@@ -435,7 +435,7 @@ This timing model intentionally tracks cache residency, misses, backpressure, an
 - **Registered tag array & fill-conflict retry**: `tags_` is `Reg<std::vector<CacheTag>>` (Phase 5a: the whole tag vector is one register). Lookups (`process_load`/`process_store` hit and pin checks, `any_pinned_tag`, `pinned_line_count`, `is_pinned`) read `tags_.current()`; `complete_fill` installs into `tags_.next_mut()`; `drain_secondary_chain_head` reads `tags_.current()` (like every other tag reader) and pin-clears `tags_.next_mut()` (the write side only — a secondary of the just-filled line is gated out of the fill cycle by the registered MSHR head-detection scan regardless). `complete_fill` records a successful install's set in the COMBINATIONAL same-tick scratch `fill_installed_set_` (Phase 7: `Wire<int32_t>` with default value `-1`; `drive()` on a successful fill, `reset()` at the top of `evaluate()` AND at `commit()` to bound its lifetime to one tick); a load or store command to that set the same cycle is rejected (fill-conflict retry, `fill_conflict_retry_cycles` bumped) and re-staged by coalescing's valid/ready handshake. The retry covers loads **and** stores — a load miss is not side-effect-free (it allocates/chains an MSHR). Fills always win and are never blocked by a command.
 - **M3-refactor — valid/ready command handshake**: `set_next_load_cmd(addr, warp_id, lane_mask, results, issue_cycle, pc, raw_instruction)` and `set_next_store_cmd(line_addr, warp_id, issue_cycle, pc, raw_instruction)` stage a cmd in `load_cmd_.next_mut()` / `store_cmd_.next_mut()` (Phase 5a: `Reg<LoadCommand>` / `Reg<StoreCommand>`). `commit()` flips next → current; `evaluate()` consumes the committed slot after handle_responses (FILL) and drain_secondary_chain_head (secondary). The cache is a **memoryless cmd consumer** — `evaluate()` always clears the committed cmd slot after the attempt (via `current_mut().valid = false`), success or not, and `commit()` re-clears the staged slot (via `set_next(LoadCommand{})` / `set_next(StoreCommand{})`) after `commit_all()` flips current = next. The staged-slot re-clear is what makes the cmd path safe under the cache's no-auto-seed policy: an in-cycle set_next from coalescing is the only path that can re-populate the next slot. The consumer-side ready signal `next_cmd_ready()` is the COMBINATIONAL-backward handshake (Phase 7: `Wire<bool> next_cmd_ready_`; accessor forwards to `wire_.value()`; `reset()` at the top of `evaluate()`, `drive(true)` when a cmd was processed): it is asserted iff this cycle's `evaluate()` actually processed a cmd from the slot. Coalescing reads `next_cmd_ready()` same-cycle (cache.evaluate runs first) to decide whether to advance or re-stage; producer-side retry lives entirely in the coalescing unit's `(current_entry_, serial_index_, processing_, cmd_in_flight_)` state. An assert in `cache.evaluate` enforces the throughput invariant (at most one cmd processed per cycle). `next_cmd_stall_reason()` returns the structural resource-exhaustion reason (MSHR_FULL / WRITE_BUFFER_FULL / LINE_PINNED) for trace classification.
 - **Write-ack line pinning**: a queued write-through pins its cache set until the external write ack returns. `is_pinned(set)` = chain pin (`tags_.current()[set].pinned`) OR write-ack pin (`outstanding_writes_.current()[set] > 0`); both are REGISTERED (Phase 5a: `Reg<std::vector<CacheTag>>` and `Reg<std::vector<uint32_t>>` plus a `Reg<uint32_t>` total). `queue_write_through(line_addr)` is the single, **fallible** write-buffer enqueue wrapper — the write buffer has one enqueue port per cycle. The first caller claims the port (`write_buffer_.claim_port()`), stages the push (`write_buffer_.stage_push(line_addr)`, applied at commit), bumps `outstanding_writes_.next_mut()[set]` and `outstanding_writes_total_.next_mut()`, and returns true; a later caller this cycle finds `write_buffer_.port_claimed()` true and returns false without staging anything. The three enqueue sites (store-miss fill, store-secondary drain, store hit — FILL > secondary > HIT by tick order) call it after confirming admission (write-buffer depth AND `outstanding_writes_at_cap()`), and perform any tag install / MSHR free / pin clear only on a true return; a port-busy false routes into the existing backpressure path (`complete_fill` defers, `drain_secondary_chain_head` leaves the secondary, `process_store` retries — no `stalled_`/`stall_reason_`, quantified by `write_buffer_port_conflict_cycles`). A cap refusal routes into the same write-buffer-full backpressure path (stall reason `WRITE_BUFFER_FULL`, attributed to `write_throttle_stall_cycles`). The three pin-enforcement sites (`process_load`/`process_store` miss pin-check, `complete_fill` deferred-fill guard) use `is_pinned`; a stall is attributed to `line_pin_stall_cycles` when the chain pin is the cause, else `write_ack_pin_stall_cycles` (precedence chain > write-ack).
-- **`handle_responses()`**: First, unconditionally consumes at most one **write ack** from `mem_if_`'s separate write-ack channel — decrementing `outstanding_writes_.next_mut()[set]` and `outstanding_writes_total_.next_mut()` — *before* the deferred-fill early return, so a fill deferred on a write-ack pin always makes progress (the deadlock fix). Then processes at most one read fill per cycle: for load fills, deposits lane values into the owning warp's gather buffer via `gather_file_.try_write(... FILL)`; for store fills, queues a write-through. Read fills are buffered internally (`pending_fill_`, `Reg<PendingCacheFill>`) if a store fill is blocked by the write buffer or a conflicting fill is deferred by a pin.
+- **`handle_responses()`**: First, unconditionally consumes at most one **write ack** from `mem_if_`'s separate write-ack channel — reading `mem_if_.current_write_ack_front()` and staging the pop via `mem_if_.stage_write_ack_pop()` (Phase 4 close-the-Reg-family-migration; both apply at the cross-stage commit pass on the FixedLatencyMemory path) — decrementing `outstanding_writes_.next_mut()[set]` and `outstanding_writes_total_.next_mut()` — *before* the deferred-fill early return, so a fill deferred on a write-ack pin always makes progress (the deadlock fix). Then processes at most one read fill per cycle (single-read-port semantics): for load fills, deposits lane values into the owning warp's gather buffer via `gather_file_.try_write(... FILL)`; for store fills, queues a write-through. The fill is read via `mem_if_.current_response_front()` and the pop is staged via `mem_if_.stage_response_pop()`. Read fills are buffered internally (`pending_fill_`, `Reg<PendingCacheFill>`) if a store fill is blocked by the write buffer or a conflicting fill is deferred by a pin.
 - **Registered write-buffer FIFO**: `write_buffer_` is `RegFifo<uint32_t>` (Phase 5a) — a single-enqueue-port FIFO mutated **only** by `commit()`. Evaluate-phase reads (`write_buffer_size()` -> `current_size()`, `current_empty()`, `current_front()`, depth checks) read the committed deque. `commit()` (driven by `RegFifo<T>::commit()` invoked from `commit_all()`) applies the staged ops — pop first, then push — and clears the staging slots plus the port-claim flag. It is therefore not fall-through: a line enqueued at cycle T is submittable no earlier than T+1.
 - **`drain_write_buffer()`**: Reads the committed front of the write buffer, stages it to memory via `mem_if_.set_next_write_request(...)` (gated on `!mem_if_.next_request_stall()`), and **stages** the pop (`write_buffer_.stage_pop()`) instead of popping directly — the entry leaves `write_buffer_` at `commit()`. The COMBINATIONAL backward stall is the architectural backpressure path: `DRAMSim3Memory` raises `next_request_stall()` when its write-region FIFO is at capacity, and the entry stays at the buffer's head until the stall clears (`FixedLatencyMemory::next_request_stall()` is hardwired false — unbounded queue). Silently popping while stalled would lose the write (the timing-only model has no recovery).
 - **`evaluate()`**: Resets the COMBINATIONAL Wire signals (`stalled_` / `stall_reason_` / `next_cmd_ready_` / `fill_installed_set_`) via `Wire<T>::reset()` — defaults `false` / `CacheStallReason::NONE` / `false` / `-1` respectively — then **in-place seeds** every registered field from its committed state (`tags_.set_next(tags_.current())`, `outstanding_writes_.set_next(outstanding_writes_.current())`, `outstanding_writes_total_.set_next(outstanding_writes_total_.current())`, `pending_fill_.set_next(pending_fill_.current())`, the four `last_*_event_` slots — full struct seed plus an explicit `.valid = false` clear), and seeds the registered MSHR file via `mshrs_.seed_next()`. The cache is intentionally NOT enrolled in `TimingModel::tick()`'s seed phase and has no `seed_next()` method: an unconditional auto-seed of `load_cmd_` / `store_cmd_` would re-latch a consumed cmd on the cycle after evaluate() invalidates it, breaking the memoryless-consumer contract; in-place seeding preserves byte-identical behavior with the pre-migration code. After seeding, `handle_responses()` (FILL) and `drain_secondary_chain_head()` (secondary) run, then the HIT slot processes `load_cmd_.current()` / `store_cmd_.current()` (mid-cycle invalidation via `current_mut().valid = false`). Phase 7: the prior `gather_extract_port_used_` cache-side scratch flag is removed; FILL > secondary > HIT priority is encoded by tick ordering — `cache_->evaluate()` runs at the top of the non-panic tick (FILL then secondary), and `coalescing_->evaluate()` runs later in the tick (HIT via the cmd path). The shared port itself is arbitrated by `LoadGatherBufferFile::try_write` reading its `next_port_claimed_` flag (Phase 7: `Wire<bool>`; reset at `LoadGatherBufferFile::commit()` so the claim persists across the whole tick before clearing at the cycle boundary).
@@ -489,37 +489,70 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
 - **Struct `MemoryRequest`**: `line_addr`, `mshr_id`, `is_write`, `cycles_remaining`.
 - **Struct `MemoryResponse`**: `line_addr`, `mshr_id`, `is_write`.
 - **Abstract `ExternalMemoryInterface`**: Pure-virtual surface
-  (`evaluate`, `commit`, `reset`, `set_next_read_request`,
-  `set_next_write_request`, `next_request_stall`, `submit_read`,
-  `submit_write`, `current_has_response`, `get_response`,
-  `current_has_write_ack`, `get_write_ack`, `write_ack_count`, `is_idle`,
-  `in_flight_count`, `response_count`). Concrete backends derive from
-  this. `set_next_*_request` are the production REGISTERED stagers used
-  by the cache; `submit_read` / `submit_write` are retained as the
+  (`evaluate`, `commit`, `reset`, `set_response_queues`,
+  `set_next_read_request`, `set_next_write_request`, `next_request_stall`,
+  `submit_read`, `submit_write`, `current_has_response`,
+  `current_response_front`, `stage_response_pop`, `current_has_write_ack`,
+  `current_write_ack_front`, `stage_write_ack_pop`, `write_ack_count`,
+  `is_idle`, `in_flight_count`, `response_count`). Concrete backends derive
+  from this. `set_next_*_request` are the production REGISTERED stagers
+  used by the cache; `submit_read` / `submit_write` are retained as the
   test-direct path (push straight into `in_flight_` for backend-isolation
   tests in `test_dramsim3_memory` and `test_timing_components`).
   `next_has_response()` is preserved as an alias for
   `current_has_response()` for compatibility.
+  - **Phase 4 (close-the-Reg-family-migration)**: the response / write-ack
+    queues are **cross-stage FIFOs** — `RegFifo<MemoryResponse>` declared
+    on `TimingModel` (a peer of `FixedLatencyMemory` and `L1Cache`, not a
+    member of either) and committed in
+    `TimingModel::commit_cross_stage_fifos()` — the dedicated ungated
+    pass introduced in Phase 3. Both backends accept back-pointers via
+    `set_response_queues(RegFifo<MemoryResponse>* responses,
+    RegFifo<MemoryResponse>* write_acks)` at TimingModel construction.
+    The interface accessors model the RTL-faithful current()/stage_pop()
+    shape: the cache reads `current_response_front()` (last cycle's
+    committed completion, the natural one-cycle FIFO latency a real
+    hardware FIFO presents) and calls `stage_response_pop()`; the staged
+    pop applies at the cross-stage commit pass. **FixedLatencyMemory**
+    implements this end-to-end (push from its evaluate, pop staged by
+    cache, atomic commit at the cross-stage pass). **DRAMSim3Memory**
+    accepts the back-pointers for interface conformance but routes its
+    completion path through its internal `std::deque<>`s for Phase-4
+    byte-identity — `stage_response_pop()` takes immediate effect against
+    the internal deque. Phase 5 lifts the DRAMSim3 completion path onto
+    the same TimingModel-owned RegFifos and surfaces the documented CDC
+    traversal latency.
   - **Write-ack channel**: read fills are delivered on
-    `current_has_response`/`get_response`; write completions on the
-    **separate** `current_has_write_ack`/`get_write_ack` channel. The
-    cache drains the write-ack channel unconditionally, one ack per
-    cycle, so a deferred read fill never blocks a write ack — the
-    deadlock-free property the write-ack pin (`cache.*`) depends on.
+    `current_has_response`/`current_response_front`/`stage_response_pop`;
+    write completions on the **separate** `current_has_write_ack` /
+    `current_write_ack_front` / `stage_write_ack_pop` channel. The cache
+    drains the write-ack channel unconditionally, one ack per cycle, so
+    a deferred read fill never blocks a write ack — the deadlock-free
+    property the write-ack pin (`cache.*`) depends on. Per the Phase 4
+    redesign, the cache reads `current_response_front` (committed end-of-
+    last-cycle state) and consumes at most one response per cycle (the
+    `while`-with-early-return pattern matches a single hardware read
+    port); a multi-completion in one cycle on FixedLatencyMemory is
+    architecturally impossible (`set_next_read_request` admits at most
+    one read per cycle and constant latency preserves order).
 - **`FixedLatencyMemory(latency, stats_ref)`**: Default backend. Every
   request completes after exactly `latency` cycles. Used by all unit tests
   and by the simulator unless a different backend is selected. Phase 6
   (reg.h migration): derives `RegisteredStage`; the REGISTERED request
-  slots are `Reg<PendingMemoryRequest> read_request_` and `write_request_`,
-  enrolled via `register_state(...)`. `commit()` calls `commit_all()` then
-  explicitly clears the staged slot via `set_next(PendingMemoryRequest{})`
-  — equivalent to the pre-migration `next_*_request_ = PendingMemoryRequest{}`
-  at the tail of commit(). The backend deliberately opts out of the seed
-  phase (no `seed_next()`, not in `TimingModel::tick()`'s seed list):
-  evaluate consumes the slot via `current_mut().valid = false`
-  (memoryless-consumer pattern, mirroring `L1Cache::load_cmd_`/`store_cmd_`
-  from Phase 5a). Auto-seeding next from current would re-latch the
-  consumed request.
+  slots are `PulseReg<PendingMemoryRequest> read_request_` and
+  `write_request_`, enrolled via `register_state(...)`. PulseReg::commit
+  resets `next_` to `T{}` after the flip, encoding the memoryless-consumer
+  contract directly in the type (no tail-of-commit clear required).
+  Phase 4 (close-the-Reg-family-migration): `in_flight_` is wrapped as
+  `Reg<std::deque<MemoryRequest>>` and enrolled in the same
+  `register_state(...)` call so `commit_all()` flips it at the cycle
+  boundary; `evaluate()` mutates `in_flight_.next_mut()` in place
+  (decrement, push completions, head-pop). The response / write-ack
+  queues moved to `TimingModel` (see Abstract interface above) — only the
+  back-pointers `mem_responses_` / `mem_write_acks_` live in this class.
+  - `set_response_queues(responses, write_acks)`: wires the cross-stage
+    RegFifos from `TimingModel`. nullptr-tolerant for unit tests that own
+    a local RegFifo and commit it directly.
   - `set_next_read_request(line_addr, mshr_id)`,
     `set_next_write_request(line_addr)`: REGISTERED forward; stage by
     writing `read_request_.next_mut()` / `write_request_.next_mut()`,
@@ -527,29 +560,35 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
   - `next_request_stall()`: COMBINATIONAL backward; always `false`
     (the in_flight_ deque is unbounded for FixedLatencyMemory).
   - `submit_read(line_addr, mshr_id)`, `submit_write(line_addr)`:
-    Test-direct path; pushes straight into `in_flight_` with
-    `latency` countdown. Production cache uses the REGISTERED stagers.
+    Test-direct path; pushes onto `in_flight_.next_mut()`. Tests that
+    immediately observe `is_idle()` / `in_flight_count()` interpose a
+    `mem_if.commit()` to flip next → current (per Phase-4 PulseReg
+    precedent). Production cache uses the REGISTERED stagers.
   - `evaluate()`: Drains any valid `read_request_.current()` /
-    `write_request_.current()` into `in_flight_` with `cycles_remaining =
-    latency` and invalidates the committed slot via `current_mut()`, then
-    decrements all in-flight countdowns. Routes completed requests to the
-    right channel — reads to `responses_`, writes to the separate
-    `write_acks_` deque. On read completion, accumulates `latency_` into
-    `Stats::external_read_latency_total` / `external_read_latency_count`
-    so the average can be compared against the DRAMSim3 backend's measured
-    per-request latency.
-  - `current_has_response()` / `next_has_response()` (alias),
-    `get_response()`: read-fill consumption interface.
-  - `current_has_write_ack()`, `get_write_ack()`, `write_ack_count()`:
-    write-ack consumption interface (separate `write_acks_` deque).
-  - `is_idle()`: True only when no requests are in flight, no requests
-    are staged in `read_request_` / `write_request_` current/next slots,
-    and neither the response queue nor the write-ack queue holds anything.
-  - Snapshot helpers: `in_flight_count()`, `response_count()`.
-  - Plain members (annotated): `in_flight_`, `responses_`, `write_acks_`
-    are internal scheduling queues mutated only by the backend's own
-    evaluate (not REGISTERED double-buffered pairs); `latency_` / `stats_`
-    are config / back-pointers.
+    `write_request_.current()` into `in_flight_.next_mut()` with
+    `cycles_remaining = latency`, then decrements all in-flight
+    countdowns. Routes completed requests to the right cross-stage
+    RegFifo via `stage_push()` — reads to `mem_responses_`, writes to
+    the separate `mem_write_acks_`. On read completion, accumulates
+    `latency_` into `Stats::external_read_latency_total` /
+    `external_read_latency_count`. PulseReg's commit-time reset of
+    `next_` handles the request-slot invalidation (no
+    `current_mut().valid = false` needed).
+  - `current_has_response()` / `next_has_response()` (alias) /
+    `current_response_front()` / `stage_response_pop()`: read-fill
+    accessors delegating to the cross-stage `mem_responses_` RegFifo.
+  - `current_has_write_ack()` / `current_write_ack_front()` /
+    `stage_write_ack_pop()` / `write_ack_count()`: write-ack accessors
+    delegating to the cross-stage `mem_write_acks_` RegFifo.
+  - `is_idle()`: True only when `in_flight_.current()` is empty, no
+    requests are staged in `read_request_` / `write_request_`
+    current/next slots, and neither cross-stage FIFO holds anything.
+  - Snapshot helpers: `in_flight_count()`, `response_count()` (both
+    read committed state).
+  - Plain members (annotated): `latency_` / `stats_` are config /
+    back-pointers; `mem_responses_` / `mem_write_acks_` are
+    back-pointers to TimingModel-owned cross-stage RegFifos
+    (`timing-naming-allow` annotated, Phase-3 ownership pattern).
 
 ### `include/gpu_sim/timing/dramsim3_memory.h` -- `src/timing/dramsim3_memory.cpp`
 
@@ -558,14 +597,10 @@ DRAMSim3-backed external memory model. Selected when
 `ExternalMemoryInterface` so the cache call sites are unchanged.
 
 Phase 6 (reg.h migration): derives `RegisteredStage`. The REGISTERED
-request slots `Reg<PendingMemoryRequest> read_request_` and
-`write_request_` are enrolled via `register_state(...)`; `commit()` calls
-`commit_all()` then explicitly clears the staged slot via
-`set_next(PendingMemoryRequest{})`. Opts out of the seed phase (same
-memoryless-consumer rationale as `FixedLatencyMemory` and
-`L1Cache::load_cmd_`/`store_cmd_`): `evaluate()` consumes the committed
-slot and invalidates it in-place via the documented `current_mut()`
-escape hatch. The DRAM-scheduling internals (`request_fifo_`,
+request slots `PulseReg<PendingMemoryRequest> read_request_` and
+`write_request_` are enrolled via `register_state(...)`; PulseReg's
+commit-time reset of `next_` encodes the memoryless-consumer contract
+directly in the type. The DRAM-scheduling internals (`request_fifo_`,
 `write_chunks_in_fifo_`, `responses_`, `write_acks_`,
 `pending_write_acks_`, `read_assembly_`, `read_chunk_to_mshr_`) are
 plain internal scheduling state — NOT REGISTERED double-buffered pairs —
@@ -573,6 +608,19 @@ and stay plain. Sim-instrumentation counters (`fabric_cycle_`,
 `dram_ticks_`, `phase_`, `max_response_queue_`, `max_write_ack_queue_`)
 are annotated `// sim-instrumentation`; config (const after construction)
 fields are annotated `// config`.
+
+Phase 4 (close-the-Reg-family-migration): DRAMSim3Memory accepts the
+`set_response_queues(...)` back-pointers from `TimingModel` for interface
+conformance but routes its completion path through its internal
+`responses_` / `write_acks_` deques in Phase 4 (byte-identical with the
+pre-migration behavior). The interface accessors `current_has_response`
+/ `current_response_front` / `stage_response_pop` (and the write-ack
+counterparts) delegate to the internal deques: `stage_response_pop()` is
+an immediate `pop_front()` on the internal deque, equivalent to the
+pre-Phase-4 `get_response()` shape. Phase 5 of the close-the-Reg-family-
+migration plan lifts the DRAMSim3 completion path onto the TimingModel-
+owned cross-stage RegFifos and surfaces the documented CDC traversal
+latency.
 
 `request_fifo_` co-occurs producer (`submit_read` / `submit_write`,
 invoked at the top of `evaluate()` to drain `current_*_request_`, and
@@ -643,8 +691,8 @@ EBREAK state machine.
 Top-level cycle stepper wiring everything together.
 
 - **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Wiring relevant to the issue/execute path: `scheduler_->set_dependencies(&scoreboard_, &branch_tracker_, ldst_.get())` and `scheduler_->set_writeback_arbiter(wb_arbiter_.get())`; each execution unit and the operand collector get their `set_operand_collector` / `set_scheduler` / `set_writeback_arbiter` / `set_sim_cycle` back-pointers; the ALU gets `set_branch_tracker` / `set_branch_predictor` (it owns branch resolution, Phase 10A); fetch and decode get `set_alu(alu_.get())` so their `evaluate()` can read the ALU's combinational-backward `next_redirect()` (Phase 10E — replaced the former `set_opcoll` wiring). The Phase 6 panic drained-query callable is wired via `panic_->set_drained_query([this](){ return execution_units_drained(); })`. Phase 3 (close-the-Reg-family-migration): the cross-stage `RegFifo<AddrGenFIFOEntry> addr_gen_fifo_` is owned here and back-pointers are wired into LdStUnit / CoalescingUnit via `set_addr_gen_fifo(&addr_gen_fifo_)`. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
-- **Cross-stage FIFO ownership (Phase 3 close-the-Reg-family-migration)**: FIFOs touched by more than one pipeline stage are declared as direct members of `TimingModel` (the orchestrator) — not as members of any single stage — and back-pointers are handed to the stages that touch them. The pattern matches `warps_` (a `std::vector<WarpState>` shared by fetch / decode / scheduler via `WarpState*`). The cross-stage FIFOs are committed by a dedicated **ungated** commit pass at the bottom of every `tick()` (`commit_cross_stage_fifos()`), distinct from per-stage `commit_all()` calls. The pass is sized to grow in the migration's later phases (Phase 4 adds memory `responses_` / `write_acks_`; Phase 5 adds DRAMSim3 CDC FIFOs). Current member: `addr_gen_fifo_` (LdStUnit producer → CoalescingUnit consumer).
-- **`commit_cross_stage_fifos()`**: Phase 3 (close-the-Reg-family-migration) dedicated ungated commit pass — currently flips `addr_gen_fifo_` (pop-then-push atomically). The cross-stage role precludes enrollment in any stage's gated `commit_all()`: a producer-side writeback-stall gating of the FIFO's commit would over-freeze it and block the consumer's pop, exactly the cross-stage gating asymmetry the prior `current_mut()`-elimination refactor had to hand-roll around. The FIFO's clock-enable lives at the producer's evaluate-time `stage_push` AND-gate (the RTL `wr_en && !stall` translation), not at this commit, so on a stalled cycle the producer naturally skips its push and the consumer's pop still applies — pop-only on a stall, byte-identical to the pre-migration hand-rolled `pop_front()` + `next_push_` discipline.
+- **Cross-stage FIFO ownership (Phase 3-4 close-the-Reg-family-migration)**: FIFOs touched by more than one pipeline stage are declared as direct members of `TimingModel` (the orchestrator) — not as members of any single stage — and back-pointers are handed to the stages that touch them. The pattern matches `warps_` (a `std::vector<WarpState>` shared by fetch / decode / scheduler via `WarpState*`). The cross-stage FIFOs are committed by a dedicated **ungated** commit pass at the bottom of every `tick()` (`commit_cross_stage_fifos()`), distinct from per-stage `commit_all()` calls. Current members: `addr_gen_fifo_` (LdStUnit producer → CoalescingUnit consumer; Phase 3); `mem_responses_` and `mem_write_acks_` (memory backend producer → L1Cache consumer; Phase 4 — both backends accept back-pointers via `mem_if_->set_response_queues(&mem_responses_, &mem_write_acks_)` at construction, but only `FixedLatencyMemory` routes its completions through these slots in Phase 4; `DRAMSim3Memory` routes through internal deques for byte-identity until Phase 5).
+- **`commit_cross_stage_fifos()`**: Phase 3-4 (close-the-Reg-family-migration) dedicated ungated commit pass — flips `addr_gen_fifo_`, `mem_responses_`, and `mem_write_acks_` (pop-then-push atomically per FIFO). The cross-stage role precludes enrollment in any stage's gated `commit_all()`: a producer-side writeback-stall gating of the FIFO's commit would over-freeze it and block the consumer's pop. The FIFO's clock-enable lives at the producer's evaluate-time `stage_push` AND-gate (the RTL `wr_en && !stall` translation), not at this commit, so on a stalled cycle the producer naturally skips its push and the consumer's pop still applies — pop-only on a stall. For the memory channels: `FixedLatencyMemory::evaluate()` calls `stage_push()` on completion; `L1Cache::handle_responses()` reads `current_response_front()` and calls `stage_response_pop()` (single read port — at most one consumed per cycle); the commit pass applies the pop-then-push atomically, presenting the natural one-fabric-cycle FIFO latency to the cache.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. See the "Tick discipline" section of `resources/timing_discipline.md` for the full contract. Steps:
   1. **Seed phase**: `seed_next()` for `scoreboard_`, `branch_tracker_`, `opcoll_`, the five units, `decode_`, `gather_file_`, and per-warp `WarpState::seed_next()` (Phase 2: drives the per-warp `pc_` / `active_` Regs) — copies each stage's carry-forward state `current_* -> next_*` so `evaluate()` is a pure function of committed state. The top-of-tick block also resets `deactivation_request_` (the ECALL→fetch combinational Wire) to its default de-asserted value.
   2. **Top-of-cycle ebreak observation** (Phase 6): read `decode_->current_ebreak_request()`; if valid and panic not already active, call `panic_->trigger(...)` and arm `pending_panic_flush_`.

@@ -885,28 +885,52 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
 TEST_CASE("MemoryInterface: fixed latency responses preserve submission order", "[timing]") {
     Stats stats;
     FixedLatencyMemory mem_if(2, stats);
+    // Phase 4 (close-the-Reg-family-migration): cross-stage response /
+    // write-ack RegFifos are TimingModel-owned in production; here we own
+    // them locally and drive their commit() in lockstep with mem_if.commit().
+    RegFifo<MemoryResponse> mem_responses;
+    RegFifo<MemoryResponse> mem_write_acks;
+    mem_if.set_response_queues(&mem_responses, &mem_write_acks);
+    auto commit_all = [&]() {
+        mem_if.commit();
+        mem_responses.commit();
+        mem_write_acks.commit();
+    };
 
     mem_if.submit_read(10, 1);
     mem_if.submit_write(20);
+    // Phase 4 (close-the-Reg-family-migration): submit_read/submit_write
+    // stage onto in_flight_.next_mut(); commit flips next_ -> current_
+    // before is_idle reads in_flight_.current().
+    commit_all();
     REQUIRE_FALSE(mem_if.is_idle());
 
+    // First tick: latency starts at 2, decrements to 1 → no completion yet.
     mem_if.evaluate();
+    commit_all();
     REQUIRE_FALSE(mem_if.next_has_response());
+    // Second tick: latency reaches 0; stage_push lands in mem_responses /
+    // mem_write_acks at this tick's commit.
     mem_if.evaluate();
+    commit_all();
     REQUIRE(mem_if.next_has_response());
 
     // Reads complete on the response channel.
-    auto first = mem_if.get_response();
+    auto first = mem_if.current_response_front();
+    mem_if.stage_response_pop();
     REQUIRE_FALSE(first.is_write);
     REQUIRE(first.line_addr == 10);
     REQUIRE(first.mshr_id == 1);
+    mem_responses.commit();  // apply the staged pop
     REQUIRE_FALSE(mem_if.next_has_response());
 
     // Writes complete on the separate write-ack channel (Plan 2).
     REQUIRE(mem_if.current_has_write_ack());
-    auto second = mem_if.get_write_ack();
+    auto second = mem_if.current_write_ack_front();
+    mem_if.stage_write_ack_pop();
     REQUIRE(second.is_write);
     REQUIRE(second.line_addr == 20);
+    mem_write_acks.commit();
     REQUIRE(mem_if.is_idle());
 }
 

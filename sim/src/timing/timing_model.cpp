@@ -189,6 +189,14 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
         mem_if_ = std::make_unique<FixedLatencyMemory>(
             config.external_memory_latency_cycles, stats);
     }
+    // Phase 4 (close-the-Reg-family-migration): wire the TimingModel-owned
+    // cross-stage response / write-ack FIFOs into the backend. Both backends
+    // accept the call: FixedLatencyMemory routes its completion path through
+    // these RegFifos (true one-cycle staged-pop semantics); DRAMSim3Memory
+    // accepts the call but routes through its internal deques (Phase-4
+    // byte-identity; Phase 5 lifts the completions onto these slots and
+    // surfaces the CDC traversal latency).
+    mem_if_->set_response_queues(&mem_responses_, &mem_write_acks_);
     gather_file_ = std::make_unique<LoadGatherBufferFile>(config.num_warps, stats);
     cache_ = std::make_unique<L1Cache>(config.l1_cache_size_bytes, config.cache_line_size_bytes,
                                        config.num_mshrs, config.write_buffer_depth,
@@ -321,9 +329,19 @@ void TimingModel::commit_cross_stage_fifos() {
     // on cross-stage FIFOs (peers of the producer/consumer stages, not
     // members of either). Ungated by design — the FIFO's clock-enable
     // semantics live at the producer's evaluate-time stage_push gating (the
-    // RTL wr_en && !stall AND-gate), not at the FIFO commit. Phases 4-5 add
-    // memory responses and DRAMSim3 CDC FIFOs here.
+    // RTL wr_en && !stall AND-gate), not at the FIFO commit.
     addr_gen_fifo_.commit();
+    // Phase 4 (close-the-Reg-family-migration): cross-stage memory completion
+    // FIFOs. FixedLatencyMemory stages pushes from its evaluate-time response
+    // drain; cache.handle_responses stages pops earlier in the same tick.
+    // The pop-then-push atomicity here lets a same-tick produce-and-consume
+    // resolve cleanly (the cache reads start-of-cycle current_, so it never
+    // observes the same-tick push as available — the FIFO presents the
+    // natural one-cycle latency). DRAMSim3Memory routes its completion path
+    // through internal deques in Phase 4 (byte-identical); Phase 5 will lift
+    // it onto these same slots.
+    mem_responses_.commit();
+    mem_write_acks_.commit();
 }
 
 void TimingModel::discard_writeback_results() {

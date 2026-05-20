@@ -162,6 +162,20 @@ private:
     // designed to grow in Phases 4-5 (memory cross-stage FIFOs, DRAMSim3 CDC
     // FIFOs).
     RegFifo<AddrGenFIFOEntry> addr_gen_fifo_;  // timing-naming-allow: cross-stage FIFO committed by commit_cross_stage_fifos() (dedicated ungated pass, distinct from any per-stage commit_all). The cross-stage role precludes enrollment in a stage's RegisteredStage; the dedicated pass is the lifecycle owner.
+    // Phase 4 (close-the-Reg-family-migration): cross-stage memory completion
+    // FIFOs. Peers of FixedLatencyMemory (producer; stages pushes on its
+    // evaluate-time response/write-ack drain) and L1Cache (consumer; stages
+    // pops in handle_responses() during cache.evaluate). Wired into the
+    // backend at construction via mem_if_->set_response_queues(); the cache
+    // reaches them through the abstract ExternalMemoryInterface accessors.
+    // Committed in the ungated cross-stage pass alongside addr_gen_fifo_.
+    // DRAMSim3Memory accepts the back-pointers for interface conformance
+    // but routes its completion path through internal deques for Phase-4
+    // byte-identity (Phase 5 takes ownership). The cache observes the FIFOs'
+    // last-cycle committed front via current_response_front() — the natural
+    // one-cycle latency a hardware FIFO presents.
+    RegFifo<MemoryResponse> mem_responses_;  // timing-naming-allow: cross-stage FIFO; same ownership convention as addr_gen_fifo_.
+    RegFifo<MemoryResponse> mem_write_acks_; // timing-naming-allow: cross-stage FIFO; same ownership convention as addr_gen_fifo_.
     // Construction-time flag pair; set by enable_*_trace() helpers called
     // once at config time and read throughout the tick. Effectively config
     // after construction.

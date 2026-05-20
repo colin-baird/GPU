@@ -58,6 +58,11 @@ struct CoalFixture {
     Stats stats;
     FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
+    // Phase 4 (close-the-Reg-family-migration): cross-stage memory response /
+    // write-ack RegFifos (TimingModel-owned in production); locally owned and
+    // committed in lockstep with mem_if. Same pattern as addr_gen_fifo.
+    RegFifo<MemoryResponse> mem_responses{};
+    RegFifo<MemoryResponse> mem_write_acks{};
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
                   mem_if, gather_file, stats};
     LdStUnit ldst{8, 4, stats};
@@ -70,6 +75,7 @@ struct CoalFixture {
     CoalFixture() {
         ldst.set_addr_gen_fifo(&addr_gen_fifo);
         coal.set_addr_gen_fifo(&addr_gen_fifo);
+        mem_if.set_response_queues(&mem_responses, &mem_write_acks);
     }
 
     // Phase M3: drive one cycle of the memory pipeline. Order mirrors
@@ -85,7 +91,9 @@ struct CoalFixture {
     //
     // Phase 3 (close-the-Reg-family-migration): the addr-gen FIFO commit
     // pass runs at the end of each tick, applying the staged pop from
-    // coal.evaluate. Mirrors TimingModel::commit_cross_stage_fifos().
+    // coal.evaluate. Mirrors TimingModel::commit_cross_stage_fifos(). Phase 4
+    // extends that pass with the cross-stage memory response/write-ack
+    // FIFOs; the fixture mirrors the production pass here.
     void tick() {
         gather_file.evaluate();
         cache.evaluate();
@@ -97,6 +105,8 @@ struct CoalFixture {
         mem_if.commit();
         gather_file.commit();
         addr_gen_fifo.commit();
+        mem_responses.commit();
+        mem_write_acks.commit();
     }
 };
 

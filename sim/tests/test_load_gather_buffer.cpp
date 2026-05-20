@@ -122,6 +122,16 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     Stats stats;
     FixedLatencyMemory mem_if(MEM_LATENCY, stats);
     LoadGatherBufferFile gather_file(NUM_WARPS, stats);
+    // Phase 4 (close-the-Reg-family-migration): cross-stage response /
+    // write-ack RegFifos (TimingModel-owned in production); local here and
+    // committed in lockstep with mem_if.
+    RegFifo<MemoryResponse> mem_responses;
+    RegFifo<MemoryResponse> mem_write_acks;
+    mem_if.set_response_queues(&mem_responses, &mem_write_acks);
+    auto commit_mem_fifos = [&]() {
+        mem_responses.commit();
+        mem_write_acks.commit();
+    };
     L1Cache cache(CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
                   mem_if, gather_file, stats);
 
@@ -136,6 +146,10 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     // Phase M5: drain the staged read request into in_flight_ before ticking.
     mem_if.commit();
     for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
+    // Phase 4 (close-the-Reg-family-migration): commit the cross-stage
+    // response FIFO so mem_if's stage_push lands in current_ and the
+    // cache's handle_responses can read it.
+    commit_mem_fifos();
     cache.handle_responses();
     // Phase 10D: the FILL landed in next_buffers_; commit() flips it into the
     // committed buffer so consume_result() (a pure committed read) sees the
@@ -143,6 +157,7 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     gather_file.commit();
     (void)gather_file.consume_result();
     cache.commit();
+    commit_mem_fifos();
     // Apply the staged release so warp 1's buffer is free for the rest of
     // the test.
     gather_file.commit();
@@ -178,6 +193,11 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
         cache.commit();
         mem_if.commit();
         mem_if.evaluate();
+        // Phase 4 (close-the-Reg-family-migration): each loop iteration is
+        // one cycle — commit the cross-stage response FIFO so the prior
+        // iteration's stage_push lands before the next iteration's
+        // stage_push (RegFifo holds at most one staged push per cycle).
+        commit_mem_fifos();
         gather_file.commit();
     }
 
@@ -195,7 +215,15 @@ TEST_CASE("LoadGatherBuffer: writeback withheld until all 32 slots valid",
     for (uint32_t cycle = 0; cycle < 200 && fills_completed < WARP_SIZE - 1;
          ++cycle) {
         mem_if.evaluate();
+        // Phase 4 (close-the-Reg-family-migration): commit the cross-stage
+        // response FIFO between mem_if.evaluate's stage_push and the
+        // following cache.evaluate's read — production runs this in the
+        // commit_cross_stage_fifos pass at end of tick. Also commit again
+        // after cache.evaluate so the stage_response_pop is applied before
+        // the next iteration's mem_if.evaluate.
+        commit_mem_fifos();
         cache.evaluate();
+        commit_mem_fifos();
         gather_file.commit();
         uint32_t filled_now = gather_file.buffer(0).filled_count;
         if (filled_now < WARP_SIZE) {

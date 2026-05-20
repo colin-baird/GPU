@@ -30,8 +30,28 @@ struct MergeFixture {
     Stats stats;
     FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
+    // Phase 4 (close-the-Reg-family-migration): cross-stage memory response /
+    // write-ack RegFifos (production owner is TimingModel). The fixture
+    // owns local ones and commits them in lockstep with mem_if's commit.
+    RegFifo<MemoryResponse> mem_responses;
+    RegFifo<MemoryResponse> mem_write_acks;
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
                   mem_if, gather_file, stats};
+
+    MergeFixture() {
+        mem_if.set_response_queues(&mem_responses, &mem_write_acks);
+    }
+
+    void commit_mem_fifos() {
+        mem_responses.commit();
+        mem_write_acks.commit();
+    }
+
+    void reset_mem_if() {
+        mem_if.reset();
+        mem_responses.reset();
+        mem_write_acks.reset();
+    }
 
     // Phase M5: commit() flips next_*_request_ → current_*_request_; the
     // first evaluate() drains current_ into in_flight_. Without this, a
@@ -47,17 +67,20 @@ struct MergeFixture {
     void tick_mem(uint32_t cycles) {
         cache.commit();
         mem_if.commit();
+        commit_mem_fifos();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
             // Phase 4 of current_mut() elimination: each iteration is one
             // tick — commit() advances PulseReg<PendingMemoryRequest> slots.
             mem_if.commit();
+            commit_mem_fifos();
         }
     }
 
     void end_cycle() {
         cache.commit();
         gather_file.commit();
+        commit_mem_fifos();
     }
 
     // Phase M2: claim is REGISTERED. Drive commit + evaluate so the
@@ -213,6 +236,7 @@ TEST_CASE("MSHR merging: FIFO chain store-load-store drains in program order",
         f.cache.drain_write_buffer();
         f.cache.commit();
         f.mem_if.commit();
+        f.commit_mem_fifos();
     }
     REQUIRE(f.cache.is_idle());
 
@@ -354,7 +378,9 @@ TEST_CASE("MSHR merging: store-fill defers when target set pinned by other line"
     // current_entries_ — S1's find_chain_tail and P2's allocate both scan it.
     f.cache.commit();
     f.mem_if.commit();
+    f.commit_mem_fifos();
     f.mem_if.evaluate();
+    f.commit_mem_fifos();
     // S1: load secondary on same line L=0, different warp.
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, r, 2, 0, 0));
@@ -469,6 +495,7 @@ TEST_CASE("MSHR merging: secondary-store drain stalls on write-buffer full",
     // wants to drain but WB is full -> stalls, pin remains.
     f.cache.evaluate();
     f.cache.commit();   // apply the fill's staged WB push + MSHR free
+    f.commit_mem_fifos(); // apply stage_response_pop on the consumed fill
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
     REQUIRE(f.cache.active_mshr_count() == 1); // secondary still there
     auto drains_before = f.stats.secondary_drain_cycles;
@@ -477,6 +504,7 @@ TEST_CASE("MSHR merging: secondary-store drain stalls on write-buffer full",
     // Try again with WB still full -> still stalls.
     f.cache.evaluate();
     f.cache.commit();
+    f.commit_mem_fifos();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before);
     REQUIRE(f.cache.active_mshr_count() == 1);
     f.gather_file.commit();
@@ -486,12 +514,14 @@ TEST_CASE("MSHR merging: secondary-store drain stalls on write-buffer full",
     // before the secondary drain retry sees room in the buffer.
     f.cache.drain_write_buffer();
     f.cache.commit();
+    f.commit_mem_fifos();
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);
 
     // Next evaluate: secondary drains. commit applies its staged WB push and
     // MSHR free before they are observed.
     f.cache.evaluate();
     f.cache.commit();
+    f.commit_mem_fifos();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
     REQUIRE(f.cache.active_mshr_count() == 0);
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
@@ -516,7 +546,9 @@ TEST_CASE("MSHR merging: FILL wins gather-extract port over secondary drain",
     // current_entries_ for the secondary's find_chain_tail / P3's allocate.
     f.cache.commit();
     f.mem_if.commit();
+    f.commit_mem_fifos();
     f.mem_if.evaluate();
+    f.commit_mem_fifos();
     f.claim(1, 2);
     REQUIRE(f.cache.process_load(0, 1, FULL_MASK, rA, 2, 0, 0));
     f.cache.commit();
@@ -654,7 +686,7 @@ TEST_CASE("MSHR merging: reset() clears pinned tags, MSHRs, and port state",
     f.cache.evaluate();
     // Reset.
     f.cache.reset();
-    f.mem_if.reset();
+    f.reset_mem_if();
     f.gather_file.reset();
 
     // Post-reset: no MSHRs valid, no write buffer entries, no pending fill.
@@ -757,6 +789,7 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     // current_read_request_ so the per-cycle evaluate loop below
     // drains it into in_flight_ on the first iteration.
     f.mem_if.commit();
+    f.commit_mem_fifos();
 
     // Cycles 1 .. MEM_LATENCY-1: fill still in flight. Secondary must not
     // drain, no writeback must appear, tag must not become pinned, and no
@@ -764,6 +797,13 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     // the gather buffer early, one of these would fail.
     for (uint32_t k = 1; k < MEM_LATENCY; ++k) {
         f.mem_if.evaluate();
+        // Phase 4 (close-the-Reg-family-migration): commit the cross-stage
+        // response FIFO between mem_if.evaluate's stage_push and the
+        // following cache.evaluate's read. In production this is the
+        // commit_cross_stage_fifos pass at end of tick; the test uses the
+        // production "mem.eval -> cache.eval" sequence but compresses two
+        // ticks into one helper-call pair, so the commit interposes here.
+        f.commit_mem_fifos();
         f.cache.evaluate();
         REQUIRE_FALSE(f.cache.current_last_fill_event().valid);
         f.gather_file.commit();
@@ -778,8 +818,10 @@ TEST_CASE("MSHR merging: same-warp RAW load timing respects primary fill latency
     // call (store fill does not claim the gather-extract port). The writeback
     // appears this cycle -- not before.
     f.mem_if.evaluate();
+    f.commit_mem_fifos();
     f.cache.evaluate();
     f.cache.commit();
+    f.commit_mem_fifos();
     REQUIRE(f.cache.current_last_fill_event().valid);
     REQUIRE(f.cache.current_last_fill_event().is_store);
     REQUIRE(f.cache.current_last_fill_event().chain_length_at_fill == 2);
@@ -973,6 +1015,7 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     // Cycle: primary retires -> WB now full; secondary stalls, pin remains.
     f.cache.evaluate();
     f.cache.commit();   // apply the fill's staged WB push + MSHR free
+    f.commit_mem_fifos(); // apply cache's stage_response_pop on the consumed fill
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH);
     REQUIRE(f.cache.active_mshr_count() == 1);
     auto drains_before = f.stats.secondary_drain_cycles;
@@ -1011,6 +1054,7 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     f.cache.commit();
     f.mem_if.commit();
     f.gather_file.commit();
+    f.commit_mem_fifos();
     // registered-mshr-write-buffer: the pop is applied now, so the freed slot
     // is observable.
     REQUIRE(f.cache.write_buffer_size() == WB_DEPTH - 1);     // one freed
@@ -1018,6 +1062,7 @@ TEST_CASE("MSHR merging: secondary-store drain WB-full stall unblocks via natura
     // Cycle 2: WB started with a free slot; secondary drain succeeds.
     f.cache.evaluate();
     f.cache.commit();   // apply the secondary drain's MSHR free + WB push
+    f.commit_mem_fifos();
     REQUIRE(f.stats.secondary_drain_cycles == drains_before + 1);
     REQUIRE(f.cache.active_mshr_count() == 0); // secondary retired
     // WB grew by 1 (secondary pushed its line) but also loses any mem_if

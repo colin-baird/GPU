@@ -23,8 +23,19 @@ struct CacheFixture {
     Stats stats;
     FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
+    // Phase 4 (close-the-Reg-family-migration): the response / write-ack
+    // FIFOs are TimingModel-owned in production; the fixture owns local
+    // ones and wires them via mem_if.set_response_queues(). The fixture's
+    // tick helpers commit them in lockstep with the mem_if commit, mirroring
+    // the Phase-3 addr-gen-fifo unit-test pattern.
+    RegFifo<MemoryResponse> mem_responses;
+    RegFifo<MemoryResponse> mem_write_acks;
     L1Cache cache{CACHE_SIZE, LINE_SIZE, NUM_MSHRS, WB_DEPTH, MAX_OUTSTANDING_WRITES,
                   mem_if, gather_file, stats};
+
+    CacheFixture() {
+        mem_if.set_response_queues(&mem_responses, &mem_write_acks);
+    }
 
     // Advance the external memory interface by N cycles. Phase M5: the
     // request staged via set_next_*_request needs commit() to flip
@@ -42,6 +53,7 @@ struct CacheFixture {
     void tick_mem(uint32_t cycles) {
         cache.commit();
         mem_if.commit();
+        commit_mem_fifos();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
             // Phase 4 of current_mut() elimination: each loop iteration is
@@ -51,6 +63,7 @@ struct CacheFixture {
             // request every cycle (the old shape relied on a mid-cycle
             // current_mut() clear).
             mem_if.commit();
+            commit_mem_fifos();
         }
     }
 
@@ -59,6 +72,7 @@ struct CacheFixture {
     void end_cycle() {
         cache.commit();
         gather_file.commit();
+        commit_mem_fifos();
     }
 
     // One full cache+memory tick: cache.evaluate() (incl. handle_responses,
@@ -72,6 +86,24 @@ struct CacheFixture {
         cache.commit();
         mem_if.commit();
         gather_file.commit();
+        commit_mem_fifos();
+    }
+
+    // Phase 4 (close-the-Reg-family-migration): commit the cross-stage
+    // memory FIFOs in lockstep with mem_if's commit. Mirrors the dedicated
+    // ungated cross-stage commit pass in TimingModel::tick().
+    void commit_mem_fifos() {
+        mem_responses.commit();
+        mem_write_acks.commit();
+    }
+
+    // Phase 4 (close-the-Reg-family-migration): the cross-stage RegFifos
+    // are owned by the fixture, not mem_if. mem_if.reset() clears in_flight_
+    // and the PulseReg slots; the fixture clears the RegFifos.
+    void reset_mem_if() {
+        mem_if.reset();
+        mem_responses.reset();
+        mem_write_acks.reset();
     }
 
     // Claim the gather buffer for a load on behalf of `warp_id`. The
@@ -447,7 +479,7 @@ TEST_CASE("Cache: reset clears all state", "[cache]") {
     f.end_cycle();
 
     f.cache.reset();
-    f.mem_if.reset();
+    f.reset_mem_if();
     f.gather_file.reset();
 
     // After reset, the same address should miss again.
@@ -793,8 +825,14 @@ TEST_CASE("Cache: write-ack pin releases the cycle after the ack is consumed",
     f.cache.drain_write_buffer();
     f.cache.commit();
     f.mem_if.commit();
+    f.commit_mem_fifos();
     for (uint32_t i = 0; i < MEM_LATENCY + 4 && !f.mem_if.current_has_write_ack(); ++i) {
         f.mem_if.evaluate();
+        // Phase 4 (close-the-Reg-family-migration): the cross-stage write-ack
+        // RegFifo is committed in lockstep with mem_if; without this the
+        // stage_push that mem_if.evaluate() issues at latency=0 never
+        // surfaces in current_has_write_ack().
+        f.commit_mem_fifos();
     }
     REQUIRE(f.mem_if.current_has_write_ack());
 
@@ -806,6 +844,7 @@ TEST_CASE("Cache: write-ack pin releases the cycle after the ack is consumed",
     f.cache.evaluate();
     REQUIRE_FALSE(f.cache.process_store(line_b, 0, 4, 0, 0));   // still pinned
     f.cache.commit();   // flip: current_outstanding_writes_[0] becomes 0
+    f.commit_mem_fifos();  // apply cache's stage_write_ack_pop
 
     // The cycle AFTER the ack was consumed, the pin is gone.
     REQUIRE(f.cache.process_store(line_b, 0, 5, 0, 0));
@@ -962,8 +1001,10 @@ TEST_CASE("Cache: chain pin hands off to the write-ack pin", "[cache]") {
     f.tick_mem(MEM_LATENCY);
     f.cache.evaluate();   // primary fill
     f.cache.commit();
+    f.commit_mem_fifos(); // apply cache's stage_response_pop
     f.cache.evaluate();   // secondary drain
     f.cache.commit();
+    f.commit_mem_fifos();
     REQUIRE(f.cache.active_mshr_count() == 0);
     // Chain fully drained — chain pin is clear (pinned_line_count counts only
     // the chain pin) — but the set stays effectively pinned via the write-ack
@@ -984,6 +1025,16 @@ TEST_CASE("Cache: the outstanding-write cap refuses enqueue and throttles",
     Stats stats;
     FixedLatencyMemory mem_if{MEM_LATENCY, stats};
     LoadGatherBufferFile gather_file{NUM_WARPS, stats};
+    // Phase 4 (close-the-Reg-family-migration): cross-stage memory response /
+    // write-ack RegFifos wired into mem_if (production owner is TimingModel;
+    // unit-test fixtures own and commit them explicitly).
+    RegFifo<MemoryResponse> mem_responses;
+    RegFifo<MemoryResponse> mem_write_acks;
+    mem_if.set_response_queues(&mem_responses, &mem_write_acks);
+    auto commit_mem_fifos = [&]() {
+        mem_responses.commit();
+        mem_write_acks.commit();
+    };
     // A small cap, below WB_DEPTH, so the cap — not write-buffer depth — is
     // the binding constraint.
     constexpr uint32_t kCap = 2;
@@ -997,12 +1048,17 @@ TEST_CASE("Cache: the outstanding-write cap refuses enqueue and throttles",
     gather_file.evaluate();
     REQUIRE(cache.process_load(0, 0, FULL_MASK, results, 1, 0, 0));
     mem_if.commit();
-    for (uint32_t i = 0; i < MEM_LATENCY; ++i) mem_if.evaluate();
+    commit_mem_fifos();
+    for (uint32_t i = 0; i < MEM_LATENCY; ++i) {
+        mem_if.evaluate();
+        commit_mem_fifos();
+    }
     cache.handle_responses();
     gather_file.commit();
     (void)gather_file.consume_result();
     cache.commit();
     gather_file.commit();
+    commit_mem_fifos();
 
     // kCap store hits — kCap outstanding write-throughs — reach the cap.
     for (uint32_t i = 0; i < kCap; ++i) {
@@ -1030,6 +1086,7 @@ TEST_CASE("Cache: the outstanding-write cap refuses enqueue and throttles",
         cache.commit();
         mem_if.commit();
         gather_file.commit();
+        commit_mem_fifos();
     }
     REQUIRE(cache.is_idle());
     REQUIRE(cache.process_store(0, 0, 100, 0, 0));

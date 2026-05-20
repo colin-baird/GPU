@@ -403,7 +403,8 @@ void L1Cache::handle_responses() {
     // just been seeded from current_ in evaluate(), so the asserts against
     // .current() and the decrements of .next_mut() are consistent.
     if (mem_if_.current_has_write_ack()) {
-        MemoryResponse ack = mem_if_.get_write_ack();
+        MemoryResponse ack = mem_if_.current_write_ack_front();
+        mem_if_.stage_write_ack_pop();
         uint32_t set = get_set(ack.line_addr * line_size_);
         assert(tags_.current()[set].valid &&
                "write ack: acked line must still be resident (self-enforcing)");
@@ -428,8 +429,15 @@ void L1Cache::handle_responses() {
 
     // Read fills only — write completions now arrive on the separate
     // write-ack channel drained above, never on responses_.
-    while (mem_if_.current_has_response()) {
-        auto resp = mem_if_.get_response();
+    //
+    // Phase 4 (close-the-Reg-family-migration): at most one response is
+    // consumed per cycle (the while-then-return is a hardware single-read-
+    // port pattern). The peek reads the cross-stage RegFifo's current_front
+    // — last cycle's committed completion; the stage_pop applies at the
+    // cross-stage commit pass, atomic with mem_if's same-cycle stage_push.
+    if (mem_if_.current_has_response()) {
+        auto resp = mem_if_.current_response_front();
+        mem_if_.stage_response_pop();
 
         auto& pf = pending_fill_.next_mut();
         pf.valid = true;

@@ -39,6 +39,24 @@ SimConfig make_dramsim3_config(uint32_t num_mshrs = 4,
     return c;
 }
 
+// Phase 4 (close-the-Reg-family-migration): consume one response /
+// write-ack by reading current_*_front and staging a pop. DRAMSim3 routes
+// these through internal deques in Phase 4 (byte-identical), so the staged
+// pop takes immediate effect; Phase 5 lifts the completions onto the
+// TimingModel-owned cross-stage RegFifos and surfaces the CDC traversal
+// latency. The helpers mirror the pre-Phase-4 get_response/get_write_ack
+// shape so the test bodies remain readable.
+MemoryResponse pop_response(DRAMSim3Memory& mem) {
+    MemoryResponse r = mem.current_response_front();
+    mem.stage_response_pop();
+    return r;
+}
+MemoryResponse pop_write_ack(DRAMSim3Memory& mem) {
+    MemoryResponse r = mem.current_write_ack_front();
+    mem.stage_write_ack_pop();
+    return r;
+}
+
 // Pump evaluate() until either `mem.next_has_response()` or a hard cap. Returns
 // the number of fabric cycles elapsed.
 uint32_t pump_until_response(DRAMSim3Memory& mem) {
@@ -106,7 +124,7 @@ TEST_CASE("DRAMSim3Memory: chunk reassembly emits one response per line",
     CHECK(mem.dram_ticks() >= 16u);
     CHECK(cycles > 0u);
 
-    auto resp = mem.get_response();
+    auto resp = pop_response(mem);
     CHECK(resp.line_addr == LINE_ADDR);
     CHECK(resp.mshr_id   == MSHR_ID);
     CHECK_FALSE(resp.is_write);
@@ -134,7 +152,7 @@ TEST_CASE("DRAMSim3Memory: 8 reads with distinct mshr_ids each return once",
     std::set<uint32_t> seen_mshrs;
     std::set<uint32_t> seen_lines;
     while (mem.next_has_response()) {
-        auto r = mem.get_response();
+        auto r = pop_response(mem);
         CHECK_FALSE(r.is_write);
         CHECK(seen_mshrs.insert(r.mshr_id).second);
         seen_lines.insert(r.line_addr);
@@ -208,7 +226,7 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     CHECK_FALSE(mem.is_idle());
 
     pump_until_drained(mem);
-    while (mem.next_has_response()) (void)mem.get_response();
+    while (mem.next_has_response()) (void)pop_response(mem);
     CHECK(mem.is_idle());
     CHECK(mem.in_flight_count() == 0u);
     CHECK(mem.response_count() == 0u);
@@ -220,7 +238,7 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     CHECK_FALSE(mem.is_idle());
     mem.evaluate();
     pump_until_drained(mem);
-    while (mem.next_has_response()) (void)mem.get_response();
+    while (mem.next_has_response()) (void)pop_response(mem);
     CHECK(mem.is_idle());
 
     mem.set_next_write_request(0x91);
@@ -232,7 +250,7 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     // Writes complete on the separate write-ack channel (Plan 2); is_idle()
     // stays false until the ack is drained.
     CHECK(mem.current_has_write_ack());
-    while (mem.current_has_write_ack()) (void)mem.get_write_ack();
+    while (mem.current_has_write_ack()) (void)pop_write_ack(mem);
     CHECK(mem.is_idle());
 
     // Re-submit and reset mid-flight. After reset everything must be clear.
@@ -252,7 +270,7 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     REQUIRE(mem.submit_read(0x300, 0));
     pump_until_drained(mem);
     REQUIRE(mem.next_has_response());
-    auto r = mem.get_response();
+    auto r = pop_response(mem);
     CHECK(r.line_addr == 0x300u);
     CHECK(r.mshr_id   == 0u);
     CHECK_FALSE(r.is_write);
@@ -323,13 +341,13 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
         // L1Cache::handle_responses): consume at most one write ack and at
         // most one read fill per cycle, from the two separate channels.
         if (mem.current_has_write_ack()) {
-            const auto ack = mem.get_write_ack();
+            const auto ack = pop_write_ack(mem);
             REQUIRE(ack.is_write);
             REQUIRE(writes_in_flight.erase(ack.line_addr) == 1u);
             ++writes_completed;
         }
         if (mem.current_has_response()) {
-            const auto resp = mem.get_response();
+            const auto resp = pop_response(mem);
             REQUIRE_FALSE(resp.is_write);
             REQUIRE(resp.mshr_id < cfg.num_mshrs);
             REQUIRE(mshr_busy[resp.mshr_id]);
@@ -673,7 +691,7 @@ TEST_CASE("DRAMSim3Memory: same-line writes each get their own write ack",
     for (uint32_t c = 0; c < 5000 && acks < kWrites; ++c) {
         mem.evaluate();
         while (mem.current_has_write_ack()) {
-            const auto ack = mem.get_write_ack();
+            const auto ack = pop_write_ack(mem);
             CHECK(ack.is_write);
             CHECK(ack.line_addr == kLine);
             ++acks;
