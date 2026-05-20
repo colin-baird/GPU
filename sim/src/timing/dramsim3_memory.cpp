@@ -24,8 +24,7 @@ DRAMSim3Memory::DRAMSim3Memory(const SimConfig& cfg, Stats& stats)
                                 (cfg.cache_line_size_bytes /
                                  cfg.dramsim3_bytes_per_burst)),
       write_commit_latency_tck_(cfg.dramsim3_write_commit_latency_tck),
-      ticks_per_fabric_(cfg.dram_clock_mhz / cfg.fpga_clock_mhz),
-      read_assembly_(cfg.num_mshrs) {
+      ticks_per_fabric_(cfg.dram_clock_mhz / cfg.fpga_clock_mhz) {
     if (cfg.dramsim3_config_path.empty()) {
         throw std::invalid_argument(
             "DRAMSim3Memory requires a non-empty dramsim3_config_path");
@@ -34,14 +33,16 @@ DRAMSim3Memory::DRAMSim3Memory(const SimConfig& cfg, Stats& stats)
         throw std::invalid_argument(
             "DRAMSim3Memory: cache_line_size_bytes < dramsim3_bytes_per_burst");
     }
-    // Phase 4 of current_mut() elimination (Pattern 3): the REGISTERED
-    // request slots are PulseReg<PendingMemoryRequest>. Enrolled in
-    // register_state so commit_all() / reset_all() drive them uniformly.
-    // DRAMSim3Memory is NOT in TimingModel::tick()'s seed phase — the
-    // default-to-T{} mechanism is PulseReg::commit()'s own internal
-    // `next_ = T{}` reset after the current_ = next_ flip (see reg.h).
-    // See memory_interface.h for the full discipline.
-    register_state(&read_request_, &write_request_);
+    // Phase 5 (sparkling-dazzling-starfish.md): size the per-MSHR
+    // read-assembly vector once, then enroll every Reg in the registered
+    // set so commit_all() / reset_all() drive them uniformly. Both clock
+    // halves (evaluate_fabric / evaluate_dram) share the same registered
+    // set since neither is writeback-stall-gated; the fabric/DRAM
+    // partitioning is enforced by call discipline, not by separate commits.
+    read_assembly_.initialize(std::vector<ReadAssembly>(cfg.num_mshrs));
+    register_state(&read_request_, &write_request_,
+                   &write_chunks_in_fifo_, &pending_write_acks_,
+                   &read_assembly_, &read_chunk_to_mshr_);
     rebuild_memory_system();
 }
 
@@ -69,24 +70,31 @@ void DRAMSim3Memory::rebuild_memory_system() {
 }
 
 bool DRAMSim3Memory::submit_read(uint32_t line_addr, uint32_t mshr_id) {
-    if (mshr_id >= read_assembly_.size()) {
+    // Phase 5 (sparkling-dazzling-starfish.md): runs on the fabric clock.
+    // Stages chunk pushes on the TimingModel-owned cross-stage
+    // request_fifo_ (multi-push via the Phase 5 stage_push extension);
+    // the DRAM-clock half sees the new chunks one fabric cycle later via
+    // request_fifo_->current()[pops_staged()], the documented CDC
+    // traversal latency.
+    auto& assembly = read_assembly_.next_mut();
+    if (mshr_id >= assembly.size()) {
         throw std::out_of_range("DRAMSim3Memory: mshr_id out of range");
     }
     // Architectural invariant: at most num_mshrs reads can be in flight at
     // once, and the request FIFO reserves num_mshrs * chunks_per_line slots
-    // for reads (= request_fifo_depth_ - write_region_capacity_). Cache
-    // miss paths reach this via set_next_read_request → evaluate(), which
-    // discards the bool, so an overflow would silently drop a read and
-    // leave the MSHR allocated forever. The assert converts that into an
-    // immediate failure.
-    assert(request_fifo_.size() + chunks_per_line_ <= request_fifo_depth_ &&
+    // for reads. The bound is checked against the committed size plus any
+    // pushes already staged this fabric cycle (multi-line submits within
+    // one cycle from a stressed path).
+    const std::size_t fifo_occupancy =
+        (request_fifo_ ? request_fifo_->current_size() + request_fifo_->pushes_staged() : 0u);
+    assert(fifo_occupancy + chunks_per_line_ <= request_fifo_depth_ &&
            "DRAMSim3Memory request FIFO would overflow on submit_read; "
            "writes must be confined to the write region (submit_write enforces "
            "this) so reads always have their reserved slots");
-    if (request_fifo_.size() + chunks_per_line_ > request_fifo_depth_) {
+    if (fifo_occupancy + chunks_per_line_ > request_fifo_depth_) {
         return false;
     }
-    auto& a = read_assembly_[mshr_id];
+    auto& a = assembly[mshr_id];
     if (a.active) {
         // The cache should not reuse an MSHR id while one is in flight; bail
         // out rather than corrupt state.
@@ -99,37 +107,45 @@ bool DRAMSim3Memory::submit_read(uint32_t line_addr, uint32_t mshr_id) {
 
     const uint64_t base = static_cast<uint64_t>(line_addr) * line_size_;
     for (uint32_t i = 0; i < chunks_per_line_; ++i) {
-        request_fifo_.push_back(
-            {base + static_cast<uint64_t>(i) * bytes_per_burst_,
-             line_addr, mshr_id, false});
+        DRAMSim3PendingChunk chunk;
+        chunk.chunk_byte_addr = base + static_cast<uint64_t>(i) * bytes_per_burst_;
+        chunk.line_addr = line_addr;
+        chunk.mshr_id = mshr_id;
+        chunk.is_write = false;
+        if (request_fifo_) request_fifo_->stage_push(chunk);
     }
     stats_.external_memory_reads++;
     return true;
 }
 
 bool DRAMSim3Memory::submit_write(uint32_t line_addr) {
-    // Writes are confined to the write region of the FIFO (= wb_depth *
-    // chunks_per_line slots). Beyond that, return false — the cache must
-    // hold the entry in its write_buffer and retry next cycle. This is the
-    // architectural backpressure from mem_if to the cache; without it, the
-    // FIFO would grow unbounded under sustained write traffic and either
-    // overflow (silent drop) or starve reads of their reserved slots.
-    if (write_chunks_in_fifo_ + chunks_per_line_ > write_region_capacity_) {
+    // Phase 5 (sparkling-dazzling-starfish.md): fabric-clock half. The
+    // write-region bound is checked against the committed write-chunk
+    // count plus any same-cycle pushes that have not yet committed — those
+    // are tracked through the staged write_chunks_in_fifo_ counter
+    // (next_mut(), still pre-commit). Writes are confined to
+    // write_region_capacity_ * chunks_per_line slots; beyond that, return
+    // false so the cache holds the entry in its write_buffer and retries.
+    const uint32_t staged_write_chunks = write_chunks_in_fifo_.next();
+    if (staged_write_chunks + chunks_per_line_ > write_region_capacity_) {
         return false;
     }
     const uint64_t base = static_cast<uint64_t>(line_addr) * line_size_;
     for (uint32_t i = 0; i < chunks_per_line_; ++i) {
-        request_fifo_.push_back(
-            {base + static_cast<uint64_t>(i) * bytes_per_burst_,
-             line_addr, 0, true});
+        DRAMSim3PendingChunk chunk;
+        chunk.chunk_byte_addr = base + static_cast<uint64_t>(i) * bytes_per_burst_;
+        chunk.line_addr = line_addr;
+        chunk.mshr_id = 0;
+        chunk.is_write = true;
+        if (request_fifo_) request_fifo_->stage_push(chunk);
     }
-    write_chunks_in_fifo_ += chunks_per_line_;
+    write_chunks_in_fifo_.next_mut() += chunks_per_line_;
     stats_.external_memory_writes++;
     // Schedule one synthetic write ack for this write-through, released
     // write_commit_latency_tck_ DRAM cycles from now (the write being issued
     // to DRAM). Exactly one ack per submit_write — 1:1 with the cache's
     // outstanding-write counter, with no same-line folding.
-    pending_write_acks_.push_back(
+    pending_write_acks_.next_mut().push_back(
         {line_addr, dram_ticks_ + write_commit_latency_tck_});
     return true;
 }
@@ -148,20 +164,22 @@ void DRAMSim3Memory::set_next_write_request(uint32_t line_addr) {
 }
 
 bool DRAMSim3Memory::next_request_stall() const {
-    // Stall when the write region of the request FIFO can't accept another
-    // line's worth of chunks. Reads have their own reserved region and
-    // are never stalled (the architectural invariant in the file's class
-    // doc above guarantees this). Conservative for the cache's purposes:
-    // stall any cmd when writes can't drain.
-    return write_chunks_in_fifo_ + chunks_per_line_ > write_region_capacity_;
+    // Stall when the staged write-chunk count of the request FIFO can't
+    // accept another line's worth of chunks. The cache reads this signal
+    // backward in the same cycle from drain_write_buffer (which runs
+    // AFTER mem.evaluate_fabric in the sweep), so the staged value
+    // already reflects any chunks added by the fabric half this cycle —
+    // RTL-faithful (this is a combinational backward signal, asserted
+    // after the producer's evaluate). Reads have their own reserved
+    // region and are never stalled.
+    return write_chunks_in_fifo_.next() + chunks_per_line_ > write_region_capacity_;
 }
 
-void DRAMSim3Memory::evaluate() {
-    // Phase M5 + Phase 4 of current_mut() elimination: drain current_*_request_
-    // into the request FIFO at top of evaluate. No mid-cycle Q write — the
-    // PulseReg<PendingMemoryRequest> slot defaults to T{} via
-    // PulseReg::commit()'s post-flip reset (see reg.h), so the cache must
-    // re-stage to keep the slot live.
+void DRAMSim3Memory::evaluate_fabric() {
+    // Phase 5 (sparkling-dazzling-starfish.md): fabric-clock half. Drain
+    // current_*_request_ into staged request_fifo_ pushes. No mid-cycle Q
+    // write — PulseReg<PendingMemoryRequest> defaults to T{} at the next
+    // commit via its post-flip reset (see reg.h).
     if (read_request_.current().valid) {
         submit_read(read_request_.current().line_addr,
                     read_request_.current().mshr_id);
@@ -169,20 +187,40 @@ void DRAMSim3Memory::evaluate() {
     if (write_request_.current().valid) {
         submit_write(write_request_.current().line_addr);
     }
-
     ++fabric_cycle_;
+}
+
+void DRAMSim3Memory::evaluate_dram() {
+    // Phase 5 (sparkling-dazzling-starfish.md): DRAM-clock half. Walks
+    // the phase_/ClockTick loop using committed-state reads of
+    // request_fifo_ (last fabric cycle's pushes). Stages multi-pops on
+    // request_fifo_, multi-pushes on mem_responses_ / mem_write_acks_.
+    // on_read_complete (invoked by mem_->ClockTick) writes into
+    // read_assembly_.next_mut() and stages a push on mem_responses_.
     phase_ += ticks_per_fabric_;
     while (phase_ >= 1.0) {
-        if (!request_fifo_.empty()) {
-            const auto& c = request_fifo_.front();
-            if (mem_->WillAcceptTransaction(c.chunk_byte_addr, c.is_write)) {
-                if (c.is_write) {
-                    --write_chunks_in_fifo_;
-                } else {
-                    read_chunk_to_mshr_[c.chunk_byte_addr] = c.mshr_id;
+        // Peek at the next chunk to issue: committed FIFO head minus the
+        // pops staged so far this fabric cycle. The multi-pop counter on
+        // RegFifo (Phase 5a) is what makes this composable across N DRAM
+        // ticks per fabric cycle.
+        if (request_fifo_) {
+            const std::size_t already_staged = request_fifo_->pops_staged();
+            const auto& committed = request_fifo_->current();
+            if (already_staged < committed.size()) {
+                const auto& c = committed[already_staged];
+                if (mem_->WillAcceptTransaction(c.chunk_byte_addr, c.is_write)) {
+                    if (c.is_write) {
+                        // One chunk consumed: the staged write-chunk
+                        // counter decrements by one. The cache reads
+                        // committed state and only sees this change after
+                        // the fabric-cycle commit.
+                        write_chunks_in_fifo_.next_mut() -= 1u;
+                    } else {
+                        read_chunk_to_mshr_.next_mut()[c.chunk_byte_addr] = c.mshr_id;
+                    }
+                    mem_->AddTransaction(c.chunk_byte_addr, c.is_write);
+                    request_fifo_->stage_pop();
                 }
-                mem_->AddTransaction(c.chunk_byte_addr, c.is_write);
-                request_fifo_.pop_front();
             }
         }
         mem_->ClockTick();
@@ -191,33 +229,48 @@ void DRAMSim3Memory::evaluate() {
     }
 
     // Release synthetic write acks whose commit latency has elapsed.
-    // pending_write_acks_ is sorted by release tick (submit order, constant
-    // latency), so a front-drain is correct.
-    while (!pending_write_acks_.empty() &&
-           pending_write_acks_.front().release_dram_tick <= dram_ticks_) {
-        assert(write_acks_.size() < write_ack_queue_capacity_ &&
+    // pending_write_acks_ is sorted by release tick; a front-drain is correct.
+    // Phase 5: writes to mem_write_acks_ go through stage_push (multi-push
+    // safe). pending_write_acks_ mutated through next_mut.
+    auto& pending = pending_write_acks_.next_mut();
+    std::size_t acks_pushed_this_cycle = 0;
+    while (!pending.empty() && pending.front().release_dram_tick <= dram_ticks_) {
+        assert(mem_write_acks_ &&
+               "DRAMSim3Memory: mem_write_acks_ back-pointer required for ack release");
+        MemoryResponse ack{pending.front().line_addr, 0, true};
+        mem_write_acks_->stage_push(ack);
+        ++acks_pushed_this_cycle;
+        pending.pop_front();
+    }
+    // Track the queue-depth peak observed (committed size + staged
+    // pushes, since the staged pushes are what would land at commit).
+    if (mem_write_acks_) {
+        const std::size_t depth =
+            mem_write_acks_->current_size() + acks_pushed_this_cycle;
+        assert(depth <= write_ack_queue_capacity_ &&
                "DRAMSim3Memory write-ack queue overflow on synthetic release");
-        write_acks_.push_back({pending_write_acks_.front().line_addr, 0, true});
-        pending_write_acks_.pop_front();
-        if (write_acks_.size() > max_write_ack_queue_) {
-            max_write_ack_queue_ = write_acks_.size();
-        }
+        if (depth > max_write_ack_queue_) max_write_ack_queue_ = depth;
     }
 }
 
 void DRAMSim3Memory::commit() {
-    // Phase 4 of current_mut() elimination: PulseReg<T> slots latch via
-    // commit_all() and PulseReg::commit() resets next_ to T{} after the
-    // flip. No tail set_next(T{}) clear needed.
+    // Phase 5 (sparkling-dazzling-starfish.md): commit_all() flips every
+    // enrolled Reg in lockstep — both halves' registered state, the
+    // PulseReg request slots, and the internal scheduling Reg<containers>.
+    // The cross-stage RegFifos (request_fifo_, mem_responses_,
+    // mem_write_acks_) are owned by TimingModel and committed in
+    // TimingModel::commit_cross_stage_fifos(); never here.
     commit_all();
 }
 
 bool DRAMSim3Memory::is_idle() const {
-    if (!request_fifo_.empty() || !responses_.empty() || !write_acks_.empty()) return false;
-    if (!pending_write_acks_.empty()) return false;
+    if (request_fifo_ && !request_fifo_->current_empty()) return false;
+    if (mem_responses_ && !mem_responses_->current_empty()) return false;
+    if (mem_write_acks_ && !mem_write_acks_->current_empty()) return false;
+    if (!pending_write_acks_.current().empty()) return false;
     if (read_request_.current().valid || read_request_.next().valid) return false;
     if (write_request_.current().valid || write_request_.next().valid) return false;
-    for (const auto& a : read_assembly_) {
+    for (const auto& a : read_assembly_.current()) {
         if (a.active) return false;
     }
     return true;
@@ -225,25 +278,22 @@ bool DRAMSim3Memory::is_idle() const {
 
 size_t DRAMSim3Memory::in_flight_count() const {
     // A write is in flight from submit_write until its synthetic ack releases.
-    size_t n = pending_write_acks_.size();
-    for (const auto& a : read_assembly_) {
+    size_t n = pending_write_acks_.current().size();
+    for (const auto& a : read_assembly_.current()) {
         if (a.active) ++n;
     }
     return n;
 }
 
 void DRAMSim3Memory::reset() {
-    request_fifo_.clear();
-    write_chunks_in_fifo_ = 0;
-    responses_.clear();
-    write_acks_.clear();
-    pending_write_acks_.clear();
-    for (auto& a : read_assembly_) a = {};
-    read_chunk_to_mshr_.clear();
-    // Phase 6 (reg.h migration): reset_all() clears both current_ AND next_
-    // for every enrolled Reg — equivalent to today's
-    // `current_*_request_ = PendingMemoryRequest{}; next_*_request_ = ...`.
+    // Phase 5 (sparkling-dazzling-starfish.md): reset_all() clears every
+    // enrolled Reg's current_ AND next_. The cross-stage RegFifos
+    // (request_fifo_, mem_responses_, mem_write_acks_) are owned by
+    // TimingModel; resetting them is TimingModel's responsibility (or the
+    // test fixture's, for fixtures that own local RegFifos).
     reset_all();
+    // read_assembly_ defaults to an empty vector after reset_all(); re-size it.
+    read_assembly_.initialize(std::vector<ReadAssembly>(cfg_.num_mshrs));
     phase_ = 0.0;
     fabric_cycle_ = 0;
     dram_ticks_ = 0;
@@ -253,29 +303,37 @@ void DRAMSim3Memory::reset() {
 }
 
 void DRAMSim3Memory::on_read_complete(uint64_t addr) {
-    auto it = read_chunk_to_mshr_.find(addr);
-    if (it == read_chunk_to_mshr_.end()) return;
+    // Phase 5 (sparkling-dazzling-starfish.md): invoked from within
+    // mem_->ClockTick() during evaluate_dram(). All state writes target
+    // next_mut() on the DRAM-clock half's Reg containers; the response
+    // push stages onto the TimingModel-owned mem_responses_ RegFifo.
+    auto& chunk_to_mshr = read_chunk_to_mshr_.next_mut();
+    auto it = chunk_to_mshr.find(addr);
+    if (it == chunk_to_mshr.end()) return;
     const uint32_t mshr_id = it->second;
-    read_chunk_to_mshr_.erase(it);
+    chunk_to_mshr.erase(it);
 
-    auto& a = read_assembly_[mshr_id];
+    auto& assembly = read_assembly_.next_mut();
+    auto& a = assembly[mshr_id];
     if (a.chunks_remaining == 0 || !a.active) return;
     --a.chunks_remaining;
     if (a.chunks_remaining == 0) {
         // Architectural invariant: the read response queue is bounded by
-        // num_mshrs (at most one response per in-flight MSHR). Violation
-        // means either the cache is producing more in-flight reads than its
-        // own resources should permit, or the bound derivation is wrong.
-        // Either way, silently growing the queue would mask a real bug.
-        assert(responses_.size() < read_response_queue_capacity_ &&
+        // num_mshrs (at most one response per in-flight MSHR).
+        assert(mem_responses_ &&
+               "DRAMSim3Memory: mem_responses_ back-pointer required for completion");
+        const std::size_t depth =
+            mem_responses_->current_size() + mem_responses_->pushes_staged() + 1u;
+        assert(depth <= read_response_queue_capacity_ &&
                "DRAMSim3Memory read response queue overflow on read completion");
-        responses_.push_back({a.line_addr, mshr_id, false});
+        MemoryResponse resp{a.line_addr, mshr_id, false};
+        mem_responses_->stage_push(resp);
         stats_.external_read_latency_total +=
             (fabric_cycle_ - a.submit_cycle);
         stats_.external_read_latency_count++;
         a.active = false;
-        if (responses_.size() > max_response_queue_) {
-            max_response_queue_ = responses_.size();
+        if (depth > max_response_queue_) {
+            max_response_queue_ = depth;
         }
     }
 }

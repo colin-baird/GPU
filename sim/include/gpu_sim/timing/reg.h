@@ -176,7 +176,7 @@ private:
 };
 
 // A commit-disciplined FIFO. evaluate() stages a push and/or one-or-more pop
-// intents; commit() applies all staged pops then the staged push. The
+// intents; commit() applies all staged pops then all staged pushes. The
 // committed deque is the only state, so seed() is a no-op. Reads during
 // evaluate() see start-of-cycle state.
 //
@@ -186,10 +186,21 @@ private:
 // times per fabric cycle) can stage multiple pops per cycle. Same-clock
 // callers that stage at most one pop per cycle see the same observable
 // behavior — `stage_pop()` increments the counter from 0 → 1, `commit()`
-// applies one head pop, then resets. The new `pops_staged()` accessor lets
-// a DRAM-clock-style consumer peek ahead into queue_[pops_staged()] when it
+// applies one head pop, then resets. The `pops_staged()` accessor lets a
+// DRAM-clock-style consumer peek ahead into queue_[pops_staged()] when it
 // has already staged N pops this cycle and needs to inspect the next
 // not-yet-consumed entry before deciding to stage another.
+//
+// Phase 5 (sparkling-dazzling-starfish.md) extends the push side from a
+// single slot to a staging deque so producers that may push multiple
+// values per cycle (the DRAMSim3 fabric-clock stage submitting one whole
+// cache-line as chunks_per_line PendingChunks; the DRAM-clock stage's
+// per-tick on_read_complete callbacks; the per-tick synthetic write-ack
+// releases) can do so without a second primitive. Single-push callers
+// (cache write_buffer_, CoalescingUnit, FixedLatencyMemory's evaluate-time
+// drain) see byte-identical observable behavior — stage_push pushes onto
+// the staging deque, commit applies in FIFO order. `pushes_staged()`
+// returns the count and is the symmetric mirror of `pops_staged()`.
 template <typename T>
 class RegFifo : public RegBase {
 public:
@@ -200,12 +211,15 @@ public:
     const T& current_front() const { return queue_.front(); }
 
     // Stage a push / pop to be applied at commit().
-    void stage_push(const T& value) { push_ = value; has_push_ = true; }
+    void stage_push(const T& value) { staged_pushes_.push_back(value); }
     void stage_pop() { ++pops_; }
     // How many pops have been staged this cycle. Used by multi-pop consumers
     // (e.g. the Phase 5 DRAM-clock stage) to peek at the next-to-pop entry
     // via queue_[pops_staged()] before deciding to stage another pop.
     std::uint32_t pops_staged() const { return pops_; }
+    // How many pushes have been staged this cycle. Symmetric mirror of
+    // pops_staged for the multi-push extension.
+    std::size_t pushes_staged() const { return staged_pushes_.size(); }
 
     // Single-enqueue-port claim — first claimer this cycle wins. The producer
     // checks port_claimed() before staging a push.
@@ -218,23 +232,22 @@ public:
         std::uint32_t to_pop = pops_;
         if (to_pop > queue_.size()) to_pop = static_cast<std::uint32_t>(queue_.size());
         for (std::uint32_t i = 0; i < to_pop; ++i) queue_.pop_front();
-        if (has_push_) queue_.push_back(push_);
-        has_push_ = false;
+        for (const auto& v : staged_pushes_) queue_.push_back(v);
+        staged_pushes_.clear();
         pops_ = 0;
         port_claimed_ = false;
     }
 
     void reset() override {
         queue_.clear();
-        has_push_ = false;
+        staged_pushes_.clear();
         pops_ = 0;
         port_claimed_ = false;
     }
 
 private:
     std::deque<T> queue_;
-    T push_{};
-    bool has_push_ = false;
+    std::deque<T> staged_pushes_;
     std::uint32_t pops_ = 0;
     bool port_claimed_ = false;
 };

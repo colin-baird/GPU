@@ -18,6 +18,7 @@
 #include "gpu_sim/timing/ldst_unit.h"
 #include "gpu_sim/timing/writeback_arbiter.h"
 #include "gpu_sim/timing/memory_interface.h"
+#include "gpu_sim/timing/dramsim3_memory.h"
 #include "gpu_sim/timing/cache.h"
 #include "gpu_sim/timing/coalescing_unit.h"
 #include "gpu_sim/timing/load_gather_buffer.h"
@@ -176,6 +177,20 @@ private:
     // one-cycle latency a hardware FIFO presents.
     RegFifo<MemoryResponse> mem_responses_;  // timing-naming-allow: cross-stage FIFO; same ownership convention as addr_gen_fifo_.
     RegFifo<MemoryResponse> mem_write_acks_; // timing-naming-allow: cross-stage FIFO; same ownership convention as addr_gen_fifo_.
+    // Phase 5 (sparkling-dazzling-starfish.md): cross-stage / cross-clock-
+    // domain DRAMSim3 request FIFO. Producer is the fabric-clock half of
+    // DRAMSim3Memory (stages chunk pushes from submit_*); consumer is the
+    // DRAM-clock half (stages per-tick pops on the phase_/ClockTick loop).
+    // Committed in the dedicated ungated cross-stage pass alongside
+    // addr_gen_fifo_ and mem_responses_/mem_write_acks_. The two halves
+    // are sequenced as independent steps in TimingModel::tick()'s sweep —
+    // fabric first, then DRAM — so the FIFO presents the natural
+    // one-fabric-cycle CDC traversal latency the prior single-evaluate
+    // implementation collapsed. Always declared (the DRAMSim3PendingChunk
+    // struct lives in dramsim3_memory.h with only a forward declaration
+    // of libdramsim3 — no link-time dependency on it). Unused with the
+    // fixed-latency backend and committed every tick to a no-op.
+    RegFifo<DRAMSim3PendingChunk> dramsim3_request_fifo_;  // timing-naming-allow: cross-stage CDC FIFO committed by commit_cross_stage_fifos(); dedicated ungated pass.
     // Construction-time flag pair; set by enable_*_trace() helpers called
     // once at config time and read throughout the tick. Effectively config
     // after construction.

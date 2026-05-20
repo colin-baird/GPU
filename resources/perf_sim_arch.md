@@ -489,18 +489,26 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
 - **Struct `MemoryRequest`**: `line_addr`, `mshr_id`, `is_write`, `cycles_remaining`.
 - **Struct `MemoryResponse`**: `line_addr`, `mshr_id`, `is_write`.
 - **Abstract `ExternalMemoryInterface`**: Pure-virtual surface
-  (`evaluate`, `commit`, `reset`, `set_response_queues`,
-  `set_next_read_request`, `set_next_write_request`, `next_request_stall`,
-  `submit_read`, `submit_write`, `current_has_response`,
-  `current_response_front`, `stage_response_pop`, `current_has_write_ack`,
-  `current_write_ack_front`, `stage_write_ack_pop`, `write_ack_count`,
-  `is_idle`, `in_flight_count`, `response_count`). Concrete backends derive
-  from this. `set_next_*_request` are the production REGISTERED stagers
-  used by the cache; `submit_read` / `submit_write` are retained as the
-  test-direct path (push straight into `in_flight_` for backend-isolation
-  tests in `test_dramsim3_memory` and `test_timing_components`).
-  `next_has_response()` is preserved as an alias for
-  `current_has_response()` for compatibility.
+  (`evaluate_fabric`, `evaluate_dram`, `commit`, `reset`,
+  `set_response_queues`, `set_next_read_request`, `set_next_write_request`,
+  `next_request_stall`, `submit_read`, `submit_write`,
+  `current_has_response`, `current_response_front`, `stage_response_pop`,
+  `current_has_write_ack`, `current_write_ack_front`,
+  `stage_write_ack_pop`, `write_ack_count`, `is_idle`, `in_flight_count`,
+  `response_count`). Phase 5 (sparkling-dazzling-starfish.md) split the
+  former singular `evaluate()` into a fabric-clock half and a DRAM-clock
+  half so the DRAMSim3 backend can sequence them at independent
+  positions in `TimingModel::tick()`'s sweep, surfacing the
+  one-fabric-cycle CDC traversal latency through the TimingModel-owned
+  `dramsim3_request_fifo_`. `FixedLatencyMemory::evaluate_dram()` is a
+  no-op (single-clock backend). A non-virtual convenience wrapper
+  `evaluate()` calls both halves in sweep order for test fixtures
+  that drive the backend manually. Concrete backends derive from this.
+  `set_next_*_request` are the production REGISTERED stagers used by the
+  cache; `submit_read` / `submit_write` are retained as the test-direct
+  path (push straight into `in_flight_` for backend-isolation tests in
+  `test_dramsim3_memory` and `test_timing_components`). `next_has_response()`
+  is preserved as an alias for `current_has_response()` for compatibility.
   - **Phase 4 (close-the-Reg-family-migration)**: the response / write-ack
     queues are **cross-stage FIFOs** — `RegFifo<MemoryResponse>` declared
     on `TimingModel` (a peer of `FixedLatencyMemory` and `L1Cache`, not a
@@ -513,15 +521,15 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
     shape: the cache reads `current_response_front()` (last cycle's
     committed completion, the natural one-cycle FIFO latency a real
     hardware FIFO presents) and calls `stage_response_pop()`; the staged
-    pop applies at the cross-stage commit pass. **FixedLatencyMemory**
-    implements this end-to-end (push from its evaluate, pop staged by
-    cache, atomic commit at the cross-stage pass). **DRAMSim3Memory**
-    accepts the back-pointers for interface conformance but routes its
-    completion path through its internal `std::deque<>`s for Phase-4
-    byte-identity — `stage_response_pop()` takes immediate effect against
-    the internal deque. Phase 5 lifts the DRAMSim3 completion path onto
-    the same TimingModel-owned RegFifos and surfaces the documented CDC
-    traversal latency.
+    pop applies at the cross-stage commit pass. **Phase 5
+    (sparkling-dazzling-starfish.md)**: `DRAMSim3Memory` joins
+    `FixedLatencyMemory` on this surface — completions flow through the
+    same TimingModel-owned slots, with the DRAM-clock half staging pushes
+    (one per `on_read_complete`; one per synthetic write-ack release)
+    using the Phase-5 multi-push extension to `RegFifo<T>`. The cache
+    reads `current_response_front()` (last cycle's committed completion)
+    one fabric cycle later — the documented CDC traversal latency for
+    memory-bound workloads.
   - **Write-ack channel**: read fills are delivered on
     `current_has_response`/`current_response_front`/`stage_response_pop`;
     write completions on the **separate** `current_has_write_ack` /
@@ -546,10 +554,13 @@ Two concrete backends derive from this interface: `FixedLatencyMemory`
   Phase 4 (close-the-Reg-family-migration): `in_flight_` is wrapped as
   `Reg<std::deque<MemoryRequest>>` and enrolled in the same
   `register_state(...)` call so `commit_all()` flips it at the cycle
-  boundary; `evaluate()` mutates `in_flight_.next_mut()` in place
-  (decrement, push completions, head-pop). The response / write-ack
+  boundary; `evaluate_fabric()` mutates `in_flight_.next_mut()` in
+  place (decrement, push completions, head-pop). The response / write-ack
   queues moved to `TimingModel` (see Abstract interface above) — only the
   back-pointers `mem_responses_` / `mem_write_acks_` live in this class.
+  Phase 5 (sparkling-dazzling-starfish.md): `evaluate()` was renamed to
+  `evaluate_fabric()`; `evaluate_dram()` is overridden as a no-op
+  (single-clock backend).
   - `set_response_queues(responses, write_acks)`: wires the cross-stage
     RegFifos from `TimingModel`. nullptr-tolerant for unit tests that own
     a local RegFifo and commit it directly.
@@ -596,51 +607,78 @@ DRAMSim3-backed external memory model. Selected when
 `SimConfig::memory_backend == "dramsim3"`. Implements the abstract
 `ExternalMemoryInterface` so the cache call sites are unchanged.
 
-Phase 6 (reg.h migration): derives `RegisteredStage`. The REGISTERED
-request slots `PulseReg<PendingMemoryRequest> read_request_` and
-`write_request_` are enrolled via `register_state(...)`; PulseReg's
-commit-time reset of `next_` encodes the memoryless-consumer contract
-directly in the type. The DRAM-scheduling internals (`request_fifo_`,
-`write_chunks_in_fifo_`, `responses_`, `write_acks_`,
-`pending_write_acks_`, `read_assembly_`, `read_chunk_to_mshr_`) are
-plain internal scheduling state — NOT REGISTERED double-buffered pairs —
-and stay plain. Sim-instrumentation counters (`fabric_cycle_`,
-`dram_ticks_`, `phase_`, `max_response_queue_`, `max_write_ack_queue_`)
-are annotated `// sim-instrumentation`; config (const after construction)
-fields are annotated `// config`.
+Phase 5 (close-the-Reg-family-migration / sparkling-dazzling-starfish.md):
+`DRAMSim3Memory` is structured as two clock stages —
+`evaluate_fabric()` (fabric-clock half: drains the
+`PulseReg<PendingMemoryRequest>` request slots, calls `submit_read` /
+`submit_write` which stage chunk pushes onto the TimingModel-owned
+`RegFifo<DRAMSim3PendingChunk> dramsim3_request_fifo_`) and
+`evaluate_dram()` (DRAM-clock half: walks the `phase_ >= 1.0`
+`ClockTick` loop, stages per-DRAM-tick pops on the request FIFO via
+the Phase-5a `pops_` counter, stages response / write-ack pushes via
+the Phase-5 multi-push staging deque, releases pending synthetic
+write-acks whose commit latency has elapsed). The two halves are
+sequenced at independent positions in `TimingModel::tick()`'s sweep
+(fabric → DRAM, both inside the cache/mem_if memory-ordering carve-out
+unit), so the request FIFO presents the natural one-fabric-cycle CDC
+traversal latency that the prior single-`evaluate()` implementation
+collapsed into one body.
 
-Phase 4 (close-the-Reg-family-migration): DRAMSim3Memory accepts the
-`set_response_queues(...)` back-pointers from `TimingModel` for interface
-conformance but routes its completion path through its internal
-`responses_` / `write_acks_` deques in Phase 4 (byte-identical with the
-pre-migration behavior). The interface accessors `current_has_response`
-/ `current_response_front` / `stage_response_pop` (and the write-ack
-counterparts) delegate to the internal deques: `stage_response_pop()` is
-an immediate `pop_front()` on the internal deque, equivalent to the
-pre-Phase-4 `get_response()` shape. Phase 5 of the close-the-Reg-family-
-migration plan lifts the DRAMSim3 completion path onto the TimingModel-
-owned cross-stage RegFifos and surfaces the documented CDC traversal
-latency.
+The internal DRAM-scheduling state is wrapped in `Reg<T>` and enrolled
+in the class's `RegisteredStage` so `commit_all()` flips every
+sub-state in lockstep at the cycle boundary:
 
-`request_fifo_` co-occurs producer (`submit_read` / `submit_write`,
-invoked at the top of `evaluate()` to drain `current_*_request_`, and
-called directly by tests) and consumer (the `while (phase_ >= 1.0)`
-DRAM-tick loop later in the same `evaluate()`) within a single
-`evaluate()`. `RegFifo`'s commit-time pop-then-push would defer the
-staged push until after `evaluate()` returns, denying the consumer this
-cycle's just-submitted chunks (a real cycle-of-latency behavior change).
-The plain `std::deque<PendingChunk>` + explicit `write_chunks_in_fifo_`
-occupancy counter encodes the in-evaluate producer→consumer pattern with
-no behavior change. (The close-the-Reg-family-migration plan's Phase 5
-splits this collapsed single-`evaluate()` producer/consumer into two
-clock-domain stages so the CDC FIFO latency the current implementation
-hides becomes explicit — until then this remains a deferred carve-out.)
-The Phase-3 `addr_gen_fifo_` exception of the prior `current_mut()`-
-elimination refactor has been closed by the close-the-Reg-family-
-migration plan's Phase 3: `addr_gen_fifo_` is now a
-`RegFifo<AddrGenFIFOEntry>` declared on `TimingModel` and committed by
-`TimingModel::commit_cross_stage_fifos()`. See the `LdStUnit` and
-`CoalescingUnit` entries above.
+- `write_chunks_in_fifo_` — `Reg<uint32_t>`. Fabric half increments by
+  `chunks_per_line` on each `submit_write`; DRAM half decrements by 1
+  per chunk issued. `next_request_stall()` reads `.next()` so the cache,
+  which calls it backward in the same cycle from `drain_write_buffer`
+  (after `evaluate_fabric` has run), sees the post-submit value — the
+  literal RTL `wr_en && !stall` AND-gate translation.
+- `pending_write_acks_` — `Reg<std::deque<PendingWriteAck>>`. Fabric half
+  appends one entry per `submit_write` (sorted by `release_dram_tick`,
+  submit order, constant latency); DRAM half front-drains released
+  entries into `mem_write_acks_`.
+- `read_assembly_` — `Reg<std::vector<ReadAssembly>>`, sized to
+  `num_mshrs` at construction / reset. Fabric half activates a slot on
+  `submit_read`; DRAM half decrements `chunks_remaining` on each
+  `on_read_complete` callback (invoked from inside `mem_->ClockTick`)
+  and stages a `mem_responses_->stage_push(...)` when a slot's last
+  chunk lands.
+- `read_chunk_to_mshr_` — `Reg<std::unordered_map<uint64_t, uint32_t>>`.
+  DRAM half populates an entry per chunk admitted into DRAMSim3 and
+  erases it on the matching `on_read_complete`.
+
+The shared PulseReg request slots (`read_request_`, `write_request_`)
+live conceptually on the fabric half; they enroll in the same
+`RegisteredStage` so PulseReg's commit-time reset of `next_` encodes
+the memoryless-consumer contract directly in the type.
+
+The cross-stage / CDC `RegFifo<DRAMSim3PendingChunk> dramsim3_request_fifo_`
+is owned by `TimingModel` (peer of the fabric and DRAM halves, not a
+member of either) and committed in the dedicated ungated
+`TimingModel::commit_cross_stage_fifos()` pass alongside the Phase-3
+`addr_gen_fifo_` and the Phase-4 `mem_responses_` / `mem_write_acks_`.
+The fabric half wires it via `set_request_fifo(...)`; the DRAM half
+reads `request_fifo_->current()[pops_staged()]` to peek at the next
+not-yet-consumed chunk. Phase 5 also moves the response / write-ack
+completion path onto the `mem_responses_` / `mem_write_acks_` slots
+that Phase 4 introduced (`set_response_queues(...)` is now consumed,
+not stubbed). `current_has_response` / `current_response_front` /
+`stage_response_pop` delegate to the cross-stage RegFifo; the cache
+reads last-cycle's committed completion via `current_response_front()`
+— the one-fabric-cycle CDC latency that lands as the documented
+memory-bound delta in this phase (matmul +1.25%, gemv +6.4%,
+embedding_gather +0.75%, layernorm_lite −2%; the negative delta is a
+scheduler-side artifact of the new completion timing, also accepted
+as a revealed fidelity bug).
+
+The Phase-5 multi-push extension to `RegFifo<T>` (a `staged_pushes_`
+deque mirroring the Phase-5a `pops_` counter) is what makes
+`stage_push` composable across a single submit's `chunks_per_line`
+pushes and a single fabric cycle's multiple `on_read_complete`
+completions. Single-push callers (cache `write_buffer_`, CoalescingUnit,
+FixedLatencyMemory's evaluate-time drain) are byte-identical: one
+`stage_push` → one applied push.
 
 - **`DRAMSim3Memory(SimConfig, Stats&)`**: Loads the DRAMSim3 `.ini` at
   `cfg.dramsim3_config_path`, sets `chunks_per_line = cache_line_size_bytes
@@ -665,10 +703,26 @@ migration plan's Phase 3: `addr_gen_fifo_` is now a
   in-flight `submit_write` calls to the same line share one slot and emit
   one combined response, matching the cache's current semantics (write
   responses are discarded by `L1Cache`).
-- **`evaluate()`**: drains at most one chunk from the request FIFO per DRAM
-  tick (subject to `WillAcceptTransaction`), then `ClockTick()`s DRAMSim3.
-- **`reset()`**: clears the FIFOs and assembly state and rebuilds the
-  underlying `dramsim3::MemorySystem`.
+- **`evaluate_fabric()`** (Phase 5): drains `current_*_request_` PulseReg
+  slots into `submit_*`. `submit_read` / `submit_write` stage
+  `chunks_per_line` chunk pushes onto the TimingModel-owned
+  `dramsim3_request_fifo_` and advance `write_chunks_in_fifo_.next_mut()`
+  (write side). Increments the sim-instrumentation `fabric_cycle_`
+  counter once per call.
+- **`evaluate_dram()`** (Phase 5): advances the `phase_` accumulator
+  and walks the `while (phase_ >= 1.0)` DRAM-tick loop. Each iteration
+  peeks at the next-to-issue chunk via `request_fifo_->current()[pops_staged()]`,
+  attempts `mem_->WillAcceptTransaction`, stages a `request_fifo_->stage_pop()`
+  on success, and runs `mem_->ClockTick()` (which may invoke
+  `on_read_complete` to stage `mem_responses_` pushes). After the loop,
+  front-drains `pending_write_acks_.next_mut()` for entries whose
+  `release_dram_tick` has elapsed and stages each onto `mem_write_acks_`.
+- **`reset()`**: `reset_all()` clears every enrolled Reg's `current_`
+  AND `next_`, re-sizes `read_assembly_` to `cfg.num_mshrs`, clears the
+  fabric/DRAM clock counters, and rebuilds the underlying
+  `dramsim3::MemorySystem`. The cross-stage RegFifos are owned by
+  `TimingModel` (or by the test fixture for unit tests) and reset
+  there.
 - **`is_idle()`**: true only when both FIFOs are empty and no read or
   write assembly slot is active.
 - Snapshot helpers: `in_flight_count()`, `response_count()`,
@@ -691,12 +745,12 @@ EBREAK state machine.
 Top-level cycle stepper wiring everything together.
 
 - **`TimingModel(config, func_model_ref, stats_ref, trace_options)`**: Constructs and wires all sub-components. Selects the external-memory backend by branching on `config.memory_backend`: `"dramsim3"` constructs `DRAMSim3Memory`, anything else (default `"fixed"`) constructs `FixedLatencyMemory`. Wiring relevant to the issue/execute path: `scheduler_->set_dependencies(&scoreboard_, &branch_tracker_, ldst_.get())` and `scheduler_->set_writeback_arbiter(wb_arbiter_.get())`; each execution unit and the operand collector get their `set_operand_collector` / `set_scheduler` / `set_writeback_arbiter` / `set_sim_cycle` back-pointers; the ALU gets `set_branch_tracker` / `set_branch_predictor` (it owns branch resolution, Phase 10A); fetch and decode get `set_alu(alu_.get())` so their `evaluate()` can read the ALU's combinational-backward `next_redirect()` (Phase 10E — replaced the former `set_opcoll` wiring). The Phase 6 panic drained-query callable is wired via `panic_->set_drained_query([this](){ return execution_units_drained(); })`. Phase 3 (close-the-Reg-family-migration): the cross-stage `RegFifo<AddrGenFIFOEntry> addr_gen_fifo_` is owned here and back-pointers are wired into LdStUnit / CoalescingUnit via `set_addr_gen_fifo(&addr_gen_fifo_)`. When `trace_options.output_path` is non-empty, opens a `ChromeTraceWriter` and registers warp/hardware/counter tracks.
-- **Cross-stage FIFO ownership (Phase 3-4 close-the-Reg-family-migration)**: FIFOs touched by more than one pipeline stage are declared as direct members of `TimingModel` (the orchestrator) — not as members of any single stage — and back-pointers are handed to the stages that touch them. The pattern matches `warps_` (a `std::vector<WarpState>` shared by fetch / decode / scheduler via `WarpState*`). The cross-stage FIFOs are committed by a dedicated **ungated** commit pass at the bottom of every `tick()` (`commit_cross_stage_fifos()`), distinct from per-stage `commit_all()` calls. Current members: `addr_gen_fifo_` (LdStUnit producer → CoalescingUnit consumer; Phase 3); `mem_responses_` and `mem_write_acks_` (memory backend producer → L1Cache consumer; Phase 4 — both backends accept back-pointers via `mem_if_->set_response_queues(&mem_responses_, &mem_write_acks_)` at construction, but only `FixedLatencyMemory` routes its completions through these slots in Phase 4; `DRAMSim3Memory` routes through internal deques for byte-identity until Phase 5).
-- **`commit_cross_stage_fifos()`**: Phase 3-4 (close-the-Reg-family-migration) dedicated ungated commit pass — flips `addr_gen_fifo_`, `mem_responses_`, and `mem_write_acks_` (pop-then-push atomically per FIFO). The cross-stage role precludes enrollment in any stage's gated `commit_all()`: a producer-side writeback-stall gating of the FIFO's commit would over-freeze it and block the consumer's pop. The FIFO's clock-enable lives at the producer's evaluate-time `stage_push` AND-gate (the RTL `wr_en && !stall` translation), not at this commit, so on a stalled cycle the producer naturally skips its push and the consumer's pop still applies — pop-only on a stall. For the memory channels: `FixedLatencyMemory::evaluate()` calls `stage_push()` on completion; `L1Cache::handle_responses()` reads `current_response_front()` and calls `stage_response_pop()` (single read port — at most one consumed per cycle); the commit pass applies the pop-then-push atomically, presenting the natural one-fabric-cycle FIFO latency to the cache.
+- **Cross-stage FIFO ownership (Phase 3-5 close-the-Reg-family-migration)**: FIFOs touched by more than one pipeline stage are declared as direct members of `TimingModel` (the orchestrator) — not as members of any single stage — and back-pointers are handed to the stages that touch them. The pattern matches `warps_` (a `std::vector<WarpState>` shared by fetch / decode / scheduler via `WarpState*`). The cross-stage FIFOs are committed by a dedicated **ungated** commit pass at the bottom of every `tick()` (`commit_cross_stage_fifos()`), distinct from per-stage `commit_all()` calls. Current members: `addr_gen_fifo_` (LdStUnit producer → CoalescingUnit consumer; Phase 3); `mem_responses_` and `mem_write_acks_` (memory backend producer → L1Cache consumer; Phase 4 — both backends now route completions through these slots after Phase 5); `dramsim3_request_fifo_` (DRAMSim3 fabric-clock producer → DRAM-clock consumer; **Phase 5 CDC FIFO**, wired via `ds3->set_request_fifo(&dramsim3_request_fifo_)` when the DRAMSim3 backend is constructed). The DRAMSim3 request FIFO is always declared even with the fixed-latency backend — it commits to a no-op (no producer / no consumer touches it) and adds one harmless `commit()` call per tick.
+- **`commit_cross_stage_fifos()`**: Phase 3-5 (close-the-Reg-family-migration) dedicated ungated commit pass — flips `addr_gen_fifo_`, `mem_responses_`, `mem_write_acks_`, and `dramsim3_request_fifo_` (pop-then-push atomically per FIFO, with both multi-pop and multi-push extensions on `RegFifo<T>` since Phase 5). The cross-stage role precludes enrollment in any stage's gated `commit_all()`: a producer-side writeback-stall gating of the FIFO's commit would over-freeze it and block the consumer's pop. The FIFO's clock-enable lives at the producer's evaluate-time `stage_push` AND-gate (the RTL `wr_en && !stall` translation), not at this commit, so on a stalled cycle the producer naturally skips its push and the consumer's pop still applies — pop-only on a stall. For the memory channels: `FixedLatencyMemory::evaluate_fabric()` calls `stage_push()` on completion; `DRAMSim3Memory::evaluate_dram()` calls multi-`stage_push()` from `on_read_complete` and from the synthetic write-ack release loop; `L1Cache::handle_responses()` reads `current_response_front()` and calls `stage_response_pop()` (single read port — at most one consumed per cycle). For the DRAMSim3 CDC channel: `DRAMSim3Memory::evaluate_fabric()` calls multi-`stage_push()` on the request FIFO (one per chunk of the submitted line); `DRAMSim3Memory::evaluate_dram()` calls multi-`stage_pop()` on the same FIFO (one per DRAM tick that admits a chunk into DRAMSim3). The commit pass applies all staged pushes and pops atomically at the fabric-cycle boundary, presenting the natural one-fabric-cycle CDC traversal latency to the consumer.
 - **`tick()`** -> `bool` (continue?): One cycle of simulation. See the "Tick discipline" section of `resources/timing_discipline.md` for the full contract. Steps:
   1. **Seed phase**: `seed_next()` for `scoreboard_`, `branch_tracker_`, `opcoll_`, the five units, `decode_`, `gather_file_`, and per-warp `WarpState::seed_next()` (Phase 2: drives the per-warp `pc_` / `active_` Regs) — copies each stage's carry-forward state `current_* -> next_*` so `evaluate()` is a pure function of committed state. The top-of-tick block also resets `deactivation_request_` (the ECALL→fetch combinational Wire) to its default de-asserted value.
   2. **Top-of-cycle ebreak observation** (Phase 6): read `decode_->current_ebreak_request()`; if valid and panic not already active, call `panic_->trigger(...)` and arm `pending_panic_flush_`.
-  3. **Evaluate phase (back-to-front sweep, Phase 10D)**: `wb_arbiter_` (first — asserts the combinational-backward writeback stall) -> `gather_file_` -> `{cache_.evaluate -> mem_if_.evaluate -> cache_.drain_write_buffer}` (the M5 ordering triple) -> `coalescing_` -> the five units (each pulls `opcoll_->current_output()`; the ALU resolves branches and asserts `next_redirect()`) -> `opcoll_` (pulls `scheduler_->current_output()`) -> `fetch_` -> `decode_` (both read the ALU's `next_redirect()` and apply the redirect) -> `scheduler_` (early-returns on a writeback stall). The tick-level dispatch/accept glue is gone — the issue/execute path is a bare `evaluate()` sweep over the REGISTERED pull-model edges. Two ordering carve-outs: `fetch_` evaluates before `scheduler_` (fetch must read committed `instr_buffer` occupancy, not the scheduler's same-cycle pop), and the units evaluate before the frontend (so the ALU's redirect is asserted before fetch/decode read it).
+  3. **Evaluate phase (back-to-front sweep, Phase 10D)**: `wb_arbiter_` (first — asserts the combinational-backward writeback stall) -> `gather_file_` -> `{cache_.evaluate -> mem_if_.evaluate_fabric -> mem_if_.evaluate_dram -> cache_.drain_write_buffer}` (the M5 ordering quadruple; Phase 5 split `mem_if_.evaluate` into the fabric-clock and DRAM-clock halves so the DRAMSim3 backend's CDC FIFO latency is faithful) -> `coalescing_` -> the five units (each pulls `opcoll_->current_output()`; the ALU resolves branches and asserts `next_redirect()`) -> `opcoll_` (pulls `scheduler_->current_output()`) -> `fetch_` -> `decode_` (both read the ALU's `next_redirect()` and apply the redirect) -> `scheduler_` (early-returns on a writeback stall). The tick-level dispatch/accept glue is gone — the issue/execute path is a bare `evaluate()` sweep over the REGISTERED pull-model edges. Two ordering carve-outs: `fetch_` evaluates before `scheduler_` (fetch must read committed `instr_buffer` occupancy, not the scheduler's same-cycle pop), and the units evaluate before the frontend (so the ALU's redirect is asserted before fetch/decode read it).
   4. **Commit phase**: every stage flips `next_* -> current_*`; the five units, `opcoll_`, and `scheduler_` self-gate on `wb_arbiter_->next_writeback_stall()` and hold on a stalled cycle. `scoreboard_.commit()` / `branch_tracker_.commit()` run unconditionally. `commit_cross_stage_fifos()` runs at the end of this phase to apply the addr-gen FIFO's pop-then-push atomically (ungated by construction).
   5. **Panic-flush cascade**: if `pending_panic_flush_` is armed, `flush()` on `scheduler_` / `opcoll_` / `gather_file_` / `wb_arbiter_` and `branch_tracker_.reset()`, at the commit-phase boundary. The cross-stage `addr_gen_fifo_` is intentionally NOT cleared here — the panic controller's step-2 drain polls `execution_units_drained()` (which checks `ldst_->current_fifo_empty()`) until quiescent, and in-flight FIFO entries naturally drain through the panic-branch ticks that follow.
   6. Termination check: `all_warps_done() && pipeline_drained()`. When panic is active, the controller's `is_done()` arm exits.

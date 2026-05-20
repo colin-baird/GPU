@@ -71,7 +71,7 @@ void FixedLatencyMemory::set_next_write_request(uint32_t line_addr) {
     stats_.external_memory_writes++;
 }
 
-void FixedLatencyMemory::evaluate() {
+void FixedLatencyMemory::evaluate_fabric() {
     // Memoryless-consumer pattern: read committed slot, drain into in_flight_.
     // No mid-cycle Q write — PulseReg's seed-to-T{} at the top of the next
     // tick will default the slot to invalid; the cache must explicitly stage

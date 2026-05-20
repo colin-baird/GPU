@@ -331,6 +331,68 @@ TEST_CASE("RegFifo: pops_staged enables peek-ahead during multi-pop staging",
     REQUIRE(fifo.current_empty());
 }
 
+TEST_CASE("RegFifo: stage_push accumulates and applies multiple pushes at commit",
+          "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    // Phase 5 (sparkling-dazzling-starfish.md): the multi-push extension
+    // lets a producer that may push more than one value per cycle (the
+    // DRAMSim3 fabric-clock stage emitting chunks_per_line PendingChunks
+    // per submit_*, the DRAM-clock stage emitting one ack per ClockTick)
+    // stage them all in one cycle. pushes_staged() reports the count.
+    fifo.stage_push(1);
+    REQUIRE(fifo.pushes_staged() == 1u);
+    fifo.stage_push(2);
+    fifo.stage_push(3);
+    REQUIRE(fifo.pushes_staged() == 3u);
+    // Reads during evaluate still see start-of-cycle state (the staging
+    // deque is separate from queue_).
+    REQUIRE(fifo.current_empty());
+
+    fifo.commit();
+    REQUIRE(fifo.current_size() == 3);
+    // FIFO order — pushes applied in stage order.
+    REQUIRE(fifo.current()[0] == 1);
+    REQUIRE(fifo.current()[1] == 2);
+    REQUIRE(fifo.current()[2] == 3);
+    // pushes_staged clears at commit.
+    REQUIRE(fifo.pushes_staged() == 0u);
+}
+
+TEST_CASE("RegFifo: same-cycle multi-pop + multi-push commits correctly",
+          "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    // Seed three entries.
+    fifo.stage_push(10);
+    fifo.stage_push(20);
+    fifo.stage_push(30);
+    fifo.commit();
+    REQUIRE(fifo.current_size() == 3);
+
+    // Same cycle: pop the front two, push two new entries.
+    fifo.stage_pop();
+    fifo.stage_pop();
+    fifo.stage_push(40);
+    fifo.stage_push(50);
+    fifo.commit();
+
+    REQUIRE(fifo.current_size() == 3);
+    // Pops apply first (FIFO order), then pushes.
+    REQUIRE(fifo.current()[0] == 30);
+    REQUIRE(fifo.current()[1] == 40);
+    REQUIRE(fifo.current()[2] == 50);
+}
+
+TEST_CASE("RegFifo: reset discards staged pushes", "[reg][regfifo]") {
+    RegFifo<int> fifo;
+    fifo.stage_push(1);
+    fifo.stage_push(2);
+    REQUIRE(fifo.pushes_staged() == 2u);
+    fifo.reset();
+    REQUIRE(fifo.pushes_staged() == 0u);
+    fifo.commit();
+    REQUIRE(fifo.current_empty());
+}
+
 TEST_CASE("RegFifo: single enqueue-port claim is first-come", "[reg][regfifo]") {
     RegFifo<int> fifo;
     REQUIRE_FALSE(fifo.port_claimed());

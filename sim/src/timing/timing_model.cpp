@@ -1,7 +1,4 @@
 #include "gpu_sim/timing/timing_model.h"
-#ifdef GPU_SIM_USE_DRAMSIM3
-#include "gpu_sim/timing/dramsim3_memory.h"
-#endif
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -179,7 +176,13 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
 
     if (config.memory_backend == "dramsim3") {
 #ifdef GPU_SIM_USE_DRAMSIM3
-        mem_if_ = std::make_unique<DRAMSim3Memory>(config, stats);
+        auto ds3 = std::make_unique<DRAMSim3Memory>(config, stats);
+        // Phase 5 (sparkling-dazzling-starfish.md): wire the cross-stage
+        // request FIFO into the DRAMSim3 backend so the fabric stage
+        // stages chunk pushes and the DRAM stage stages per-tick pops on
+        // the TimingModel-owned slot.
+        ds3->set_request_fifo(&dramsim3_request_fifo_);
+        mem_if_ = std::move(ds3);
 #else
         throw std::invalid_argument(
             "memory_backend=\"dramsim3\" requires the simulator to be built "
@@ -189,13 +192,11 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
         mem_if_ = std::make_unique<FixedLatencyMemory>(
             config.external_memory_latency_cycles, stats);
     }
-    // Phase 4 (close-the-Reg-family-migration): wire the TimingModel-owned
-    // cross-stage response / write-ack FIFOs into the backend. Both backends
-    // accept the call: FixedLatencyMemory routes its completion path through
-    // these RegFifos (true one-cycle staged-pop semantics); DRAMSim3Memory
-    // accepts the call but routes through its internal deques (Phase-4
-    // byte-identity; Phase 5 lifts the completions onto these slots and
-    // surfaces the CDC traversal latency).
+    // Phase 4 / Phase 5 (close-the-Reg-family-migration): wire the
+    // TimingModel-owned cross-stage response / write-ack FIFOs into the
+    // backend. Both backends route their completion path through these
+    // RegFifos (Phase 5 brings DRAMSim3 onto the same slots — surfaces
+    // the CDC traversal latency).
     mem_if_->set_response_queues(&mem_responses_, &mem_write_acks_);
     gather_file_ = std::make_unique<LoadGatherBufferFile>(config.num_warps, stats);
     cache_ = std::make_unique<L1Cache>(config.l1_cache_size_bytes, config.cache_line_size_bytes,
@@ -342,6 +343,16 @@ void TimingModel::commit_cross_stage_fifos() {
     // it onto these same slots.
     mem_responses_.commit();
     mem_write_acks_.commit();
+    // Phase 5 (sparkling-dazzling-starfish.md): cross-stage / CDC request
+    // FIFO between the DRAMSim3 fabric-clock and DRAM-clock halves. The
+    // fabric half staged chunk pushes (up to chunks_per_line per submit;
+    // multi-push via Phase-5 stage_push extension); the DRAM half staged
+    // per-tick pops (up to ticks_per_fabric_ pops via the Phase-5a pops_
+    // counter). Both apply atomically here at the fabric-cycle boundary,
+    // presenting the documented one-fabric-cycle traversal latency. A
+    // no-op when the fixed-latency backend is active (no producer / no
+    // consumer touches the slot).
+    dramsim3_request_fifo_.commit();
 }
 
 void TimingModel::discard_writeback_results() {
@@ -424,7 +435,15 @@ bool TimingModel::tick() {
         tlookup_->evaluate();
         ldst_->evaluate();
         coalescing_->evaluate();
-        mem_if_->evaluate();
+        // Phase 5 (sparkling-dazzling-starfish.md): stage split for the
+        // DRAMSim3 backend — fabric-clock half first (drains the request
+        // PulseRegs, stages chunk pushes on the cross-stage request_fifo_),
+        // then DRAM-clock half (ClockTick loop; stages per-tick pops and
+        // completion pushes). FixedLatencyMemory does all work in the
+        // fabric half; evaluate_dram is a no-op. Sequenced before
+        // drain_write_buffer to preserve the prior memory-ordering carve-out.
+        mem_if_->evaluate_fabric();
+        mem_if_->evaluate_dram();
         cache_->drain_write_buffer();
 
         discard_writeback_results();
@@ -615,12 +634,24 @@ bool TimingModel::tick() {
     gather_file_->evaluate();
 
     // Memory ordering unit (memory plan M5 carve-out): cache.evaluate ->
-    // mem_if.evaluate -> cache.drain_write_buffer kept contiguous in their
-    // pre-10D relative order. cache.evaluate asserts the combinational-
-    // backward next_cmd_ready / next_stalled signals that coalescing reads
-    // below, so the triple runs ahead of coalescing.
+    // mem_if.evaluate_fabric -> mem_if.evaluate_dram -> cache.drain_write_buffer
+    // kept contiguous in their pre-10D relative order. cache.evaluate asserts
+    // the combinational-backward next_cmd_ready / next_stalled signals that
+    // coalescing reads below, so the triple runs ahead of coalescing.
+    //
+    // Phase 5 (sparkling-dazzling-starfish.md): mem_if.evaluate splits
+    // into a fabric-clock half and a DRAM-clock half. Fabric half drains
+    // the PulseReg<PendingMemoryRequest> request slots and stages chunk
+    // pushes onto the TimingModel-owned dramsim3_request_fifo_; DRAM half
+    // walks the phase_/ClockTick loop, stages per-tick pops on the FIFO,
+    // and stages completion pushes onto mem_responses_ / mem_write_acks_.
+    // The fabric→DRAM sweep ordering, combined with the cross-stage RegFifo
+    // committed at end-of-tick, gives the natural one-fabric-cycle CDC
+    // traversal latency that the prior single-evaluate body collapsed.
+    // FixedLatencyMemory leaves evaluate_dram a no-op (single-clock backend).
     cache_->evaluate();
-    mem_if_->evaluate();
+    mem_if_->evaluate_fabric();
+    mem_if_->evaluate_dram();
     cache_->drain_write_buffer();
 
     // Coalescing reads cache's combinational next_cmd_ready / next_stalled

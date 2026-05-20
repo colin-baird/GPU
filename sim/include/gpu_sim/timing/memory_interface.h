@@ -52,9 +52,27 @@ class ExternalMemoryInterface {
 public:
     virtual ~ExternalMemoryInterface() = default;
 
-    virtual void evaluate() = 0;
+    // Phase 5 (sparkling-dazzling-starfish.md): evaluate is split into a
+    // fabric-clock half and a DRAM-clock half so the DRAMSim3 backend can
+    // sequence them at independent positions in TimingModel::tick()'s
+    // sweep, surfacing the natural one-fabric-cycle CDC traversal latency
+    // through the TimingModel-owned request_fifo_ that the prior
+    // submit-then-drain in one body collapsed. FixedLatencyMemory does all
+    // its work in evaluate_fabric() and overrides evaluate_dram() as a
+    // no-op (single-clock backend; no CDC).
+    virtual void evaluate_fabric() = 0;
+    virtual void evaluate_dram() = 0;
     virtual void commit() = 0;
     virtual void reset() = 0;
+
+    // Convenience wrapper for test fixtures / call sites that drive the
+    // backend manually (no TimingModel sweep). Runs both halves
+    // back-to-back, then the caller is responsible for committing any
+    // cross-stage FIFO it owns (for DRAMSim3 fixtures, the local
+    // RegFifo<DRAMSim3PendingChunk>) so the DRAM-side reads of
+    // request_fifo_.current() see the fabric-side pushes one tick later
+    // — same CDC discipline TimingModel::tick() enforces.
+    void evaluate() { evaluate_fabric(); evaluate_dram(); }
 
     // Phase 4 (close-the-Reg-family-migration): cross-stage response FIFO
     // back-pointers. Set once at TimingModel construction (FixedLatencyMemory
@@ -139,7 +157,11 @@ class FixedLatencyMemory : public ExternalMemoryInterface, public RegisteredStag
 public:
     FixedLatencyMemory(uint32_t latency, Stats& stats);
 
-    void evaluate() override;
+    // Phase 5 (sparkling-dazzling-starfish.md): single-clock backend — all
+    // work happens in evaluate_fabric(); evaluate_dram() is a no-op. Keeps
+    // the surface uniform across backends.
+    void evaluate_fabric() override;
+    void evaluate_dram() override {}
     void commit() override;
     void reset() override;
 

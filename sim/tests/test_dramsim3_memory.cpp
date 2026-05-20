@@ -39,51 +39,73 @@ SimConfig make_dramsim3_config(uint32_t num_mshrs = 4,
     return c;
 }
 
-// Phase 4 (close-the-Reg-family-migration): consume one response /
-// write-ack by reading current_*_front and staging a pop. DRAMSim3 routes
-// these through internal deques in Phase 4 (byte-identical), so the staged
-// pop takes immediate effect; Phase 5 lifts the completions onto the
-// TimingModel-owned cross-stage RegFifos and surfaces the CDC traversal
-// latency. The helpers mirror the pre-Phase-4 get_response/get_write_ack
-// shape so the test bodies remain readable.
-MemoryResponse pop_response(DRAMSim3Memory& mem) {
-    MemoryResponse r = mem.current_response_front();
-    mem.stage_response_pop();
+// Phase 5 (sparkling-dazzling-starfish.md): a small fixture that owns the
+// local cross-stage RegFifos and commits them in lockstep with the
+// backend. Mirrors the Phase-3/4 cross-stage-FIFO fixture pattern (the
+// `commit_mem_fifos()` helper in test_cache.cpp): a test that bypasses
+// the TimingModel sweep must drive the dedicated cross-stage commit pass
+// itself, so the fabric→DRAM CDC latency the FIFO presents materializes
+// here too.
+struct MemFixture {
+    RegFifo<MemoryResponse> responses;
+    RegFifo<MemoryResponse> write_acks;
+    RegFifo<DRAMSim3PendingChunk> request_fifo;
+    DRAMSim3Memory mem;
+
+    MemFixture(const SimConfig& cfg, Stats& stats) : mem(cfg, stats) {
+        mem.set_response_queues(&responses, &write_acks);
+        mem.set_request_fifo(&request_fifo);
+    }
+
+    // One full cycle: evaluate both halves, commit the backend's
+    // registered state, then commit the cross-stage FIFOs (the latter is
+    // TimingModel::commit_cross_stage_fifos in production).
+    void tick() {
+        mem.evaluate_fabric();
+        mem.evaluate_dram();
+        mem.commit();
+        commit_cross_stage();
+    }
+
+    void commit_cross_stage() {
+        request_fifo.commit();
+        responses.commit();
+        write_acks.commit();
+    }
+};
+
+// Phase 5: consume one response / write-ack by reading current_*_front and
+// staging a pop on the TimingModel-owned cross-stage RegFifos. The pop
+// applies at the next commit_cross_stage().
+MemoryResponse pop_response(MemFixture& f) {
+    MemoryResponse r = f.mem.current_response_front();
+    f.mem.stage_response_pop();
     return r;
 }
-MemoryResponse pop_write_ack(DRAMSim3Memory& mem) {
-    MemoryResponse r = mem.current_write_ack_front();
-    mem.stage_write_ack_pop();
+MemoryResponse pop_write_ack(MemFixture& f) {
+    MemoryResponse r = f.mem.current_write_ack_front();
+    f.mem.stage_write_ack_pop();
     return r;
 }
 
-// Pump evaluate() until either `mem.next_has_response()` or a hard cap. Returns
-// the number of fabric cycles elapsed.
-uint32_t pump_until_response(DRAMSim3Memory& mem) {
+// Pump until either `mem.next_has_response()` or a hard cap. Returns the
+// number of fabric cycles elapsed.
+uint32_t pump_until_response(MemFixture& f) {
     uint32_t n = 0;
-    while (!mem.next_has_response() && n < MAX_EVALUATES) {
-        mem.evaluate();
-        mem.commit();
+    while (!f.mem.next_has_response() && n < MAX_EVALUATES) {
+        f.tick();
         ++n;
     }
     return n;
 }
 
-// Pump evaluate() until every in-flight operation has produced a response
-// (or a hard cap). Does NOT drain the response queue — that's the caller's
-// job, since `is_idle()` requires the response queue to be empty too.
-uint32_t pump_until_drained(DRAMSim3Memory& mem) {
+// Pump until every in-flight operation has produced a response (or a hard
+// cap). Does NOT drain the response queue — that's the caller's job,
+// since `is_idle()` requires the response queue to be empty too.
+uint32_t pump_until_drained(MemFixture& f) {
     uint32_t n = 0;
-    while (mem.in_flight_count() > 0 && n < MAX_EVALUATES) {
-        mem.evaluate();
-        // Phase 4 of current_mut() elimination: each iteration models one
-        // clock cycle, so a commit() must follow the evaluate to advance the
-        // PulseReg<PendingMemoryRequest> slots' D inputs and flip current_.
-        // Without it, the slot's .valid remains true across iterations and
-        // evaluate re-submits the same request every cycle (the old shape
-        // relied on a mid-cycle current_mut() clear to single-fire each
-        // request).
-        mem.commit();
+    while (f.mem.in_flight_count() > 0 && n < MAX_EVALUATES) {
+        f.tick();
         ++n;
     }
     return n;
@@ -95,7 +117,8 @@ TEST_CASE("DRAMSim3Memory: constructs with the DE-10 Nano .ini",
           "[dramsim3_memory]") {
     Stats stats;
     SimConfig cfg = make_dramsim3_config(4, "construct");
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
 
     CHECK(mem.chunks_per_line() == 4u);     // 128 / 32
     CHECK(mem.is_idle());
@@ -107,14 +130,20 @@ TEST_CASE("DRAMSim3Memory: chunk reassembly emits one response per line",
           "[dramsim3_memory]") {
     Stats stats;
     SimConfig cfg = make_dramsim3_config(4, "chunkreassembly");
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
 
     constexpr uint32_t LINE_ADDR = 0x10;
     constexpr uint32_t MSHR_ID   = 2;
     REQUIRE(mem.submit_read(LINE_ADDR, MSHR_ID));
+    // Phase 5 (sparkling-dazzling-starfish.md): submit_read stages into
+    // read_assembly_.next_mut(); the in_flight_count() committed read
+    // becomes 1 only after the backend's commit() flips current_ = next_.
+    f.mem.commit();
+    f.commit_cross_stage();
     CHECK(mem.in_flight_count() == 1u);
 
-    const uint32_t cycles = pump_until_response(mem);
+    const uint32_t cycles = pump_until_response(f);
     REQUIRE(mem.next_has_response());
 
     // A 128 B line moves as 4 BL8 transactions over a 32-bit DDR3 bus.
@@ -124,7 +153,8 @@ TEST_CASE("DRAMSim3Memory: chunk reassembly emits one response per line",
     CHECK(mem.dram_ticks() >= 16u);
     CHECK(cycles > 0u);
 
-    auto resp = pop_response(mem);
+    auto resp = pop_response(f);
+    f.commit_cross_stage();  // apply the staged pop
     CHECK(resp.line_addr == LINE_ADDR);
     CHECK(resp.mshr_id   == MSHR_ID);
     CHECK_FALSE(resp.is_write);
@@ -138,21 +168,28 @@ TEST_CASE("DRAMSim3Memory: 8 reads with distinct mshr_ids each return once",
           "[dramsim3_memory]") {
     Stats stats;
     SimConfig cfg = make_dramsim3_config(8, "mshrmux");
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
 
     constexpr uint32_t N = 8;
     for (uint32_t i = 0; i < N; ++i) {
         const uint32_t line_addr = 0x100 + i * 4;  // disjoint lines
         REQUIRE(mem.submit_read(line_addr, i));
     }
+    // Phase 5: commit so read_assembly_'s next_ pushes flip into current_;
+    // also commit cross-stage to publish the staged chunk pushes onto
+    // request_fifo_.current() for the DRAM half's next-tick consumption.
+    f.mem.commit();
+    f.commit_cross_stage();
     CHECK(mem.in_flight_count() == N);
 
-    pump_until_drained(mem);
+    pump_until_drained(f);
 
     std::set<uint32_t> seen_mshrs;
     std::set<uint32_t> seen_lines;
     while (mem.next_has_response()) {
-        auto r = pop_response(mem);
+        auto r = pop_response(f);
+        f.commit_cross_stage();
         CHECK_FALSE(r.is_write);
         CHECK(seen_mshrs.insert(r.mshr_id).second);
         seen_lines.insert(r.line_addr);
@@ -169,12 +206,16 @@ TEST_CASE("DRAMSim3Memory: sequential reads complete faster than thrashing strid
         Stats stats;
         SimConfig cfg = make_dramsim3_config(
             static_cast<uint32_t>(line_addrs.size()), tag);
-        DRAMSim3Memory mem(cfg, stats);
+        MemFixture f(cfg, stats);
 
         for (uint32_t i = 0; i < line_addrs.size(); ++i) {
-            REQUIRE(mem.submit_read(line_addrs[i], i));
+            REQUIRE(f.mem.submit_read(line_addrs[i], i));
         }
-        return pump_until_drained(mem);
+        // Commit so the staged read_assembly_ writes / FIFO pushes land
+        // in current_ before the DRAM half observes them.
+        f.mem.commit();
+        f.commit_cross_stage();
+        return pump_until_drained(f);
     };
 
     constexpr uint32_t N = 8;
@@ -205,13 +246,13 @@ TEST_CASE("DRAMSim3Memory: phase accumulator tracks the fabric/DRAM clock ratio"
     SimConfig cfg = make_dramsim3_config(4, "clockratio");
     cfg.fpga_clock_mhz = 150.0;
     cfg.dram_clock_mhz = 400.0;
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
 
     constexpr uint32_t FABRIC_CYCLES = 1000;
-    for (uint32_t i = 0; i < FABRIC_CYCLES; ++i) mem.evaluate();
+    for (uint32_t i = 0; i < FABRIC_CYCLES; ++i) f.tick();
 
     const double expected = FABRIC_CYCLES * (400.0 / 150.0);  // ~2666.667
-    const long actual = static_cast<long>(mem.dram_ticks());
+    const long actual = static_cast<long>(f.mem.dram_ticks());
     CHECK(std::abs(actual - static_cast<long>(expected)) <= 1);
 }
 
@@ -219,14 +260,21 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
           "[dramsim3_memory]") {
     Stats stats;
     SimConfig cfg = make_dramsim3_config(4, "idlereset");
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
 
     REQUIRE(mem.submit_read(0x40, 0));
     REQUIRE(mem.submit_read(0x80, 1));
+    // Phase 5: is_idle() reads committed state; commit before observing.
+    f.mem.commit();
+    f.commit_cross_stage();
     CHECK_FALSE(mem.is_idle());
 
-    pump_until_drained(mem);
-    while (mem.next_has_response()) (void)pop_response(mem);
+    pump_until_drained(f);
+    while (mem.next_has_response()) {
+        (void)pop_response(f);
+        f.commit_cross_stage();
+    }
     CHECK(mem.is_idle());
     CHECK(mem.in_flight_count() == 0u);
     CHECK(mem.response_count() == 0u);
@@ -236,30 +284,38 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
     CHECK_FALSE(mem.is_idle());
     mem.commit();
     CHECK_FALSE(mem.is_idle());
-    mem.evaluate();
-    pump_until_drained(mem);
-    while (mem.next_has_response()) (void)pop_response(mem);
+    f.tick();
+    pump_until_drained(f);
+    while (mem.next_has_response()) { (void)pop_response(f); f.commit_cross_stage(); }
     CHECK(mem.is_idle());
 
     mem.set_next_write_request(0x91);
     CHECK_FALSE(mem.is_idle());
     mem.commit();
     CHECK_FALSE(mem.is_idle());
-    mem.evaluate();
-    pump_until_drained(mem);
+    f.tick();
+    pump_until_drained(f);
     // Writes complete on the separate write-ack channel (Plan 2); is_idle()
     // stays false until the ack is drained.
     CHECK(mem.current_has_write_ack());
-    while (mem.current_has_write_ack()) (void)pop_write_ack(mem);
+    while (mem.current_has_write_ack()) { (void)pop_write_ack(f); f.commit_cross_stage(); }
     CHECK(mem.is_idle());
 
     // Re-submit and reset mid-flight. After reset everything must be clear.
     REQUIRE(mem.submit_read(0x100, 0));
     REQUIRE(mem.submit_read(0x140, 1));
     REQUIRE(mem.submit_write(0x200));
+    f.mem.commit();
+    f.commit_cross_stage();
     CHECK(mem.in_flight_count() > 0u);
 
     mem.reset();
+    // Phase 5: backend reset clears the backend's enrolled Reg state;
+    // the cross-stage RegFifos are TimingModel-owned (the local ones in
+    // the fixture) and must be reset by the fixture.
+    f.request_fifo.reset();
+    f.responses.reset();
+    f.write_acks.reset();
     CHECK(mem.is_idle());
     CHECK(mem.in_flight_count() == 0u);
     CHECK(mem.response_count() == 0u);
@@ -268,9 +324,12 @@ TEST_CASE("DRAMSim3Memory: idle goes true after drain; reset clears state",
 
     // After reset, the backend still functions: a fresh read drains.
     REQUIRE(mem.submit_read(0x300, 0));
-    pump_until_drained(mem);
+    f.mem.commit();
+    f.commit_cross_stage();
+    pump_until_drained(f);
     REQUIRE(mem.next_has_response());
-    auto r = pop_response(mem);
+    auto r = pop_response(f);
+    f.commit_cross_stage();
     CHECK(r.line_addr == 0x300u);
     CHECK(r.mshr_id   == 0u);
     CHECK_FALSE(r.is_write);
@@ -307,7 +366,8 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
     cfg.dramsim3_request_fifo_depth =
         (cfg.num_mshrs + cfg.write_buffer_depth) * chunks_per_line;
     cfg.validate();
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
 
     constexpr uint32_t kReadsToIssue  = 256;
     constexpr uint32_t kWritesToIssue = 256;
@@ -341,13 +401,13 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
         // L1Cache::handle_responses): consume at most one write ack and at
         // most one read fill per cycle, from the two separate channels.
         if (mem.current_has_write_ack()) {
-            const auto ack = pop_write_ack(mem);
+            const auto ack = pop_write_ack(f);
             REQUIRE(ack.is_write);
             REQUIRE(writes_in_flight.erase(ack.line_addr) == 1u);
             ++writes_completed;
         }
         if (mem.current_has_response()) {
-            const auto resp = pop_response(mem);
+            const auto resp = pop_response(f);
             REQUIRE_FALSE(resp.is_write);
             REQUIRE(resp.mshr_id < cfg.num_mshrs);
             REQUIRE(mshr_busy[resp.mshr_id]);
@@ -403,7 +463,10 @@ TEST_CASE("DRAMSim3Memory: worst-case cache traffic never drops requests",
             }
         }
 
-        mem.evaluate();
+        // Phase 5: drive both halves and the cross-stage commit pass, so
+        // the staged backend Reg mutations land in current_ and the
+        // staged FIFO pushes/pops apply atomically each cycle.
+        f.tick();
 
         if (reads_completed == kReadsToIssue &&
             writes_completed == kWritesToIssue &&
@@ -475,23 +538,30 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
     cfg.validate();
 
     constexpr uint32_t kNumWarps = 4;
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
     LoadGatherBufferFile gather_file(kNumWarps, stats);
     L1Cache cache(/*cache_size=*/4096, cfg.cache_line_size_bytes,
                   cfg.num_mshrs, cfg.write_buffer_depth,
                   cfg.max_outstanding_writes, mem, gather_file, stats);
 
     auto pump_one_cycle = [&]() {
-        cache.evaluate();              // clears prior-cycle stall flag
-        cache.handle_responses();      // drain memory responses
-        mem.evaluate();                // tick DRAMSim3
+        // Phase 5: cache.evaluate() calls handle_responses internally;
+        // do NOT double-call it (would double-stage pops on the
+        // cross-stage RegFifos and double-decrement
+        // outstanding_writes_total_).
+        cache.evaluate();              // clears prior-cycle stall flag; drains memory responses
+        // Phase 5: drive both DRAMSim3 halves in sweep order.
+        mem.evaluate_fabric();
+        mem.evaluate_dram();
         cache.drain_write_buffer();    // submits one entry if mem accepts
         cache.commit();
         // Phase M5: flip mem_if's REGISTERED next_*_request_ slots into
-        // current_*_ so the next cycle's mem.evaluate() can drain them
-        // into in_flight_. Cache's process_load and drain_write_buffer
-        // both stage requests via set_next_*_request.
+        // current_*_ so the next cycle's mem.evaluate() can drain them.
+        // Phase 5: also commits the backend's enrolled Reg state and the
+        // TimingModel-owned cross-stage RegFifos.
         mem.commit();
+        f.commit_cross_stage();
         gather_file.commit();
     };
 
@@ -532,7 +602,14 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
 
     for (uint32_t cycle = 0; cycle < kCycleCap && stores_accepted < kStoresToIssue; ++cycle) {
         cache.evaluate();
-        cache.handle_responses();
+        // Phase 5 (sparkling-dazzling-starfish.md): cache.evaluate
+        // already calls handle_responses internally. With the cross-stage
+        // RegFifo<MemoryResponse> stage_*_pop semantics, a second
+        // explicit handle_responses() in the same cycle stages a second
+        // pop on the same front entry AND double-decrements
+        // outstanding_writes_total_ — pre-Phase-5 this was masked by
+        // DRAMSim3's internal-deque immediate-pop. Remove the duplicate
+        // call.
 
         // Try one store hit per cycle (cache hits since kHitLine is resident).
         // Phase 9: cache observable stall state is REGISTERED, so we record
@@ -550,12 +627,17 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-region saturation propagates to cache
             }
         }
 
-        mem.evaluate();
+        // Phase 5: stage split.
+        mem.evaluate_fabric();
+        mem.evaluate_dram();
         cache.drain_write_buffer();
         cache.commit();
         // Phase M5: flip the staged write request into mem's
         // current_write_request_ for next cycle's evaluate to drain.
         mem.commit();
+        // Phase 5: commit cross-stage RegFifos (request_fifo, responses,
+        // write_acks) — the dedicated ungated pass in production.
+        f.commit_cross_stage();
         gather_file.commit();
 
         if (rejected_this_cycle) {
@@ -601,7 +683,8 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-ack pin survives a store->load "
     Stats stats;
     SimConfig cfg = make_dramsim3_config(4, "writeackpin");
     constexpr uint32_t kNumWarps = 4;
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
     LoadGatherBufferFile gather_file(kNumWarps, stats);
     L1Cache cache(/*cache_size=*/4096, cfg.cache_line_size_bytes,
                   cfg.num_mshrs, cfg.write_buffer_depth,
@@ -613,10 +696,13 @@ TEST_CASE("DRAMSim3Memory + L1Cache: write-ack pin survives a store->load "
 
     auto pump = [&]() {
         cache.evaluate();
-        mem.evaluate();
+        // Phase 5: stage split + cross-stage commit.
+        mem.evaluate_fabric();
+        mem.evaluate_dram();
         cache.drain_write_buffer();
         cache.commit();
         mem.commit();
+        f.commit_cross_stage();
         gather_file.commit();
     };
 
@@ -676,7 +762,8 @@ TEST_CASE("DRAMSim3Memory: same-line writes each get their own write ack",
     // DRAMSim3Memory instead synthesizes one ack per submit_write.
     Stats stats;
     SimConfig cfg = make_dramsim3_config(4, "samelinewrites");
-    DRAMSim3Memory mem(cfg, stats);
+    MemFixture f(cfg, stats);
+    auto& mem = f.mem;
 
     constexpr uint32_t kLine = 0x20;
     constexpr uint32_t kWrites = 4;  // <= write_buffer_depth, all to ONE line
@@ -684,14 +771,19 @@ TEST_CASE("DRAMSim3Memory: same-line writes each get their own write ack",
     for (uint32_t i = 0; i < kWrites; ++i) {
         REQUIRE(mem.submit_write(kLine));
     }
+    // Phase 5: commit so the per-submit pending_write_acks_ entries and
+    // the staged request_fifo_ chunk pushes land in current_.
+    f.mem.commit();
+    f.commit_cross_stage();
     CHECK_FALSE(mem.is_idle());
 
     // Every write-through must surface its own ack — 1:1, no folding.
     uint32_t acks = 0;
     for (uint32_t c = 0; c < 5000 && acks < kWrites; ++c) {
-        mem.evaluate();
+        f.tick();
         while (mem.current_has_write_ack()) {
-            const auto ack = pop_write_ack(mem);
+            const auto ack = pop_write_ack(f);
+            f.commit_cross_stage();
             CHECK(ack.is_write);
             CHECK(ack.line_addr == kLine);
             ++acks;
@@ -702,9 +794,10 @@ TEST_CASE("DRAMSim3Memory: same-line writes each get their own write ack",
 
     // The synthetic ack is durability-latent, not posted at submit time:
     // it must not arrive in the first couple of cycles after submit.
-    DRAMSim3Memory mem2(cfg, stats);
+    MemFixture f2(cfg, stats);
+    auto& mem2 = f2.mem;
     REQUIRE(mem2.submit_write(kLine));
-    mem2.evaluate();
-    mem2.evaluate();
+    f2.tick();
+    f2.tick();
     CHECK_FALSE(mem2.current_has_write_ack());  // not yet — commit latency pending
 }
