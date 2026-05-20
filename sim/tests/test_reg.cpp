@@ -72,6 +72,137 @@ TEST_CASE("Reg: reset clears both slots", "[reg]") {
     REQUIRE(r.next() == 0);
 }
 
+// ─── PulseReg<T> ─────────────────────────────────────────────────────────────
+
+TEST_CASE("PulseReg: staged write is invisible to current() until commit",
+          "[reg][pulsereg]") {
+    PulseReg<int> p;
+    REQUIRE(p.current() == 0);
+
+    p.set_next(7);
+    REQUIRE(p.current() == 0);   // committed slot unchanged
+    REQUIRE(p.next() == 7);      // staged value visible to the producer
+
+    p.commit();
+    REQUIRE(p.current() == 7);
+}
+
+TEST_CASE("PulseReg: seed defaults next_ to T{} (key difference from Reg)",
+          "[reg][pulsereg]") {
+    PulseReg<int> p;
+    p.set_next(99);
+    REQUIRE(p.next() == 99);
+    p.commit();
+    REQUIRE(p.current() == 99);
+
+    // Seed: next_ goes to T{}, NOT current_ (a Reg would copy current_ here).
+    p.seed();
+    REQUIRE(p.next() == 0);
+    REQUIRE(p.current() == 99);  // committed slot unchanged by seed
+}
+
+TEST_CASE("PulseReg: no-driver cycle defaults current() to T{} at next commit",
+          "[reg][pulsereg]") {
+    PulseReg<int> p;
+
+    // Cycle N: producer drives a value.
+    p.seed();
+    p.set_next(42);
+    p.commit();
+    REQUIRE(p.current() == 42);
+
+    // Cycle N+1: producer does NOT drive — seed defaults next_ to 0, commit
+    // latches the default. This is the pulse semantics: a value present only
+    // for the cycle the producer actively staged it.
+    p.seed();
+    p.commit();
+    REQUIRE(p.current() == 0);
+}
+
+TEST_CASE("PulseReg: a stalled cycle (seed without commit) re-defaults",
+          "[reg][pulsereg]") {
+    PulseReg<int> p;
+
+    // Cycle N: producer stages, but commit is gated.
+    p.seed();
+    p.set_next(5);
+    REQUIRE(p.next() == 5);
+    // commit() skipped.
+
+    // Cycle N+1: seed re-defaults next_ to 0. The producer must re-assert if
+    // it still wants the value to latch.
+    p.seed();
+    REQUIRE(p.next() == 0);
+    p.set_next(5);
+    p.commit();
+    REQUIRE(p.current() == 5);
+}
+
+TEST_CASE("PulseReg: next_mut allows in-place mutation of the staged value",
+          "[reg][pulsereg]") {
+    struct Cmd { bool valid = false; int payload = 0; };
+    PulseReg<Cmd> p;
+    p.seed();
+
+    p.next_mut().valid = true;
+    p.next_mut().payload = 11;
+    REQUIRE_FALSE(p.current().valid);   // committed slot untouched
+    REQUIRE(p.next().valid);
+    REQUIRE(p.next().payload == 11);
+
+    p.commit();
+    REQUIRE(p.current().valid);
+    REQUIRE(p.current().payload == 11);
+}
+
+TEST_CASE("PulseReg: reset clears both slots", "[reg][pulsereg]") {
+    PulseReg<int> p{42};
+    p.set_next(7);
+    p.reset();
+    REQUIRE(p.current() == 0);
+    REQUIRE(p.next() == 0);
+}
+
+TEST_CASE("PulseReg: initialize seeds both slots to the same value",
+          "[reg][pulsereg]") {
+    PulseReg<int> p;
+    p.initialize(99);
+    REQUIRE(p.current() == 99);
+    REQUIRE(p.next() == 99);
+}
+
+TEST_CASE("PulseReg: producer/consumer pulse pattern across multiple cycles",
+          "[reg][pulsereg]") {
+    // The canonical usage: producer drives only on cycles it has a command;
+    // consumer reads current(), processes, and never modifies the slot. The
+    // slot's default-to-T{} between drives is what eliminates the need for
+    // the consumer to clear committed state mid-cycle.
+    struct Cmd { bool valid = false; int payload = 0; };
+    PulseReg<Cmd> p;
+
+    // Cycle 0: no producer drive.
+    p.seed();
+    REQUIRE_FALSE(p.current().valid);   // consumer reads — nothing to do
+    p.commit();
+    REQUIRE_FALSE(p.current().valid);
+
+    // Cycle 1: producer drives a command.
+    p.seed();
+    p.set_next({/*valid=*/true, /*payload=*/77});
+    p.commit();
+
+    // Cycle 2: consumer sees the command in current(); producer is silent.
+    p.seed();
+    REQUIRE(p.current().valid);
+    REQUIRE(p.current().payload == 77);
+    p.commit();
+
+    // Cycle 3: the command has lapsed — no carry-forward.
+    p.seed();
+    REQUIRE_FALSE(p.current().valid);
+    p.commit();
+}
+
 // ─── RegFifo<T> ──────────────────────────────────────────────────────────────
 
 TEST_CASE("RegFifo: a staged push is applied only at commit", "[reg][regfifo]") {
@@ -198,6 +329,59 @@ TEST_CASE("RegisteredStage: seed/commit/reset drive every registered primitive",
     REQUIRE(stage.a().current() == 0);
     REQUIRE(stage.b().current() == 0);
     REQUIRE(stage.fifo().current_empty());
+}
+
+TEST_CASE("RegisteredStage: enrolls PulseReg alongside Reg / RegFifo",
+          "[reg][registered-stage][pulsereg]") {
+    struct Cmd { bool valid = false; int payload = 0; };
+
+    class MixedStage : public RegisteredStage {
+    public:
+        MixedStage() { register_state(&counter_, &cmd_); }
+
+        // Drive the pulse only on even-numbered evaluate calls.
+        void evaluate(int tick) {
+            seed_all();
+            counter_.next_mut() += 1;
+            if (tick % 2 == 0) {
+                cmd_.set_next({/*valid=*/true, /*payload=*/tick});
+            }
+            // Odd ticks: producer silent — PulseReg defaults next_ to T{}
+            // via seed_all() above, so commit will latch invalid.
+        }
+        void commit_stage() { commit_all(); }
+        void reset_stage() { reset_all(); }
+
+        Reg<int>& counter() { return counter_; }
+        PulseReg<Cmd>& cmd() { return cmd_; }
+
+    private:
+        Reg<int> counter_;
+        PulseReg<Cmd> cmd_;
+    };
+
+    MixedStage stage;
+
+    stage.evaluate(0);  // drives cmd
+    stage.commit_stage();
+    REQUIRE(stage.counter().current() == 1);
+    REQUIRE(stage.cmd().current().valid);
+    REQUIRE(stage.cmd().current().payload == 0);
+
+    stage.evaluate(1);  // does NOT drive cmd
+    stage.commit_stage();
+    REQUIRE(stage.counter().current() == 2);
+    REQUIRE_FALSE(stage.cmd().current().valid);
+
+    stage.evaluate(2);  // drives cmd again
+    stage.commit_stage();
+    REQUIRE(stage.counter().current() == 3);
+    REQUIRE(stage.cmd().current().valid);
+    REQUIRE(stage.cmd().current().payload == 2);
+
+    stage.reset_stage();
+    REQUIRE(stage.counter().current() == 0);
+    REQUIRE_FALSE(stage.cmd().current().valid);
 }
 
 TEST_CASE("RegisteredStage: a skipped commit_all freezes all registers",

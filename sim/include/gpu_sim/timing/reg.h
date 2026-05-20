@@ -16,7 +16,9 @@ namespace gpu_sim {
 // be expressed by accident.
 //
 // Every state-holding member of a timing-model class is exactly one of:
-//   - Reg<T>      a clock-edge-latched register
+//   - Reg<T>      a clock-edge-latched register (holds across cycles)
+//   - PulseReg<T> a one-cycle pulse / command slot (defaults to T{} each
+//                 cycle unless the producer explicitly stages a value)
 //   - RegFifo<T>  a commit-disciplined FIFO
 //   - Wire<T>     a combinational backward signal (no committed twin)
 // plus plain members that are either config (const after construction) or
@@ -108,6 +110,65 @@ public:
     // that need to size a Reg<std::vector<...>> or seed a non-default value
     // before any evaluate runs. Equivalent to `set_next(value); commit();`
     // but doesn't require a transient half-state.
+    void initialize(const T& value) { current_ = value; next_ = value; }
+
+private:
+    T current_{};
+    T next_{};
+};
+
+// A one-cycle pulse / command-slot register. Same shape as Reg<T> except seed()
+// resets next_ to T{} rather than copying current_. The producer must
+// explicitly drive next_ every cycle it wants a value to latch; if it does
+// nothing, the slot defaults to T{} at the next commit. The consumer reads
+// current_ (the previously-latched pulse) and does NOT mutate it — the slot
+// either carries forward to next cycle as T{} (no driver this cycle) or as
+// the producer's new value (driver staged this cycle).
+//
+// Use for: memoryless-consumer command slots where the producer's silence
+// must mean "no command next cycle" — cache load_cmd_/store_cmd_, memory
+// backend read_request_/write_request_, gather-buffer claim_request_. These
+// previously used Reg<T> with an explicit current_mut().valid=false clear by
+// the consumer and a tail-of-commit set_next(T{}) clear by the same consumer
+// to keep the slot from re-latching; PulseReg encodes the same default-to-T{}
+// semantics in the type and removes the need for either workaround.
+//
+// In hardware terms: a register whose D input has a multiplexer with a "no
+// driver" default of T{} — the seed-to-T{} models the multiplexer; the
+// producer's set_next(v) is asserting the override.
+template <typename T>
+class PulseReg : public RegBase {
+public:
+    PulseReg() = default;
+    explicit PulseReg(const T& init) : current_(init) {}
+
+    // Committed read — the previously-latched pulse (T{} if no driver last
+    // cycle). The normal read.
+    const T& current() const { return current_; }
+
+    // Staged read — INTRA-STAGE self-reads only, same discipline as Reg<T>.
+    // The producer reads back what it has staged earlier in this evaluate.
+    const T& next() const { return next_; }
+
+    // Staged read-write, for in-place mutation of the staged value without a
+    // whole-value copy.
+    T& next_mut() { return next_; }
+
+    // Staged whole-value write — the producer's "drive D" action.
+    void set_next(const T& value) { next_ = value; }
+
+    // next_ = T{}  — top-of-tick default-to-invalid. The producer must
+    // re-assert to keep the slot non-default at the next commit. Idempotent.
+    void seed() override { next_ = T{}; }
+
+    // current_ = next_  — cycle-boundary latch. Identical to Reg<T>.
+    void commit() override { current_ = next_; }
+
+    // Reset BOTH slots to T{}.
+    void reset() override { current_ = T{}; next_ = T{}; }
+
+    // Initialize BOTH slots to the same value — for constructor / reset paths
+    // that need to seed a non-default value before any evaluate runs.
     void initialize(const T& value) { current_ = value; next_ = value; }
 
 private:
