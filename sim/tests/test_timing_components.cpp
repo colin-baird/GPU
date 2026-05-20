@@ -168,8 +168,14 @@ TEST_CASE("DecodeStage: EBREAK is detected and not enqueued", "[timing]") {
     warps[0].reset(0);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    // Phase 2 (close-the-Reg-family-migration): drive per-warp seed_next/
+    // commit alongside fetch.evaluate/commit so pc_ / active_ Reg lifecycle
+    // matches every other fixture in this file (consolidation review #1
+    // deferred this to natural touch; review #2 picks it up).
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
 
     DecodeStage decode(warps.data(), fetch);
     decode.evaluate();
@@ -196,8 +202,12 @@ TEST_CASE("DecodeStage: redirect drops carried-forward pending decode", "[timing
     warps[0].reset(0);
 
     FetchStage fetch(1, warps.data(), imem, predictor, stats);
+    // Phase 2 (close-the-Reg-family-migration): drive per-warp seed_next/
+    // commit (review #2 cleanup).
+    warps[0].seed_next();
     fetch.evaluate();
     fetch.commit();
+    warps[0].commit();
     REQUIRE(fetch.current_output().has_value());
 
     DecodeStage decode(warps.data(), fetch);

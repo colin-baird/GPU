@@ -154,8 +154,9 @@ private:
     // that exercise this stage in isolation. back-pointer
     RegFifo<AddrGenFIFOEntry>* addr_gen_fifo_ = nullptr;  // timing-naming-allow: back-pointer to TimingModel-owned cross-stage RegFifo; the FIFO itself is enrolled and committed at the TimingModel-owned cross-stage commit pass.
     // Empty fallback view returned by current_fifo_entries() when the back-
-    // pointer is null (unit-test paths). const-after-construction sentinel.
-    const std::deque<AddrGenFIFOEntry> empty_fifo_view_{};  // sim-instrumentation
+    // pointer is null (unit-test paths). const-after-construction sentinel —
+    // not state, just a return-by-reference target for the nullptr branch.
+    const std::deque<AddrGenFIFOEntry> empty_fifo_view_{};  // config
     // Phase 10B.0: monotonic push counter. Incremented in commit() on the
     // cycle the staged push lands in the cross-stage addr-gen FIFO — the same
     // cycle the op becomes visible to consumers via current_fifo_size(). The
