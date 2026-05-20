@@ -248,3 +248,13 @@ Inventory matches HEAD `6d5be5a`. Ready to dispatch Phase 1.
 - **Site 4 — Snapshot reads + `all_warps_done()`.** Read `active_.current()` / `pc_.current()` (committed reads); snapshots are built post-commit.
 - **Test fixture updates.** `test_timing_components.cpp` / `test_branch.cpp` / `test_panic.cpp` updated to drive `warp.seed_next()` / `warp.commit()` around stage `evaluate()` / `commit()` pairs (the existing scoreboard pattern). One fixture changed `warps[0].active = false` to `warps[0].active_.initialize(false)` to match the committed-and-staged dual-write the test required.
 - **Files modified:** `sim/include/gpu_sim/timing/warp_state.h`, `sim/include/gpu_sim/timing/timing_model.h`, `sim/include/gpu_sim/timing/fetch_stage.h`, `sim/src/timing/timing_model.cpp`, `sim/src/timing/fetch_stage.cpp`, `sim/src/timing/warp_scheduler.cpp`, `sim/src/timing/panic_controller.cpp`, `sim/tests/test_timing_components.cpp`, `sim/tests/test_branch.cpp`, `sim/tests/test_panic.cpp`, `resources/perf_sim_arch.md`.
+
+### Consolidation review #1 (opus, Phases 1-2)
+
+- **Range:** `6d5be5a..5a5b654`.
+- **Findings:**
+  - **Drift risk (acted on).** The verbose multi-line `// timing-naming-allow:` annotations on `WarpState::pc_` / `active_` duplicated rationale that already lives in the struct docstring directly above. Shortened to single-line "see struct docstring above" references in a follow-up cleanup commit; lint stays green.
+  - **Drift risk (deferred to Phase 8).** No single doc enumerates which Wire-reset convention applies to which class of Wire (intra-class same-tick: reset in owner's `commit()` vs cross-stage same-tick: reset at top-of-tick). Phase 8 will add a short paragraph + convention table to `resources/timing_discipline.md`.
+  - **API sprawl (deferred).** Two fetch-touching tests (`test_timing_components.cpp` EBREAK detection and redirect-drops-pending) call `fetch.evaluate()` without `warps[0].seed_next()` / `commit()`. They don't read `pc_` / `active_` afterwards so coverage isn't lost, but the inconsistency vs the other 14 call sites is a minor reader-confusion item. Deferred — natural touch on a future test edit.
+  - **Phase-vs-plan conformance:** all Phase 1 and Phase 2 work stayed in scope. Per-phase findings entries accurately describe the diffs.
+  - **Dead code:** none.

@@ -27,8 +27,8 @@ namespace gpu_sim {
 // existing `std::vector<WarpState>` + `warps_.data()` ownership pattern
 // (used by `TimingModel` and every test fixture) is preserved unchanged.
 struct WarpState {
-    Reg<uint32_t> pc_;      // timing-naming-allow: per-warp Reg<T>; enrollment is performed by `TimingModel::tick()` which calls `warp.seed_next()` / `warp.commit()` for every warp in both the panic and non-panic branches, equivalent to the RegisteredStage mixin's seed_all/commit_all loop. `WarpState` is intentionally kept movable so the existing `std::vector<WarpState>` + `warps_.data()` ownership pattern (used by TimingModel and every stage / test fixture that takes `WarpState* warps`) is preserved without rewriting cross-stage interfaces. Mirrors the seed/commit-by-helper pattern the lint already accepts on `Scoreboard` / `BranchShadowTracker` test fixtures (those derive RegisteredStage; here we drive the same lifecycle via the per-warp `seed_next()` / `commit()` helpers below).
-    Reg<bool> active_;      // timing-naming-allow: same enrollment story as pc_ above — driven by TimingModel via per-warp `warp.seed_next()` / `warp.commit()` calls.
+    Reg<uint32_t> pc_;      // timing-naming-allow: driven by WarpState::seed_next()/commit() helpers below; see struct docstring above.
+    Reg<bool> active_;      // timing-naming-allow: driven by WarpState::seed_next()/commit() helpers below; see struct docstring above.
     InstructionBuffer instr_buffer;
 
     explicit WarpState(uint32_t buffer_depth = 3) : instr_buffer(buffer_depth) {}
