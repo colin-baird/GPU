@@ -91,22 +91,15 @@ bool LoadGatherBufferFile::try_write(uint32_t warp_id, uint32_t lane_mask,
 }
 
 void LoadGatherBufferFile::seed_next() {
-    // Phase 10D + 5b: seed the carry-forward Regs so try_write() accumulates
-    // onto committed state and unwritten buffers carry through unchanged.
-    // The gather buffer is NOT frozen by the writeback stall, so this runs
-    // unconditionally every cycle.
+    // Phase 4 of current_mut() elimination: seed_all() seeds every enrolled
+    // Reg / PulseReg. The gather buffer is NOT frozen by the writeback
+    // stall, so this runs unconditionally every cycle.
     //
-    // Phase 5b note: claim_request_ is deliberately NOT seeded (auto-seed
-    // would re-latch a consumed claim into the staged slot — the same
-    // memoryless-consumer rationale as L1Cache's load_cmd_/store_cmd_ in
-    // Phase 5a). buffers_, rr_pointer_, and has_result_ DO seed: buffers_
-    // matches the pre-Phase-5b explicit copy; rr_pointer_ and has_result_
-    // are byte-identical because today's code already held their value
-    // across cycles (rr_pointer_ persists as a plain uint, current_has_result_
-    // is overwritten at the end of commit so the seed is also overwritten).
-    buffers_.seed();
-    rr_pointer_.seed();
-    has_result_.seed();
+    // buffers_, rr_pointer_, has_result_ are Reg<T>: seed copies next_ =
+    // current_ — byte-identical to the pre-Phase-4 explicit copy.
+    // claim_request_ is PulseReg<T>: seed defaults next_ = T{} — replaces
+    // the previous tail-of-commit set_next(T{}) clear.
+    seed_all();
 }
 
 void LoadGatherBufferFile::evaluate() {
@@ -140,13 +133,9 @@ void LoadGatherBufferFile::evaluate() {
         std::array<bool, MAX_WARPS> bits{};
         bits[req.warp_id] = true;
         just_claimed_.drive(bits);
-
-        // Memoryless-consumer mid-cycle invalidation of committed state — the
-        // documented Reg::current_mut() escape hatch (Phase 5a precedent in
-        // L1Cache: `load_cmd_.current_mut().valid = false`). Pattern 3; will
-        // be eliminated in the next phase when claim_request_ becomes
-        // PulseReg<GatherClaimRequest>.
-        claim_request_.current_mut().valid = false;
+        // Phase 4: claim_request_ is PulseReg<T>. No mid-cycle current_mut()
+        // clear; seed_next() at the top of the next tick defaults next_ to
+        // T{}, replacing the previous explicit invalidation.
     }
 }
 
@@ -209,14 +198,9 @@ void LoadGatherBufferFile::commit() {
     // mutation and the flip.
     commit_all();
 
-    // Phase M2 + 5b: clear the staged claim_request_. Today's hand-rolled
-    // commit cleared `next_claim_request_ = GatherClaimRequest{}` AFTER
-    // copying to current_; the Reg-flipped equivalent is set_next(empty)
-    // after commit_all has flipped current = next. Without this re-clear, a
-    // subsequent commit() with no intervening claim() call would re-latch
-    // the same claim into current — the memoryless-consumer contract is
-    // identical to L1Cache's load_cmd_ / store_cmd_ in Phase 5a.
-    claim_request_.set_next(GatherClaimRequest{});
+    // Phase 4 of current_mut() elimination: claim_request_ is PulseReg<T>;
+    // seed_next() at the top of the next tick defaults next_ to T{},
+    // replacing the previous explicit tail set_next(T{}) clear.
 }
 
 void LoadGatherBufferFile::reset() {

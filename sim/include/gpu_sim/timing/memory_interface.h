@@ -82,18 +82,14 @@ public:
 
 // Original behavior: every request completes after exactly `latency` cycles.
 //
-// Phase 6 (reg.h migration): the REGISTERED request slots are wrapped as
-// Reg<PendingMemoryRequest> and enrolled via RegisteredStage::register_state.
-// The backend deliberately opts out of the seed phase (memoryless-consumer
-// pattern): evaluate() unconditionally consumes whatever sits in
-// read_request_.current() / write_request_.current() and clears the slot via
-// the documented current_mut() mid-cycle invalidation escape hatch. The cache
-// writes the staged slot through set_next_*_request; commit() drives
-// commit_all() and then explicitly clears the staged slot via set_next(...)
-// — equivalent to the pre-migration `next_*_request_ = PendingMemoryRequest{}`
-// at the tail of commit(). Auto-seeding would re-latch a value the consumer
-// just cleared (the same memoryless-consumer hazard L1Cache's load_cmd_ /
-// store_cmd_ opt out of in Phase 5a).
+// Phase 4 of current_mut() elimination (Pattern 3): the REGISTERED request
+// slots are wrapped as PulseReg<PendingMemoryRequest>. seed_next() at the
+// top of each tick defaults next_ to T{}, so a cycle on which the cache
+// does not stage a fresh request latches the slot to invalid at commit.
+// evaluate() reads current() (last cycle's request, if any) and drains it
+// into in_flight_; no mid-cycle Q write. The previous shape was Reg<T>
+// with a mid-cycle current_mut().valid=false clear plus a tail-of-commit
+// set_next(T{}) reset; both are replaced by PulseReg's seed-to-T{}.
 class FixedLatencyMemory : public ExternalMemoryInterface, public RegisteredStage {
 public:
     FixedLatencyMemory(uint32_t latency, Stats& stats);
@@ -134,9 +130,11 @@ private:
     // Write completions land here, separate from the read-fill responses_
     // queue, so the cache can drain them unconditionally each cycle.
     std::deque<MemoryResponse> write_acks_;   // internal scheduling queue
-    // Phase 6 (reg.h migration): REGISTERED request slots.
-    Reg<PendingMemoryRequest> read_request_;
-    Reg<PendingMemoryRequest> write_request_;
+    // Phase 4 of current_mut() elimination (Pattern 3): PulseReg<T> request
+    // slots. Default to T{} each cycle via seed_next(); cache overrides by
+    // calling set_next_*_request during its evaluate.
+    PulseReg<PendingMemoryRequest> read_request_;
+    PulseReg<PendingMemoryRequest> write_request_;
 };
 
 } // namespace gpu_sim

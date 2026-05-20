@@ -292,16 +292,15 @@ private:
     // handle_responses + drain_secondary_chain_head (HIT slot in the
     // FILL > secondary > HIT priority ladder).
     //
-    // Phase 5a (reg.h migration): NOT auto-seeded. The cache has no
-    // seed_next() and is not enrolled in TimingModel::tick()'s seed phase.
-    // Cache evaluate() consumes the committed cmd via current_mut() (a
-    // mid-cycle invalidation of committed state — the memoryless-consumer
-    // contract). After commit_all() flips current = next, evaluate-stage
-    // commit() explicitly clears the staged slot via set_next(LoadCommand{})
-    // / set_next(StoreCommand{}) — equivalent to today's
-    // `next_*_cmd_ = LoadCommand{}` at the tail of commit().
-    Reg<LoadCommand> load_cmd_;
-    Reg<StoreCommand> store_cmd_;
+    // Phase 4 of current_mut() elimination (Pattern 3): wrapped as
+    // PulseReg<T>. seed_next() at the top of each tick defaults next_ to T{},
+    // so a cycle on which coalescing does not stage a fresh command latches
+    // the slot to invalid at commit — the memoryless-consumer contract
+    // encoded in the type. Previous shape was Reg<T> with the consumer's
+    // mid-cycle current_mut().valid=false clear plus a tail-of-commit
+    // set_next(T{}) reset; both are replaced by PulseReg's seed-to-T{}.
+    PulseReg<LoadCommand> load_cmd_;
+    PulseReg<StoreCommand> store_cmd_;
     // Phase M3 (valid/ready): consumer-side ready signal. Reset to false
     // at top of evaluate; set true by evaluate when a cmd from the committed
     // slot was processed and accepted. Read combinationally by coalescing

@@ -45,6 +45,7 @@ uint32_t pump_until_response(DRAMSim3Memory& mem) {
     uint32_t n = 0;
     while (!mem.next_has_response() && n < MAX_EVALUATES) {
         mem.evaluate();
+        mem.commit();
         ++n;
     }
     return n;
@@ -57,6 +58,14 @@ uint32_t pump_until_drained(DRAMSim3Memory& mem) {
     uint32_t n = 0;
     while (mem.in_flight_count() > 0 && n < MAX_EVALUATES) {
         mem.evaluate();
+        // Phase 4 of current_mut() elimination: each iteration models one
+        // clock cycle, so a commit() must follow the evaluate to advance the
+        // PulseReg<PendingMemoryRequest> slots' D inputs and flip current_.
+        // Without it, the slot's .valid remains true across iterations and
+        // evaluate re-submits the same request every cycle (the old shape
+        // relied on a mid-cycle current_mut() clear to single-fire each
+        // request).
+        mem.commit();
         ++n;
     }
     return n;

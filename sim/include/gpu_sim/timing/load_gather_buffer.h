@@ -181,20 +181,16 @@ private:
     // at the claim-apply site.
     Wire<std::array<bool, MAX_WARPS>> just_claimed_;
 
-    // Phase M2 + 5b: REGISTERED claim-request slot. claim() writes
-    // claim_request_.next_mut(); commit() flips next -> current; evaluate()
-    // consumes the committed slot at the top of the next tick.
-    //
-    // Phase 5b note: NOT seeded by seed_next() — auto-seed (next_=current_)
-    // would re-latch a consumed claim back into the staged slot on the cycle
-    // after evaluate() cleared the committed copy, breaking the
-    // memoryless-consumer contract. Same opt-out rationale as L1Cache's
-    // load_cmd_ / store_cmd_ in Phase 5a. claim_request_ is still enrolled
-    // in register_state() so commit_all() / reset_all() drive it; commit()
-    // explicitly clears the staged slot via set_next(GatherClaimRequest{})
-    // after commit_all() flips, matching the pre-Phase-5b
-    // `next_claim_request_ = GatherClaimRequest{}` tail-of-commit clear.
-    Reg<GatherClaimRequest> claim_request_;
+    // Phase M2 + Phase 4 of current_mut() elimination (Pattern 3):
+    // PulseReg<GatherClaimRequest>. claim() writes claim_request_.next_mut();
+    // commit() flips next -> current; evaluate() consumes the committed slot
+    // at the top of the next tick. seed_next() defaults next_ to T{} each
+    // tick via PulseReg::seed(), so a cycle on which coalescing does not
+    // claim latches the slot to invalid at commit — the memoryless-consumer
+    // contract encoded in the type, replacing the previous mid-cycle
+    // current_mut().valid=false clear and tail-of-commit set_next(T{})
+    // explicit reset.
+    PulseReg<GatherClaimRequest> claim_request_;
 
     // Phase 10D: REGISTERED buffer-release slot. consume_result() reads the
     // committed buffer (a pure read) and stages a release here; commit()

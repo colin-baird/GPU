@@ -198,6 +198,7 @@ TIMING_MODULES: set[str] = {
 INTERNAL_HELPER_CLASSES: set[str] = {
     "MSHRFile",
     "Reg",
+    "PulseReg",
     "RegFifo",
 }
 
@@ -690,15 +691,23 @@ def _check_field_shape(cls: ClassInfo, header: list[str], path: Path,
             ))
 
 
-# Detect Reg<...> / RegFifo<...> type spellings on a field declaration.
-# Matches the leading word of the field type string captured by FIELD_RE.
-_REG_TYPE_RE = re.compile(r"\bReg\s*<")
+# Detect Reg<...> / PulseReg<...> / RegFifo<...> type spellings on a field
+# declaration. Matches the leading word of the field type string captured by
+# FIELD_RE. The Reg regex excludes a preceding 'e' so that "PulseReg<" is not
+# matched by the plain Reg regex (handled by its own regex below).
+_REG_TYPE_RE = re.compile(r"(?<![A-Za-z_])Reg\s*<")
+_PULSEREG_TYPE_RE = re.compile(r"\bPulseReg\s*<")
 _REGFIFO_TYPE_RE = re.compile(r"\bRegFifo\s*<")
 
 
 def _is_reg_field(type_: str) -> bool:
-    """Return True iff the field's type is a Reg<T> or RegFifo<T>."""
-    return bool(_REG_TYPE_RE.search(type_) or _REGFIFO_TYPE_RE.search(type_))
+    """Return True iff the field's type is a Reg<T>, PulseReg<T>, or
+    RegFifo<T>."""
+    return bool(
+        _REG_TYPE_RE.search(type_)
+        or _PULSEREG_TYPE_RE.search(type_)
+        or _REGFIFO_TYPE_RE.search(type_)
+    )
 
 
 def _check_no_raw_current_next_pair(

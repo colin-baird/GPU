@@ -157,18 +157,17 @@ bool DRAMSim3Memory::next_request_stall() const {
 }
 
 void DRAMSim3Memory::evaluate() {
-    // Phase M5: drain current_*_request_ into the request FIFO at top of
-    // evaluate. Memoryless-consumer: consume the committed slot and
-    // invalidate it via the documented current_mut() escape hatch
-    // (matches today's pre-migration `current_*_request_.valid = false`).
+    // Phase M5 + Phase 4 of current_mut() elimination: drain current_*_request_
+    // into the request FIFO at top of evaluate. No mid-cycle Q write — the
+    // PulseReg<PendingMemoryRequest> slot defaults to T{} via seed_next() at
+    // the top of the next tick, so the cache must re-stage to keep the slot
+    // live.
     if (read_request_.current().valid) {
         submit_read(read_request_.current().line_addr,
                     read_request_.current().mshr_id);
-        read_request_.current_mut().valid = false;
     }
     if (write_request_.current().valid) {
         submit_write(write_request_.current().line_addr);
-        write_request_.current_mut().valid = false;
     }
 
     ++fabric_cycle_;
@@ -207,14 +206,10 @@ void DRAMSim3Memory::evaluate() {
 }
 
 void DRAMSim3Memory::commit() {
-    // Phase 6 (reg.h migration): flip the REGISTERED request slots via
-    // commit_all(), then explicitly clear the staged slot — equivalent to
-    // today's `next_*_request_ = PendingMemoryRequest{}` at the tail of
-    // commit(). See memory_interface.cpp for the full memoryless-consumer
-    // rationale.
+    // Phase 4 of current_mut() elimination: PulseReg<T> slots latch via
+    // commit_all(); seed_next() at the top of the next tick defaults next_
+    // to T{}. No tail set_next(T{}) clear needed.
     commit_all();
-    read_request_.set_next(PendingMemoryRequest{});
-    write_request_.set_next(PendingMemoryRequest{});
 }
 
 MemoryResponse DRAMSim3Memory::get_response() {

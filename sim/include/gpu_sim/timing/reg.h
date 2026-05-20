@@ -117,13 +117,21 @@ private:
     T next_{};
 };
 
-// A one-cycle pulse / command-slot register. Same shape as Reg<T> except seed()
-// resets next_ to T{} rather than copying current_. The producer must
+// A one-cycle pulse / command-slot register. Same shape as Reg<T> except:
+//   - seed()   resets next_ to T{} (rather than copying current_).
+//   - commit() resets next_ to T{} AFTER the current_ = next_ flip.
+// The two resets together encode the pulse semantics: the producer must
 // explicitly drive next_ every cycle it wants a value to latch; if it does
 // nothing, the slot defaults to T{} at the next commit. The consumer reads
-// current_ (the previously-latched pulse) and does NOT mutate it — the slot
-// either carries forward to next cycle as T{} (no driver this cycle) or as
-// the producer's new value (driver staged this cycle).
+// current_ (the previously-latched pulse) and does NOT mutate it.
+//
+// The commit-time reset is what makes the type test-friendly: a test that
+// does set_next() → commit() → evaluate() without calling seed() in between
+// still observes the slot defaulting to T{} on the cycle after the commit,
+// matching what TimingModel::tick() achieves in production via its seed
+// phase. The seed() method remains for idempotent re-seeding on stalled
+// re-evaluation (its effect is a no-op when commit() has just run, since
+// commit already cleared next_).
 //
 // Use for: memoryless-consumer command slots where the producer's silence
 // must mean "no command next cycle" — cache load_cmd_/store_cmd_, memory
@@ -134,8 +142,8 @@ private:
 // semantics in the type and removes the need for either workaround.
 //
 // In hardware terms: a register whose D input has a multiplexer with a "no
-// driver" default of T{} — the seed-to-T{} models the multiplexer; the
-// producer's set_next(v) is asserting the override.
+// driver" default of T{} — the seed and commit resets model the multiplexer;
+// the producer's set_next(v) is asserting the override.
 template <typename T>
 class PulseReg : public RegBase {
 public:
@@ -161,8 +169,12 @@ public:
     // re-assert to keep the slot non-default at the next commit. Idempotent.
     void seed() override { next_ = T{}; }
 
-    // current_ = next_  — cycle-boundary latch. Identical to Reg<T>.
-    void commit() override { current_ = next_; }
+    // current_ = next_, then next_ = T{}  — cycle-boundary latch followed
+    // by the default-to-invalid reset of the staged slot. The reset means
+    // a subsequent commit() with no intervening set_next() latches T{},
+    // encoding the pulse semantics directly in commit() and obviating any
+    // need for a separately-invoked seed step.
+    void commit() override { current_ = next_; next_ = T{}; }
 
     // Reset BOTH slots to T{}.
     void reset() override { current_ = T{}; next_ = T{}; }

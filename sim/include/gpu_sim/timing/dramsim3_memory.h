@@ -187,17 +187,12 @@ private:
     size_t max_write_ack_queue_ = 0;// sim-instrumentation
 
     // ── REGISTERED state ───────────────────────────────────────────────────
-    // Phase 6 (reg.h migration): wrapped as Reg<PendingMemoryRequest> and
-    // enrolled via RegisteredStage::register_state. Memoryless-consumer
-    // contract — evaluate() drains current() into the request FIFO and
-    // invalidates the committed slot via the documented current_mut() escape
-    // hatch; commit() drives commit_all() and then explicitly clears the
-    // staged slot via set_next(PendingMemoryRequest{}). The backend opts
-    // out of the seed phase for the same reason FixedLatencyMemory does
-    // (and the same reason L1Cache::load_cmd_/store_cmd_ do in Phase 5a):
-    // auto-seeding next from current would re-latch the consumed request.
-    Reg<PendingMemoryRequest> read_request_;
-    Reg<PendingMemoryRequest> write_request_;
+    // Phase 4 of current_mut() elimination (Pattern 3): PulseReg<T> request
+    // slots. seed_next() defaults them to T{} each tick; cache overrides via
+    // set_next_*_request. No mid-cycle current_mut() write, no tail-of-commit
+    // set_next(T{}) — the type's seed-to-T{} encodes the memoryless contract.
+    PulseReg<PendingMemoryRequest> read_request_;
+    PulseReg<PendingMemoryRequest> write_request_;
 };
 
 } // namespace gpu_sim

@@ -49,6 +49,9 @@ struct MergeFixture {
         mem_if.commit();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
+            // Phase 4 of current_mut() elimination: each iteration is one
+            // tick — commit() advances PulseReg<PendingMemoryRequest> slots.
+            mem_if.commit();
         }
     }
 

@@ -635,9 +635,9 @@ void L1Cache::evaluate() {
         const auto& lc = load_cmd_.current();
         bool ok = process_load(lc.addr, lc.warp_id, lc.lane_mask, lc.results,
                                lc.issue_cycle, lc.pc, lc.raw_instruction);
-        // Mid-cycle invalidation of committed state — the memoryless-consumer
-        // contract. Faithful to today's `current_load_cmd_.valid = false`.
-        load_cmd_.current_mut().valid = false;
+        // No mid-cycle Q write — the PulseReg<LoadCommand> slot's seed-to-T{}
+        // at the top of the next tick defaults the slot to invalid, so
+        // coalescing must explicitly re-stage to keep the slot live.
         if (ok) {
             next_cmd_ready_.drive(true);
             ++processed_count;
@@ -647,7 +647,6 @@ void L1Cache::evaluate() {
         const auto& sc = store_cmd_.current();
         bool ok = process_store(sc.line_addr, sc.warp_id, sc.issue_cycle, sc.pc,
                                 sc.raw_instruction);
-        store_cmd_.current_mut().valid = false;
         if (ok) {
             next_cmd_ready_.drive(true);
             ++processed_count;
@@ -726,16 +725,11 @@ void L1Cache::commit() {
     // RegisteredStage list).
     commit_all();
     mshrs_.commit();
-    // Phase M3 (valid/ready): cache is memoryless — evaluate clears the
-    // committed cmd slot every cycle regardless of success, and the staged
-    // slot must come back to empty so that a subsequent commit() with no
-    // intervening set_next call does NOT re-latch a stale value. Today's
-    // hand-rolled commit cleared `next_*_cmd_ = LoadCommand{}` at the tail;
-    // the Reg-flipped equivalent is set_next(LoadCommand{}) after commit_all
-    // has flipped current = next. Coalescing's processing_/current_entry_
-    // holds the source data and re-stages on a hold.
-    load_cmd_.set_next(LoadCommand{});
-    store_cmd_.set_next(StoreCommand{});
+    // Phase 4 of current_mut() elimination: load_cmd_ / store_cmd_ are
+    // PulseReg<T>. seed_next() at the top of the next tick defaults next_
+    // to T{}, replacing the previous explicit tail set_next(T{}) clear.
+    // Coalescing's processing_/current_entry_ holds the source data and
+    // re-stages on a hold.
     // fill_installed_set_ is COMBINATIONAL same-tick scratch (Wire<int32_t>,
     // default -1) — reset it at the tick boundary so it cannot leak into the
     // next tick. evaluate() also resets it at the top of the tick (the

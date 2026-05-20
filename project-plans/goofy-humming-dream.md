@@ -307,6 +307,21 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
   - **Dead code:** none.
   - **Phase-vs-plan conformance:** all four commits (`a9fecc3`, `d4175db`, `1dffcc7`, `989a671`) stayed in scope. One minor data-structure deviation: Phase 3 used `std::array<bool, MAX_WARPS>` instead of the plan's `std::bitset<MAX_WARPS>`. Functionally equivalent.
 
+### Phase 4
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change:** Pattern 3 eliminated at all 7 sites.
+  - `Reg<LoadCommand>` / `Reg<StoreCommand>` in `cache.h` → `PulseReg<>`.
+  - `Reg<PendingMemoryRequest>` in `memory_interface.h` and `dramsim3_memory.h` → `PulseReg<>`.
+  - `Reg<GatherClaimRequest>` in `load_gather_buffer.h` → `PulseReg<>`.
+  - All 7 consumer-side `current_mut().valid = false` clears removed.
+  - All tail-of-commit `set_next(T{})` clears removed (`cache.cpp:736-737`, `memory_interface.cpp:122-123`, `dramsim3_memory.cpp:216-217`, `load_gather_buffer.cpp:208`).
+  - `gather_file.seed_next()` switched from selective seeding to `seed_all()` now that `PulseReg::seed()` correctly defaults `claim_request_` to T{}.
+  - Lint extended: `_PULSEREG_TYPE_RE` added; `PulseReg` added to `INTERNAL_HELPER_CLASSES`.
+- **`PulseReg::commit()` revision.** The initial design relied on `seed_next()` calls in `tick()` to reset `next_` to T{} each cycle. That broke unit tests (`test_cache`, `test_dramsim3_memory`, `test_cache_mshr_merging`) because the test fixtures bypass `tick()` and the `next_` slot retained its last-written value across multiple `evaluate()` calls — causing repeated re-submission of the same request (e.g. `external_memory_writes == 33396` vs expected 64). Resolution: moved the reset into `PulseReg::commit()` itself — after the `current_ = next_` flip, `next_` is reset to T{}. This encodes the pulse semantics fully in `commit()` (hardware-faithful: the D input of a register with a "no driver default" mux returns to T{} at the clock edge) and works in both production (via tick's commit phase) and tests (via direct commit calls). Removed the `seed_next()` plumbing additions to `tick()`, `L1Cache`, `FixedLatencyMemory`, `DRAMSim3Memory`, and `ExternalMemoryInterface`.
+- **Test-helper updates.** `pump_until_drained` and `pump_until_response` in `test_dramsim3_memory.cpp`, and `tick_mem` in `test_cache.cpp` and `test_cache_mshr_merging.cpp`, now call `mem.commit()` (or `mem_if.commit()`) per loop iteration. Each iteration models one tick; the commit advances the `PulseReg<PendingMemoryRequest>` slot's D input. Previously these helpers called `evaluate()` repeatedly without `commit()`, relying on the old `current_mut()` clear to single-fire each request — a non-hardware-faithful pattern that the new shape exposes.
+- **7 of 11 `current_mut()` call sites eliminated.** Remaining: Pattern 2 (decode commit consumed-mark, 1 site).
+
 ...
 
 ## Audit findings — plain members in timing headers

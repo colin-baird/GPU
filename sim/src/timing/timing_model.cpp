@@ -341,7 +341,12 @@ bool TimingModel::tick() {
     if (panic_->is_active()) {
         // Phase 10D: seed the gather buffer's double-buffered fill
         // presentation (next_buffers_ = current_buffers_) before evaluate()
-        // applies a claim or cache.evaluate() deposits a FILL.
+        // applies a claim or cache.evaluate() deposits a FILL. The cache and
+        // memory backends do not need a seed phase here: their PulseReg<T>
+        // cmd / request slots reset to T{} as part of PulseReg::commit() at
+        // the end of each tick (Phase 4 of current_mut() elimination), so a
+        // cycle on which the producer is silent latches T{} into current_
+        // automatically.
         gather_file_->seed_next();
         // Phase M2: apply any deferred claim before cache evaluates so that
         // FILL/secondary writes deposited this cycle observe the freshly-

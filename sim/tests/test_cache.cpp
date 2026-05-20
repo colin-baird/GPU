@@ -44,6 +44,13 @@ struct CacheFixture {
         mem_if.commit();
         for (uint32_t i = 0; i < cycles; ++i) {
             mem_if.evaluate();
+            // Phase 4 of current_mut() elimination: each loop iteration is
+            // one tick, so commit() must follow evaluate() to advance
+            // PulseReg<PendingMemoryRequest> slots. Otherwise current_.valid
+            // stays true across iterations and evaluate re-submits the same
+            // request every cycle (the old shape relied on a mid-cycle
+            // current_mut() clear).
+            mem_if.commit();
         }
     }
 

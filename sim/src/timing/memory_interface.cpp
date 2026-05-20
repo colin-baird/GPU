@@ -4,18 +4,15 @@ namespace gpu_sim {
 
 FixedLatencyMemory::FixedLatencyMemory(uint32_t latency, Stats& stats)
     : latency_(latency), stats_(stats) {
-    // Phase 6 (reg.h migration): enroll the REGISTERED request slots so
-    // commit_all() / reset_all() drive them uniformly. The backend
-    // intentionally has no seed_next() and is not in TimingModel::tick()'s
-    // seed phase — read_request_ / write_request_ are memoryless-consumer
-    // slots (evaluate consumes whatever sits in current() and clears it via
-    // current_mut(); auto-seeding next from current would re-latch the
-    // consumed request). The cache writes the staged slot through
-    // set_next_*_request; commit() flips and then explicitly clears the
-    // staged slot via set_next(PendingMemoryRequest{}) so a subsequent
-    // commit() with no intervening setter does NOT re-latch a stale value
-    // — equivalent to today's `next_*_request_ = PendingMemoryRequest{}`
-    // at the tail of commit().
+    // Phase 4 of current_mut() elimination (Pattern 3): the REGISTERED
+    // request slots are PulseReg<PendingMemoryRequest>. Enrolled in
+    // register_state so seed_all() / commit_all() / reset_all() drive them
+    // uniformly. seed_next() at the top of each tick (now called from
+    // TimingModel::tick()) defaults next_ to T{} via PulseReg::seed(); the
+    // cache overrides by calling set_next_*_request during its evaluate.
+    // The previous shape relied on a mid-cycle current_mut().valid=false
+    // clear by the consumer plus a tail-of-commit set_next(T{}) by the
+    // owner; both are replaced by PulseReg's seed-to-T{}.
     register_state(&read_request_, &write_request_);
 }
 
@@ -61,10 +58,10 @@ void FixedLatencyMemory::set_next_write_request(uint32_t line_addr) {
 }
 
 void FixedLatencyMemory::evaluate() {
-    // Memoryless-consumer pattern: read committed slot, drain into in_flight_,
-    // then invalidate the committed slot in-place via the documented
-    // current_mut() escape hatch. Faithful to today's
-    // `current_*_request_.valid = false` after consumption.
+    // Memoryless-consumer pattern: read committed slot, drain into in_flight_.
+    // No mid-cycle Q write — PulseReg's seed-to-T{} at the top of the next
+    // tick will default the slot to invalid; the cache must explicitly stage
+    // a new request via set_next_*_request to keep the slot live.
     if (read_request_.current().valid) {
         const auto& cr = read_request_.current();
         MemoryRequest req;
@@ -73,7 +70,6 @@ void FixedLatencyMemory::evaluate() {
         req.is_write = false;
         req.cycles_remaining = latency_;
         in_flight_.push_back(req);
-        read_request_.current_mut().valid = false;
     }
     if (write_request_.current().valid) {
         const auto& cw = write_request_.current();
@@ -83,7 +79,6 @@ void FixedLatencyMemory::evaluate() {
         req.is_write = true;
         req.cycles_remaining = latency_;
         in_flight_.push_back(req);
-        write_request_.current_mut().valid = false;
     }
 
     for (auto& req : in_flight_) {
@@ -110,17 +105,11 @@ void FixedLatencyMemory::evaluate() {
 }
 
 void FixedLatencyMemory::commit() {
-    // Phase 6 (reg.h migration): flip the REGISTERED request slots via
-    // commit_all(), then explicitly clear the staged slot. Today's
-    // commit() did `current = next; next = {}`; commit_all() handles the
-    // flip and the explicit set_next({}) matches the trailing clear so
-    // that a subsequent commit() with no intervening set_next call does
-    // NOT re-latch the just-flipped value. This is the memoryless-consumer
-    // discipline (see also L1Cache::commit() trailing
-    // set_next(LoadCommand{}) / set_next(StoreCommand{}), Phase 5a).
+    // Phase 4 of current_mut() elimination (Pattern 3): commit_all() flips
+    // next_ -> current_ on the PulseReg<PendingMemoryRequest> slots. No tail
+    // set_next(T{}) is needed — PulseReg::seed() at the top of the next tick
+    // defaults next_ to T{}, replacing the previous explicit clear.
     commit_all();
-    read_request_.set_next(PendingMemoryRequest{});
-    write_request_.set_next(PendingMemoryRequest{});
 }
 
 MemoryResponse FixedLatencyMemory::get_response() {
