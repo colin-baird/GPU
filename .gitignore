@@ -41,3 +41,6 @@ dramsim3epoch.json
 
 # Office temp/lock files
 ~$*
+
+# Claude Code tool-timing log (personal observability)
+/.claude/logs/
