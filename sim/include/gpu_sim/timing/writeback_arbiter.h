@@ -10,7 +10,7 @@
 
 namespace gpu_sim {
 
-class WritebackArbiter : public PipelineStage {
+class WritebackArbiter : public PipelineStage, public RegisteredStage {
 public:
     WritebackArbiter(Scoreboard& scoreboard, Stats& stats);
 
@@ -28,8 +28,10 @@ public:
     // fixed-latency units.
     void add_source(ExecutionUnit* unit);
 
-    // The writeback that happened this cycle (for stats/trace)
-    const std::optional<WritebackEntry>& current_committed_entry() const { return committed_; }
+    // The writeback that happened this cycle (for stats/trace).
+    const std::optional<WritebackEntry>& current_committed_entry() const {
+        return entry_.current();
+    }
     bool current_busy() const;
     uint32_t ready_source_count() const;
 
@@ -60,8 +62,15 @@ private:
     Stats& stats_;
     std::vector<ExecutionUnit*> sources_;
 
-    std::optional<WritebackEntry> committed_;
-    std::optional<WritebackEntry> pending_commit_;
+    // Phase 6 of current_mut() elimination: the previous std::optional pair
+    // (committed_ / pending_commit_) was a hand-rolled current/next double
+    // buffer. Wrapped as a single Reg<std::optional<WritebackEntry>>:
+    //   - evaluate() sets entry_.next_ (the staged "about-to-commit" slot).
+    //   - commit() flips current_ = next_ (via commit_all()).
+    //   - current_committed_entry() reads entry_.current().
+    //   - current_busy() reads entry_.next() intra-class (the "winner picked
+    //     this cycle" signal).
+    Reg<std::optional<WritebackEntry>> entry_;
     // Phase 7: COMBINATIONAL-backward writeback stall, wrapped as Wire<bool>.
     // drive(true) on a load-vs-fixed preempt; reset() at the top of every
     // evaluate() and from reset(). Not enrolled via register_state (Wire is

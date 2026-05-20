@@ -348,6 +348,9 @@ bool TimingModel::tick() {
         // cycle on which the producer is silent latches T{} into current_
         // automatically.
         gather_file_->seed_next();
+        // Phase 6 of current_mut() elimination: seed coalescing's durable
+        // Reg state.
+        coalescing_->seed_next();
         // Phase M2: apply any deferred claim before cache evaluates so that
         // FILL/secondary writes deposited this cycle observe the freshly-
         // applied claim metadata. In the panic path this is a no-op when
@@ -449,6 +452,14 @@ bool TimingModel::tick() {
     // issue/execute stages above, the gather buffer is NOT frozen by the
     // writeback stall — it seed_next()s and commit()s every cycle.
     gather_file_->seed_next();
+    // Phase 6 of current_mut() elimination: CoalescingUnit's durable fields
+    // (processing_, current_entry_, is_coalesced_, serial_index_,
+    // cmd_in_flight_) are now Reg<T>; seed_next() copies current_ -> next_
+    // for evaluate()'s in-place mutation. WritebackArbiter::entry_ is also
+    // Reg<T> but evaluate() unconditionally writes next_ (set_next(nullopt)
+    // at the top), so the post-commit equality suffices and it has no
+    // explicit seed_next in this phase.
+    coalescing_->seed_next();
 
     // Phase 6 REGISTERED ebreak observation. decode.commit() at end of the
     // previous cycle latched current_ebreak_request_. Trigger the panic

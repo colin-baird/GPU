@@ -5,7 +5,9 @@
 namespace gpu_sim {
 
 WritebackArbiter::WritebackArbiter(Scoreboard& scoreboard, Stats& stats)
-    : scoreboard_(scoreboard), stats_(stats) {}
+    : scoreboard_(scoreboard), stats_(stats) {
+    register_state(&entry_);
+}
 
 void WritebackArbiter::add_source(ExecutionUnit* unit) {
     sources_.push_back(unit);
@@ -45,7 +47,7 @@ void WritebackArbiter::evaluate() {
     // current_has_result() (committed end-of-last-cycle state); consume_result()
     // is a pure read. The arbiter is sequenced FIRST in the evaluate sweep so
     // next_writeback_stall() is readable same-cycle by every consumer.
-    pending_commit_ = std::nullopt;
+    entry_.set_next(std::nullopt);
     // Phase 7: Wire<bool> de-asserts via reset() at the top of every evaluate.
     writeback_stall_.reset();
 
@@ -87,7 +89,7 @@ void WritebackArbiter::evaluate() {
 
     if (winner != nullptr) {
         WritebackEntry entry = winner->consume_result();
-        pending_commit_ = entry;
+        entry_.set_next(entry);
         if (entry.dest_reg != 0) {
             scoreboard_.clear_pending(entry.warp_id, entry.dest_reg);
         }
@@ -95,11 +97,19 @@ void WritebackArbiter::evaluate() {
 }
 
 void WritebackArbiter::commit() {
-    committed_ = pending_commit_;
+    // Latch the staged "about-to-commit" slot. Phase 6 of current_mut()
+    // elimination: this is the Reg<T> flip that replaces the prior manual
+    // `committed_ = pending_commit_` pair.
+    commit_all();
 }
 
 bool WritebackArbiter::current_busy() const {
-    if (pending_commit_.has_value()) {
+    // Intra-class staged read: returns true if evaluate() (which runs at
+    // sweep position #1, before any consumer of current_busy()) picked a
+    // winner this cycle. The "winner this cycle" signal is staged in
+    // entry_.next_; reading it here is the same-cycle combinational signal
+    // consumers expect.
+    if (entry_.next().has_value()) {
         return true;
     }
 
@@ -123,8 +133,7 @@ uint32_t WritebackArbiter::ready_source_count() const {
 }
 
 void WritebackArbiter::reset() {
-    committed_ = std::nullopt;
-    pending_commit_ = std::nullopt;
+    reset_all();
     // Phase 7: Wire<bool> de-asserts via reset() (default false) — equivalent
     // to the prior `= false` clear.
     writeback_stall_.reset();
