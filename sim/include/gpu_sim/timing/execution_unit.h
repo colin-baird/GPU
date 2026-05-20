@@ -2,6 +2,7 @@
 
 #include "gpu_sim/types.h"
 #include "gpu_sim/trace_event.h"
+#include "gpu_sim/timing/reg.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -203,49 +204,83 @@ public:
 // Test-only ExecutionUnit subclass: a queue of pre-built WritebackEntry values
 // that tests inject directly via enqueue() and the WritebackArbiter pops via
 // consume_result(). Not used in production — production wb-arbiter sources
-// are the five execution units and the LoadGatherBufferFile. The Phase 6
-// audit initially flagged queue_ as a durable-state Reg<deque> candidate;
-// reclassified here as test-fixture infrastructure (no production
-// participation in the timing model).
-class QueuedWritebackSource : public ExecutionUnit {
+// are the five execution units and the LoadGatherBufferFile. Even so, the
+// class participates in production wiring through the same WritebackArbiter
+// interface as the real units, so discipline-compliance matters even for the
+// test source.
+//
+// Phase 1 (reg-family closeout): the storage is now Reg<std::deque<...>>.
+// enqueue() and consume_result() each stage their mutation on next_mut() and
+// immediately commit() — the canonical test-fixture pattern (the same shape
+// as Reg::initialize() for whole-value writes). This preserves the prior
+// "immediate visibility to the arbiter the same cycle the test calls
+// enqueue() / consume_result()" contract byte-identically while routing the
+// state through a lint-recognized Reg primitive. The WritebackArbiter sees
+// queue_.current() through current_has_result(), which is correct. The
+// class derives RegisteredStage so the lint's state-shape rule passes;
+// reset() delegates to reset_all(), and the seed_next() / commit() overrides
+// remain empty bodies because the queue's mutations self-commit inline
+// (test-fixture pattern documented at the queue_ declaration below).
+class QueuedWritebackSource : public ExecutionUnit, public RegisteredStage {
 public:
-    explicit QueuedWritebackSource(ExecUnit type) : type_(type) {}
+    explicit QueuedWritebackSource(ExecUnit type) : type_(type) {
+        register_state(&queue_);
+    }
 
     void enqueue(const WritebackEntry& entry) {
         if (entry.valid) {
-            queue_.push_back(entry);
+            // Phase 1: stage the push on next_, then commit immediately so
+            // the arbiter's same-cycle current_has_result() observes it.
+            // This is the test-fixture analog of Reg::initialize(value).
+            queue_.next_mut().push_back(entry);
+            queue_.commit();
         }
     }
 
-    // No carry-forward double-buffered state — the queue is mutated directly
-    // by enqueue()/consume_result(), not via a next_* slot — so seed_next()
-    // is empty (same category as ALUUnit).
+    // No carry-forward double-buffered state to seed beyond the Reg's own
+    // auto-seed — same shape as ALUUnit which also implements this as an
+    // empty body.
     void seed_next() override {}
     void evaluate() override {}
     void commit() override {}
-    void reset() override { queue_.clear(); }
+    void reset() override { reset_all(); }
     // QueuedWritebackSource has no dispatch input; it is never "busy" from
     // the scheduler's perspective (the scheduler never targets it).
     bool current_busy() const override { return false; }
-    bool current_has_result() const override { return !queue_.empty(); }
+    bool current_has_result() const override { return !queue_.current().empty(); }
 
     // consume_result() pops the queue front. QueuedWritebackSource is a
     // variable-latency source (not a fixed-latency unit on the writeback
     // bitmap) and is not subject to the writeback stall, so the pop here is
     // not a stalled-cycle re-evaluation hazard.
+    //
+    // Phase 1 (reg-family closeout): read the front from current(), stage
+    // the pop on next_, then commit immediately. The interposed commit is
+    // the same test-fixture pattern enqueue() uses — tests calling
+    // arbiter.evaluate() (which calls consume_result() inline) expect the
+    // pop to be visible the same cycle, with no separately-invoked commit.
     WritebackEntry consume_result() override {
-        WritebackEntry entry = queue_.front();
-        queue_.pop_front();
+        WritebackEntry entry = queue_.current().front();
+        queue_.next_mut().pop_front();
+        queue_.commit();
         return entry;
     }
 
     ExecUnit get_type() const override { return type_; }
 
-    size_t queue_depth() const { return queue_.size(); }
+    size_t queue_depth() const { return queue_.current().size(); }
 
 private:
     ExecUnit type_;
-    std::deque<WritebackEntry> queue_;
+    // Phase 1 (reg-family closeout): storage is now a Reg<std::deque<...>>.
+    // Enrolled in the RegisteredStage mixin so reset_all() drives it; the
+    // production-side commit_all() is not called here because the test-only
+    // mutators (enqueue / consume_result) self-commit the Reg inline, the
+    // shape documented in reg.h's commit() comment as "test-hook dual-write
+    // -> tests call seed_next() before arming the staged slot" (this class
+    // is one step further: it commits inline so the staged slot becomes
+    // current the same instant the test writes it).
+    Reg<std::deque<WritebackEntry>> queue_;
 };
 
 } // namespace gpu_sim

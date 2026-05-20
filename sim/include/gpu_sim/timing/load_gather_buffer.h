@@ -44,6 +44,12 @@ struct GatherClaimRequest {
 // Cost: a gather result re-claim by the same warp is visible one cycle later
 // (the release lands at commit, not mid-evaluate). This is the sole intended
 // cycle delta of Phase 10D.
+//
+// Phase 1 (reg-family closeout): backed by Wire<GatherReleaseRequest> — see
+// next_release_ in LoadGatherBufferFile. The wire is driven inside
+// consume_result() (a same-cycle backward-going staging signal) and consumed
+// + reset inside commit() at the cycle boundary. Same shape as
+// just_claimed_ — intra-class signal whose role spans one tick.
 struct GatherReleaseRequest {
     bool valid = false;
     uint32_t warp_id = 0;
@@ -64,14 +70,14 @@ struct GatherReleaseRequest {
 // a freshly-applied claim.
 //
 // Phase 5b (reg.h migration): all of buffers_, claim_request_, has_result_,
-// and rr_pointer_ are Reg<T>. The file also holds two non-register slots —
-// next_port_claimed_ (combinational, intra-tick port arbitration; Phase 7:
-// Wire<bool>, intra-class — written and read inside the class via
-// try_write()/commit(); same shape as cache.next_cmd_ready_ except the
-// reset point is the OWNER'S commit() rather than evaluate(), preserving
-// the pre-Phase-7 behavior exactly) and next_release_ (an evaluate-staging
-// slot with no committed twin, applied at commit — stays plain because it
-// carries a payload, not a level-asserted signal).
+// and rr_pointer_ are Reg<T>. Phase 1 (reg-family closeout): next_release_
+// is now Wire<GatherReleaseRequest> — the intra-class staging slot
+// consume_result() drives and commit() consumes + resets at the cycle
+// boundary, matching the just_claimed_ pattern. next_port_claimed_ remains
+// a Wire<bool> (Phase 7: intra-class port arbitration — written and read
+// inside the class via try_write()/commit(); reset point is the OWNER'S
+// commit() rather than the top of evaluate, preserving the pre-Phase-7
+// behavior exactly).
 class LoadGatherBufferFile : public ExecutionUnit, public RegisteredStage {
 public:
     enum class GatherWriteSource { HIT, FILL };
@@ -193,13 +199,23 @@ private:
     PulseReg<GatherClaimRequest> claim_request_;
 
     // Phase 10D: REGISTERED buffer-release slot. consume_result() reads the
-    // committed buffer (a pure read) and stages a release here; commit()
-    // applies it. At most one buffer retires per cycle (single writeback
-    // arbiter port), so a single-slot request is sufficient. Phase 5b: kept
-    // as a plain staging slot (not a Reg) — it has no committed twin
-    // (consume_result writes it, commit consumes-and-clears it within the
-    // same tick), so the Reg discipline does not apply.
-    GatherReleaseRequest next_release_;  // staging (applied at commit), not a register
+    // committed buffer (a pure read) and drives the wire here; commit()
+    // reads it and applies the release (busy=false, slot_valid cleared,
+    // filled_count=0, rr_pointer_ advanced). At most one buffer retires per
+    // cycle (single writeback arbiter port), so a single-slot signal is
+    // sufficient.
+    //
+    // Phase 1 (reg-family closeout): Wire<GatherReleaseRequest>. The role
+    // is the same as just_claimed_ above: an intra-class signal whose
+    // producer (consume_result()) and consumer (commit()) both run within
+    // one tick. consume_result() drives the wire; commit() reads .value(),
+    // applies the release, then reset()s the wire at the cycle boundary —
+    // matching the convention of next_port_claimed_ / just_claimed_ (reset
+    // point is the OWNER'S commit()). Not a Reg because it has no committed
+    // twin: consume_result() and commit() both run inside the same tick,
+    // so the wire only needs to live for the span of one evaluate-commit
+    // pair. Not enrolled via register_state() (Wire is not a RegBase).
+    Wire<GatherReleaseRequest> next_release_;
 
     // Phase M4 + 5b: REGISTERED has-result flag. commit() recomputes it from
     // the about-to-be-committed buffer state (true iff any buffer has busy &&

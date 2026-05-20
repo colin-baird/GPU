@@ -155,20 +155,24 @@ void LoadGatherBufferFile::commit() {
     // committed state — observes the cycle as ended.
     just_claimed_.reset();
 
-    // Phase 10D: apply the REGISTERED buffer release staged by
+    // Phase 10D: apply the REGISTERED buffer release driven by
     // consume_result() this cycle. This is the commit-phase effect that
     // replaces consume_result()'s former in-place mutation — busy/slot_valid/
     // filled_count are reset in the staged buffer copy (the about-to-be-
     // committed value), and the round-robin pointer advances past the retired
-    // buffer.
-    if (next_release_.valid) {
-        auto& buf = buffers_.next_mut()[next_release_.warp_id];
+    // buffer. Phase 1 (reg-family closeout): backed by
+    // Wire<GatherReleaseRequest>. The wire was driven by consume_result()
+    // earlier this tick; reset() at the end of commit() clears it at the
+    // cycle boundary (same convention as next_port_claimed_ / just_claimed_).
+    const auto& release = next_release_.value();
+    if (release.valid) {
+        auto& buf = buffers_.next_mut()[release.warp_id];
         buf.busy = false;
         buf.slot_valid.fill(false);
         buf.filled_count = 0;
-        rr_pointer_.set_next((next_release_.warp_id + 1) % num_warps_);
-        next_release_ = GatherReleaseRequest{};
+        rr_pointer_.set_next((release.warp_id + 1) % num_warps_);
     }
+    next_release_.reset();
 
     // Phase M4 + 5b: recompute the REGISTERED has-result flag from the
     // about-to-be-committed buffer state (i.e. buffers_.next(), the value
@@ -215,7 +219,9 @@ void LoadGatherBufferFile::reset() {
     // to the prior `= false` clear.
     next_port_claimed_.reset();
     just_claimed_.reset();
-    next_release_ = GatherReleaseRequest{};
+    // Phase 1 (reg-family closeout): next_release_ is now Wire<...>; reset()
+    // de-asserts to the default (valid=false).
+    next_release_.reset();
 }
 
 void LoadGatherBufferFile::flush() {
@@ -245,9 +251,13 @@ WritebackEntry LoadGatherBufferFile::consume_result() {
             wb.raw_instruction = buf.raw_instruction;
             wb.issue_cycle = buf.issue_cycle;
 
-            // Stage the buffer release as a commit-phase effect.
-            next_release_.valid = true;
-            next_release_.warp_id = idx;
+            // Phase 1 (reg-family closeout): drive the release wire. commit()
+            // reads .value(), applies the buffer reset + rr_pointer advance,
+            // and reset()s the wire at the cycle boundary.
+            GatherReleaseRequest req;
+            req.valid = true;
+            req.warp_id = idx;
+            next_release_.drive(req);
             return wb;
         }
     }

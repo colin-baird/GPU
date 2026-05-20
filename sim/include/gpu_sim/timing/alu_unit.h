@@ -15,7 +15,8 @@ class WritebackArbiter;
 class ALUUnit : public ExecutionUnit, public RegisteredStage {
 public:
     explicit ALUUnit(Stats& stats) : stats_(stats) {
-        register_state(&result_buffer_, &has_pending_, &pending_input_);
+        register_state(&result_buffer_, &has_pending_, &pending_input_,
+                       &branch_resolved_);
     }
 
     bool current_busy() const override {
@@ -157,20 +158,36 @@ private:
     // Test-only override; when set, evaluate() reads it into next_redirect_.
     std::optional<RedirectRequest> redirect_override_;
 
-    // Phase 10B.3: category-4 control state — deliberately NOT gated by the
-    // writeback stall and NOT seed_next'd. Branch resolution is combinational
-    // (the clock-enable gates state latches, not the resolution datapath), so
-    // a stalled ALU re-runs evaluate() on the SAME branch each frozen cycle.
-    // The branch-predictor update and the branch-tracker write are writes to
-    // shared structures, not pipeline registers, so the gated commit() does
-    // not protect them. branch_resolved_ records that resolution side-effects
-    // have already fired for the branch currently in the resolve-stage
-    // register: side-effects fire only when it is clear, firing them sets it,
-    // and commit() clears it whenever the resolve-stage register advances (a
-    // non-stalled commit()). "Branch still at the resolve stage" iff "ALU was
-    // stalled" — the ALU is fully pipelined and the writeback stall is the
-    // only thing that holds it — so no instruction tag is needed.
-    bool branch_resolved_ = false;  // sim-instrumentation: deliberate non-register, see timing_discipline.md
+    // Phase 10B.3: control state guarding branch-resolution side-effects.
+    // Branch resolution is combinational (the clock-enable gates state
+    // latches, not the resolution datapath), so a stalled ALU re-runs
+    // evaluate() on the SAME branch each frozen cycle. The branch-predictor
+    // update and the branch-tracker write are writes to shared structures,
+    // not pipeline registers, so the gated commit() does not protect them.
+    // branch_resolved_ records that resolution side-effects have already
+    // fired for the branch currently in the resolve-stage register:
+    // side-effects fire only when it is clear, firing them sets it (via
+    // set_next(true)), and commit() clears it (set_next(false)) whenever the
+    // resolve-stage register advances (a non-stalled commit()). "Branch
+    // still at the resolve stage" iff "ALU was stalled" — the ALU is fully
+    // pipelined and the writeback stall is the only thing that holds it —
+    // so no instruction tag is needed.
+    //
+    // Phase 1 (reg-family closeout): wrapped as Reg<bool>. The encoding
+    // reads branch_resolved_.next() inside evaluate() (intra-stage self-
+    // read of the staged slot, allowed per reg.h discipline) so that on a
+    // stalled cycle the persisted next_=true blocks re-firing even though
+    // the auto-seed semantics would otherwise overwrite it. ALUUnit's
+    // seed_next() is empty (Phase 3 of the original migration — no
+    // automatic next_=current_ copy at top of tick), which is what makes
+    // the "next_ holds true across a stalled commit() into the next
+    // evaluate" pattern faithful: a stalled commit() returns early without
+    // flipping, the next tick does not reseed, so the next evaluate reads
+    // the same next_=true the prior fire-cycle staged. A non-stalled
+    // commit() explicitly stages set_next(false) before commit_all(), so
+    // the next branch lands on a fresh resolve-stage register with both
+    // slots cleared.
+    Reg<bool> branch_resolved_;
 
     // Wired post-construction; nullptr-tolerant for unit tests in isolation.
     BranchShadowTracker* branch_tracker_ = nullptr;

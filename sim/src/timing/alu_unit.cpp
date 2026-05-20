@@ -99,7 +99,15 @@ void ALUUnit::evaluate() {
         // on the first (non-resolved) evaluate of that branch — and the
         // frontend, which is not gated by the stall, applies the flush that
         // same cycle (see fetch_stage.cpp / decode_stage.cpp).
-        if (in.trace.is_branch && !branch_resolved_) {
+        // Phase 1 (reg-family closeout): branch_resolved_ is now Reg<bool>.
+        // Read .next() (intra-stage self-read of the staged slot) so a
+        // stalled commit() that left next_=true blocks the next evaluate
+        // from re-firing — Reg::current() would still be false in that
+        // case because commit_all() did not flip. set_next(true) below
+        // arms the same persistence for any future stalled re-evaluations
+        // of THIS branch; a non-stalled commit() will set_next(false) and
+        // flip both slots, resetting for the next branch.
+        if (in.trace.is_branch && !branch_resolved_.next()) {
             const bool mispredicted = branch_mispredicted(in);
             const uint32_t actual_target = in.trace.branch_taken
                 ? in.trace.branch_target
@@ -127,7 +135,7 @@ void ALUUnit::evaluate() {
                 // tracker's next_ slot).
                 branch_tracker_->note_resolved_correctly(in.warp_id);
             }
-            branch_resolved_ = true;
+            branch_resolved_.set_next(true);
         }
 
         has_pending_.set_next(false);
@@ -155,23 +163,27 @@ void ALUUnit::commit() {
     }
     processed_this_cycle_.reset();
 
-    commit_all();
     // Phase 10E: the redirect is a COMBINATIONAL-backward transient — no
     // committed slot, no flip. evaluate() resets and re-asserts it each
     // cycle; the frontend reads it the same cycle (back-to-front sweep).
     // Phase 10B.3: a non-stalled commit() advances the resolve-stage register,
-    // so the branch (if any) leaves the ALU — clear branch_resolved_ so the
-    // next branch to occupy the stage resolves its side-effects afresh.
-    branch_resolved_ = false;
+    // so the branch (if any) leaves the ALU — stage false into
+    // branch_resolved_ before commit_all() so the next branch to occupy the
+    // stage resolves its side-effects afresh (both current_ and next_ end up
+    // false after the flip). Phase 1: Reg<bool> set_next(false) replaces the
+    // prior plain-field write.
+    branch_resolved_.set_next(false);
+    commit_all();
 }
 
 void ALUUnit::reset() {
+    // Phase 1 (reg-family closeout): branch_resolved_ is now Reg<bool>;
+    // reset_all() clears both current_ and next_ to false.
     reset_all();
     // Phase 7: Wire<RedirectRequest> de-asserts via reset() (default empty
     // RedirectRequest) — equivalent to the prior `= RedirectRequest{}` clear.
     next_redirect_.reset();
     redirect_override_.reset();
-    branch_resolved_ = false;
     pending_cycle_.reset();
     processed_this_cycle_.reset();
 }
