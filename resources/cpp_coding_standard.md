@@ -541,7 +541,7 @@ ALU, whose execution slot is recomputed fresh each tick) implements
 `seed_next()` as an empty body — the interface still carries it for
 uniformity. Only fields that span a cycle boundary are seeded.
 
-### State primitives — `Reg<T>` / `RegFifo<T>` / `Wire<T>`
+### State primitives — `Reg<T>` / `RegFifo<T>` / `PulseReg<T>` / `Wire<T>`
 
 The `current_*` / `next_*` / `seed_next()` / `commit()` shape above is
 hand-rolled per stage. New state does **not** hand-roll it — it uses the
@@ -552,11 +552,23 @@ discipline structural:
   read; `set_next()` / `next_mut()` stage the new value; `commit()`
   latches it; `seed()` re-establishes `next_ = current_`. The canonical
   encoding of a REGISTERED field.
-- **`RegFifo<T>`** — a registered FIFO: `evaluate()` stages a push / pop
-  intent, `commit()` applies pop-then-push, `seed()` is a no-op.
-- **`Wire<T>`** — a COMBINATIONAL backward signal: `drive()` asserts,
-  `value()` reads, `reset()` (top of the producer's `evaluate()`)
-  de-asserts. No committed twin, no `commit()` — it is not a register.
+- **`RegFifo<T>`** — a registered FIFO: `stage_push()` / `stage_pop()`
+  during evaluate; `commit()` applies pop-then-push; `seed()` is a no-op.
+  Phase 5a / Phase 5 of `project-plans/sparkling-dazzling-starfish.md`
+  added multi-pop (uint32_t `pops_` counter) and multi-push
+  (`staged_pushes_` deque) extensions for cross-clock-domain consumers
+  that need >1 push or >1 pop per cycle.
+- **`PulseReg<T>`** — a memoryless command slot. Same shape as `Reg<T>`
+  except `seed()` and `commit()` reset `next_` to `T{}`: the producer
+  must drive every cycle it wants a value to latch; silence latches `T{}`.
+  Used for cache `load_cmd_`/`store_cmd_`, memory backend
+  `read_request_`/`write_request_`, gather `claim_request_`.
+- **`Wire<T>`** — a combinational signal: `drive()` asserts, `value()`
+  reads, `reset()` de-asserts. No committed twin, no `commit()` — it is
+  not a register. Three reset-placement conventions are in use
+  (top-of-tick, top-of-evaluate, end-of-commit); each Wire's declaration
+  comment names which convention applies. See
+  `resources/timing_discipline.md` for the convention table.
 
 A class owning registers derives `RegisteredStage` and calls
 `register_state(&r1, &r2, ...)` once in its constructor body;
@@ -565,13 +577,35 @@ registered primitive, so a newly added field cannot be forgotten by
 `seed_next()` / `commit()`. A `commit()`-gated stall wraps the whole
 `commit_all()` — a stalled stage freezes every register together.
 
-**Every state-holding member of a timing-model class is exactly one of
-`Reg<T>`, `RegFifo<T>`, `Wire<T>`, or a plain member that is config
-(const after construction) or sim-instrumentation (an observational
-counter, annotated `// sim-instrumentation`).** A raw `current_*` /
-`next_*` field pair is a lint error; new REGISTERED state must be a
-`Reg<T>`. The accessor naming rules above still apply: a stage's public
-`current_*()` / `next_*()` accessors forward to the underlying primitive.
+**Strict-compliance taxonomy.** Every field of a class in
+`sim/include/gpu_sim/timing/*.h` that derives `RegisteredStage` OR holds
+any primitive must be exactly one of: (a) a primitive (`Reg` / `RegFifo`
+/ `PulseReg` / `Wire`); (b) a reference (`T&`); (c) `const`-qualified
+(config after construction); (d) annotated `// sim-instrumentation`,
+`// test-only-override`, `// back-pointer`, `// config`, or
+`// timing-naming-allow: <reason>` on the declaration line. The lint
+(`tools/lint_timing_naming.py`) enforces this; legacy annotation forms
+(`// staging`, `// scratch`, `// internal scheduling`) are rejected. A
+raw `current_*` / `next_*` field pair is a lint error; new REGISTERED
+state must be a `Reg<T>`. The accessor naming rules above still apply:
+a stage's public `current_*()` / `next_*()` accessors forward to the
+underlying primitive.
+
+**`Reg::current_mut()` does not exist.** It was deleted in
+`project-plans/goofy-humming-dream.md` Phase 8; the lint rejects any
+attempt to call it. A register's Q does not change between clock
+edges, so a mid-cycle write to the committed slot has no synthesis
+analog. The five patterns that previously needed `current_mut()` are
+encoded by the primitives directly — see
+`resources/timing_discipline.md` § State primitives for the mapping.
+
+**Cross-stage RegFifos** (FIFOs touched by more than one stage) are
+declared as direct members of `TimingModel` (not a member of any
+stage), wired via back-pointer setters, and committed in
+`TimingModel::commit_cross_stage_fifos()` — an ungated commit pass
+distinct from per-stage `commit_all()` calls. See
+`resources/timing_discipline.md` § Cross-stage RegFifo ownership for
+the full discipline.
 
 ### `Stats` increments belong in `commit()`
 

@@ -358,3 +358,13 @@ Inventory matches HEAD `6d5be5a`. Ready to dispatch Phase 1.
 - **DELIBERATE_NON_REGISTER set.** Empty — no field needed an explicit fully-qualified-name allowlist entry. The taxonomy is closed.
 - **Files modified:** `tools/lint_timing_naming.py`, 13 timing headers.
 - **Latitude policy invocations:** none. No primitive extensions or scope creep.
+
+### Phase 8
+
+- **Delta:** zero (doc-only). ctest 31/31 pass.
+- **`resources/timing_discipline.md` updated.** State primitives table now lists all four primitives (added `PulseReg<T>`); the obsolete `Reg::current_mut()` "narrow exception" paragraph is replaced with a "no longer exists" pointer to `goofy-humming-dream.md` Phase 8; the obsolete "Memoryless-consumer opt-out" section is removed (PulseReg replaces it). New sub-sections added: "Cross-stage RegFifo ownership pattern", "Wire-reset convention" (the table review #1 deferred), "Setter nullptr-tolerance convention" (the table review #2 deferred), "Sim-instrumentation and other deliberate non-state members" (documenting the Phase 7 strict-compliance taxonomy and the deliberate exceptions), and a note on `InstructionBuffer::commit(bool flush_request)` as the deliberate parameter-taking commit.
+- **`resources/cpp_coding_standard.md` updated.** § State primitives renamed to `Reg<T>` / `RegFifo<T>` / `PulseReg<T>` / `Wire<T>` and rewritten to (a) include `PulseReg<T>`, (b) document the Phase 5a / Phase 5 multi-pop / multi-push extensions on `RegFifo<T>`, (c) cite the three Wire-reset conventions, (d) document the strict-compliance taxonomy and recognized annotation forms (the five lint-recognized labels), (e) note `Reg::current_mut()` is gone, (f) point at the cross-stage RegFifo ownership section in `timing_discipline.md`.
+- **`AGENTS.md` Key References updated.** Added a pointer to `project-plans/sparkling-dazzling-starfish.md` summarizing what the plan closes (cross-stage RegFifo ownership pattern, DRAMSim3 CDC split, strict-compliance lint).
+- **Carry-over items from consolidation reviews #1 and #2 resolved here:** the Wire-reset convention table is now in `timing_discipline.md`; the setter nullptr-tolerance convention is documented (with the `set_instr_buffer_flush_request` fallback explicitly called out as a known fidelity-risk item); the phase-marker comment density in `timing_model.cpp` was NOT collapsed here — the comments remain in-source as the historical "why this lives here" record. Future churn can prune as natural touch occurs.
+- **Files modified:** `resources/timing_discipline.md`, `resources/cpp_coding_standard.md`, `.claude/CLAUDE.md` (the real path that `AGENTS.md` symlinks to).
+- **Latitude policy invocations:** none. Pure doc-sync.

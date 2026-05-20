@@ -183,15 +183,16 @@ all read this cycle's fresh value.
 
 ## State primitives (`reg.h`)
 
-The classifications above are *encoded* by three typed primitives in
+The classifications above are *encoded* by four typed primitives in
 `sim/include/gpu_sim/timing/reg.h`. They make the discipline structural:
 a same-cycle-visible mutation cannot be written by accident.
 
 | Classification | Primitive | Encoding |
 |----------------|-----------|----------|
 | REGISTERED (`current_*`) | `Reg<T>` | `current()` committed read; `set_next()`/`next_mut()` stage; `commit()` latches; `seed()` re-establishes `next_ = current_` |
-| REGISTERED FIFO | `RegFifo<T>` | `current()` committed deque; `stage_push()`/`stage_pop()` stage intents; `commit()` applies pop-then-push; `seed()` is a no-op |
-| COMBINATIONAL backward (`next_*`) | `Wire<T>` | `drive()` asserts; `value()` reads; `reset()` (top of producer's `evaluate()`) de-asserts. No committed twin, no `commit()` |
+| REGISTERED FIFO | `RegFifo<T>` | `current()` committed deque; `stage_push()` / `stage_pop()` stage intents; `commit()` applies pop-then-push; `seed()` is a no-op. Multi-push via a `staged_pushes_` deque and multi-pop via a `pops_` counter (Phase 5a / Phase 5 extensions) cover cross-clock-domain consumers that need >1 push or >1 pop per cycle |
+| **MEMORYLESS PULSE** | `PulseReg<T>` | `current()` last cycle's latched pulse (T{} when no driver); `set_next()`/`next_mut()` stage; `commit()` latches **and resets `next_` to T{}**; `seed()` defaults `next_` to T{} too. Producer must drive every cycle it wants a value to latch; silence latches T{} |
+| COMBINATIONAL backward (`next_*`) | `Wire<T>` | `drive()` asserts; `value()` reads; `reset()` de-asserts. No committed twin, no `commit()` |
 
 A class owning registers derives `RegisteredStage` and calls
 `register_state(&r1, &r2, ...)` once in its constructor body.
@@ -206,36 +207,116 @@ re-evaluation idempotent.
 `Reg::next()` is an *intra-stage* staged read (a producer reading back a
 value it staged earlier this `evaluate()`); a cross-module `next()` read
 is the forbidden combinational-forward edge and is lint-enforced.
-`Reg::current_mut()` is the narrow exception: the redirect-flush pattern,
-where a branch mispredict resolved this same cycle forces an upstream
-stage to invalidate committed state mid-`evaluate()` (the redirect's
-same-cycle effect — e.g. `FetchStage` clearing `current_output_`). It is
-not a normal staged write; ordinary updates stage via `set_next()` /
-`next_mut()` and latch at `commit()`. A
-stage's public `current_*()` / `next_*()` accessors forward to the
-underlying primitive, so the accessor surface and naming rules below are
-unchanged.
 
-**Deliberate non-registers.** Two kinds of state are *not* wrapped:
-*sim-instrumentation* — observational counters with no clocked-hardware
-meaning (e.g. `dramsim3` `fabric_cycle_` / `dram_ticks_` / peak-queue
-counters, the monotonic FIFO-occupancy accumulators) — and the
-documented one-shot `ALUUnit::branch_resolved_`. These stay plain
-members, annotated `// sim-instrumentation`, exempt from the lint.
+**`Reg::current_mut()` no longer exists.** It was deleted in
+`project-plans/goofy-humming-dream.md` Phase 8 — a register's Q does not
+change between clock edges, so a mid-cycle write to the committed slot
+has no synthesis analog. The five patterns that previously needed
+`current_mut()` are now encoded directly: redirect-flush via
+combinational `Wire`-gated reads at the consumer, post-commit
+consumed-marks via co-staged push + pending-clear, memoryless-consumer
+slots via `PulseReg<T>` (whose `commit()` resets `next_` to T{}),
+deferred-claim dual-writes via `Wire<bitset>` OR-mixed with the
+committed flag, and test-hook dual-writes via explicit `seed_all()`
+calls before arming the staged slot. The lint enforces that
+`current_mut(` cannot reappear.
 
-**Memoryless-consumer opt-out.** A `Reg<T>` that models a single-cycle
-command slot — the producer must re-stage every cycle, the consumer
-consumes the committed slot and clears it mid-`evaluate()` via
-`Reg::current_mut()` — must opt out of `tick()`'s seed phase. Auto-seed
-(`next_ = current_`) would re-latch the just-consumed value when the
-producer skipped a cycle. The pattern is: (i) the owning stage has no
-`seed_next()` method and is not in `tick()`'s seed list; (ii)
-`evaluate()` consumes via `current_mut().valid = false` after the
-mid-cycle read; (iii) `commit()` calls `commit_all()` then `set_next(T{})`
-to re-clear the staged slot. Sites: `L1Cache::load_cmd_`/`store_cmd_`
-(Phase 5a), `LoadGatherBufferFile::claim_request_` (Phase 5b),
-`FixedLatencyMemory` / `DRAMSim3Memory` `read_request_`/`write_request_`
-(Phase 6).
+### Cross-stage RegFifo ownership pattern
+
+Phases 3-5 of `project-plans/sparkling-dazzling-starfish.md` codified
+the ownership pattern for FIFOs whose producer and consumer live in
+different stages:
+
+- The FIFO is declared as a direct member of `TimingModel` (a peer of
+  the producer and consumer stages, not a member of either), borrowing
+  the `WarpState[]` ownership precedent.
+- Each touching stage holds a `RegFifo<T>*` back-pointer wired at
+  construction via a `set_<name>_fifo(...)` setter (nullptr-tolerant
+  for unit-test fixtures).
+- `TimingModel::commit_cross_stage_fifos()` runs a single ungated
+  `commit()` pass over every cross-stage FIFO, sequenced after every
+  per-stage `commit_all()`. Sites today: `addr_gen_fifo_` (LdStUnit ⇄
+  CoalescingUnit), `mem_responses_` / `mem_write_acks_` (mem_if ⇄
+  cache), `dramsim3_request_fifo_` (fabric ⇄ DRAM clock stages),
+  `instr_buffer_flush_request_` (per-warp Wire driving each
+  WarpState's instr_buffer commit).
+- The producer conditions `stage_push()` on the appropriate backward
+  stall `Wire` in its `evaluate()` — the literal simulator translation
+  of the RTL `wr_en && !stall` AND-gate. The consumer calls
+  `stage_pop()` unconditionally (modulo its own pop decision).
+- On a stalled cycle: producer's pipeline registers freeze
+  (`commit_all()` early-returns), producer's evaluate skips
+  `stage_push`, consumer's `stage_pop` still applies — the FIFO
+  shrinks; the held push lands on the resumed cycle. Matches RTL
+  exactly.
+
+### Wire-reset convention
+
+Three reset-placement conventions are in use for `Wire<T>`. Each Wire's
+declaration comment names which convention it follows:
+
+| Convention | When | Sites |
+|------------|------|-------|
+| **Top-of-tick** (in `TimingModel::tick()`'s seed phase) | Cross-stage same-tick signals whose producer drives mid-tick and whose consumer reads later in the same tick. The wire's role is one full tick; the next tick reseeds before any driver runs | `next_redirect_`, `deactivation_request_`, `instr_buffer_flush_request_` |
+| **Top-of-evaluate** (producer's `evaluate()` reset) | Cross-stage same-cycle backward stalls driven by a single producer's evaluate and consumed back-to-front the same cycle | Writeback-stall Wire from `WritebackArbiter`; cache stall Wires |
+| **End-of-commit** (owner's `commit()` tail reset) | Intra-class same-tick staging slots driven during the owner's `evaluate()` or arbitration step and consumed at the owner's `commit()` | `just_claimed_`, `next_port_claimed_`, `next_release_` (LoadGatherBufferFile); `push_staged_this_cycle_` (LdStUnit); the execution-units' `busy_this_cycle_` / `accepted_this_cycle_` |
+
+The key distinguishing question is **the wire's role across time**: a
+wire whose producer and consumer are *different stages* within one tick
+resets at top-of-tick (the next tick is when the producer reseeds). A
+wire whose producer and consumer are the *same owner* (driven during
+its `evaluate()`/arbitration and consumed at its `commit()`) resets at
+end-of-commit because the wire's role ends at that cycle's commit
+boundary. Cross-stage same-cycle stalls reset at the producer's
+evaluate-top because the producer is sole driver and any upstream read
+must see this cycle's freshly-driven value.
+
+### Setter nullptr-tolerance convention
+
+Every back-pointer setter on a stage class (`set_addr_gen_fifo`,
+`set_response_queues`, `set_request_fifo`, `set_deactivation_request`,
+`set_instr_buffer_flush_request`, …) follows this convention:
+**nullptr → no-op behavior at the consume site; never a fallback to a
+legacy non-faithful path.** A test fixture that omits the setter sees
+the consume call become a no-op (e.g. `current_has_response()`
+returns false; the eligibility mask becomes zero; the flush wire
+becomes inert). The single exception today is
+`FetchStage::set_instr_buffer_flush_request` whose nullptr branch
+falls back to an immediate `instr_buffer.flush()` — a known fidelity-
+risk pattern documented for migration to the strict no-op convention.
+
+### Sim-instrumentation and other deliberate non-state members
+
+The strict-compliance lint (Phase 7 of
+`project-plans/sparkling-dazzling-starfish.md`) recognizes five
+annotation forms that exempt a plain field from primitive-wrapping:
+
+- `// sim-instrumentation` — observational counter with no
+  clocked-hardware analog (e.g. `dramsim3_memory.cpp`'s `fabric_cycle_`
+  / `dram_ticks_` / peak-queue counters; the LdStUnit
+  `fifo_total_pushes_` monotonic accumulator).
+- `// test-only-override` — test-fixture hook (e.g.
+  `FetchStage::redirect_override_`, the various `*_override_` flags).
+- `// back-pointer` — wiring to another component, nullptr-tolerant
+  per the setter convention above.
+- `// config` — set once at construction, never mutated thereafter.
+- `// timing-naming-allow: <reason>` — explicit per-field escape with
+  a justification (used for `TimingModel::warps_`, the cross-stage
+  RegFifo declarations themselves, and a handful of other genuine
+  exceptions).
+
+Every plain field in `sim/include/gpu_sim/timing/*.h` must carry one
+of these annotations OR be a primitive, reference, or const-qualified.
+Legacy annotation forms (`// staging`, `// scratch`, `// internal
+scheduling`) are explicitly rejected.
+
+**`InstructionBuffer::commit(bool flush_request)`** is the only
+parameter-taking `commit()` in the timing model — a deliberate
+ergonomic exception because `InstructionBuffer` is not a
+`RegisteredStage` (the per-warp commit lifecycle is driven directly
+from `TimingModel::tick()`). The parameter threads the per-warp flush
+bit through the buffer commit without requiring the buffer to read
+the wire itself.
 
 ## Postfix design language
 

@@ -29,6 +29,7 @@ The design is loosely modeled on NVIDIA SM architecture but simplified for FPGA 
 - **Onboarding Guide:** [/resources/onboarding.md](/resources/onboarding.md) — introduction to the project, codebase map, build/test/run instructions, and workflow overview for new contributors
 - **Refactor Workflow:** [/resources/refactor_workflow.md](/resources/refactor_workflow.md) — phased checklist for behavior-preserving multi-step refactors (regression-as-contract, consolidation review, no test-authoring round). Distinct from `multi-agent-workflow`, which is shaped for feature additions.
 - **Reg Fidelity Audit:** [/project-plans/reg-fidelity-audit.md](/project-plans/reg-fidelity-audit.md) — follow-up checklist enumerating every cross-stage / latch-point `Reg::next()` read in the timing model, each to be classified as a legitimate intra-stage staged read or a genuine same-cycle hazard to convert to `current()`. Produced by the `reg.h` migration's final phase; the audit itself is a separate task.
+- **Reg-family Closeout Plan:** [/project-plans/sparkling-dazzling-starfish.md](/project-plans/sparkling-dazzling-starfish.md) — phased refactor plan closing the deliberate-non-register gaps left by the prior `current_mut()`-elimination migration (`goofy-humming-dream.md`). Establishes the cross-stage `RegFifo` ownership pattern, splits DRAMSim3 into fabric/DRAM-clock CDC stages, and extends the timing-naming lint to a strict-compliance per-member classification taxonomy. Phase-by-phase findings live in the plan file.
 
 ## Project Structure
 
