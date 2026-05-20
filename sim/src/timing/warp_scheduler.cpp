@@ -265,6 +265,15 @@ void WarpScheduler::evaluate() {
         out.prediction = selected_entry.prediction;
         output_.set_next(out);
 
+        // Phase 5 of current_mut() elimination (Pattern 2): the pop stays
+        // immediate. Scheduler is the last stage in the back-to-front
+        // evaluate sweep, so no other stage reads the buffer this cycle
+        // after the pop — an immediate pop and a staged pop are
+        // observationally equivalent. The push side (decode.stage_push)
+        // does stage to align with hardware semantics on the producer's
+        // committed-state write. Keeping pop immediate also lets unit-test
+        // fixtures (which bypass tick() and so don't call the per-warp
+        // buffer.commit) continue to work without modification.
         warps_[selected_warp].instr_buffer.pop();
 
         // ---- Issue-side bookkeeping for the selected warp ------------------

@@ -322,6 +322,15 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Test-helper updates.** `pump_until_drained` and `pump_until_response` in `test_dramsim3_memory.cpp`, and `tick_mem` in `test_cache.cpp` and `test_cache_mshr_merging.cpp`, now call `mem.commit()` (or `mem_if.commit()`) per loop iteration. Each iteration models one tick; the commit advances the `PulseReg<PendingMemoryRequest>` slot's D input. Previously these helpers called `evaluate()` repeatedly without `commit()`, relying on the old `current_mut()` clear to single-fire each request — a non-hardware-faithful pattern that the new shape exposes.
 - **7 of 11 `current_mut()` call sites eliminated.** Remaining: Pattern 2 (decode commit consumed-mark, 1 site).
 
+### Phase 5
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change:** Pattern 2 eliminated. `InstructionBuffer` extended with a RegFifo-style staged-push/staged-pop API. Decode's evaluate now stages the pending→buffer push via `instr_buffer.stage_push()` and clears `pending_.next_mut().valid = false` (instead of pushing and clearing via `current_mut()` in `decode.commit()` after `commit_all()`). Per-warp `instr_buffer.commit()` added to `TimingModel::tick()` commit phase (both panic and non-panic paths), applying the staged push in pop-then-push order. The buffer-full check moved from `decode.commit()` time to `decode.evaluate()` time.
+- **Asymmetric push/pop discipline.** The push side is staged (decode.stage_push, applied at the per-warp `instr_buffer.commit()`). The pop side stays immediate (scheduler.pop() during `scheduler.evaluate()`). Scheduler is the last stage in the back-to-front sweep, so no other stage reads the buffer this cycle after the pop — an immediate pop is observationally equivalent to a staged one, and keeping it immediate lets unit-test fixtures (which bypass `tick()` and never call the per-warp `buffer.commit()`) continue to work without modification. Tests use the buffer's immediate `push()` / `pop()` for fixture setup; production paths use the staged API.
+- **Test update.** `test_timing_components.cpp` "DecodeStage: redirect drops carried-forward pending decode" — the buffer-fill step moved from between `decode.evaluate()` and `decode.commit()` to before `decode.evaluate()`. The OLD code checked is_full at commit; the NEW code checks at evaluate. The carry-forward path triggers when the buffer is full at evaluate time. The test's intent (verify redirect drops a carried-forward pending) is unchanged.
+- **`InstructionBuffer::flush()`** still does immediate `entries_.clear()`. This is a same-cycle direct mutation of committed state — a deferred Phase 6 finding (durable plain state cleanup, redirect-flush handling), not in scope for Pattern 2 elimination.
+- **All 11 production `current_mut()` call sites eliminated.** The only remaining occurrence is the method declaration in `reg.h:84` itself, which Phase 8 will delete with the lint rule extension.
+
 ...
 
 ## Audit findings — plain members in timing headers

@@ -192,14 +192,15 @@ TEST_CASE("DecodeStage: redirect drops carried-forward pending decode", "[timing
     REQUIRE(fetch.current_output().has_value());
 
     DecodeStage decode(warps.data(), fetch);
-    // Decode stages a pending entry for warp 0 from the fetch output.
+    // Phase 5 of current_mut() elimination (Pattern 2): the buffer-full
+    // check has moved from decode.commit() to decode.evaluate(). Fill the
+    // buffer BEFORE decode.evaluate() so the staged push fails and pending
+    // carries forward in next_pending_ — the exact state a mispredict
+    // redirect must invalidate.
+    warps[0].instr_buffer.push(BufferEntry{});
+    warps[0].instr_buffer.push(BufferEntry{});
     decode.seed_next();
     decode.evaluate();
-    // Fill the warp buffer so decode.commit()'s pending->buffer push FAILS,
-    // leaving the entry carried forward in current_pending_ — the exact state
-    // a mispredict redirect must invalidate.
-    warps[0].instr_buffer.push(BufferEntry{});
-    warps[0].instr_buffer.push(BufferEntry{});
     decode.commit();
     REQUIRE(decode.current_pending_warp().has_value());  // carried forward
     REQUIRE(warps[0].instr_buffer.size() == 2);

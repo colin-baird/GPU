@@ -380,6 +380,12 @@ bool TimingModel::tick() {
         cache_->commit();
         mem_if_->commit();
         gather_file_->commit();
+        // Phase 5 of current_mut() elimination: apply per-warp instr_buffer
+        // staged ops (rare in panic path — decode/scheduler typically idle
+        // — but kept for consistency with the non-panic commit phase).
+        for (auto& warp : warps_) {
+            warp.instr_buffer.commit();
+        }
 
         record_cycle_trace(false);
 
@@ -599,6 +605,14 @@ bool TimingModel::tick() {
     // The gather buffer's write-port scratch must be cleared after the
     // arbiter observes current_has_result() for this cycle.
     gather_file_->commit();
+    // Phase 5 of current_mut() elimination (Pattern 2): apply each warp's
+    // staged instr_buffer push (from decode.evaluate) and pop (from
+    // scheduler.evaluate). The buffer commit is pop-then-push, capacity-
+    // checked. This replaces decode.commit()'s post-flip direct buffer push
+    // + pending_.current_mut().valid=false clear.
+    for (auto& warp : warps_) {
+        warp.instr_buffer.commit();
+    }
     scoreboard_.commit();
     // Phase 5: flip branch-shadow tracker. Sequenced after every stage
     // that may have written into next_ (scheduler note_branch_issued on

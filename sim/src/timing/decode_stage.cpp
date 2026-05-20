@@ -81,6 +81,23 @@ void DecodeStage::evaluate() {
     pending_.next_mut().entry = entry;
     pending_.next_mut().target_warp = fetch_out->warp_id;
     pending_.next_mut().valid = true;
+
+    // Phase 5 of current_mut() elimination (Pattern 2): stage the
+    // pending->buffer push here in evaluate() instead of writing the
+    // committed buffer at the tail of commit() and clearing pending_ via
+    // current_mut(). If the target warp's buffer has room (committed
+    // state), the push is staged via instr_buffer.stage_push and the
+    // pending_ staged-slot is cleared. The per-warp instr_buffer.commit()
+    // called from TimingModel::tick() applies the staged push at the cycle
+    // boundary, latching it alongside pending_'s commit_all() flip. If the
+    // buffer is full, pending_ stays valid in the staged slot and decode
+    // retries next cycle (seed_next() carries pending_ forward).
+    if (pending_.next().valid &&
+        !warps_[pending_.next().target_warp].instr_buffer.is_full()) {
+        warps_[pending_.next().target_warp].instr_buffer.stage_push(
+            pending_.next().entry);
+        pending_.next_mut().valid = false;
+    }
 }
 
 void DecodeStage::commit() {
@@ -90,17 +107,12 @@ void DecodeStage::commit() {
     // double-buffered pending slot — evaluate() wrote the staged value (and
     // Phase 10E: already applied any redirect-invalidate to it the same cycle
     // the branch resolved).
+    // Phase 5 of current_mut() elimination (Pattern 2): the pending->buffer
+    // push is no longer done here. evaluate() stages the push via
+    // instr_buffer.stage_push(); the per-warp commit driven from
+    // TimingModel::tick() applies the staged push pop-then-push alongside
+    // pending_'s flip.
     commit_all();
-
-    // The pending->buffer push is a committed-state mutation and operates on
-    // the committed pending slot after the latch above.
-    if (pending_.current().valid) {
-        if (!warps_[pending_.current().target_warp].instr_buffer.is_full()) {
-            warps_[pending_.current().target_warp].instr_buffer.push(
-                pending_.current().entry);
-            pending_.current_mut().valid = false;
-        }
-    }
 }
 
 void DecodeStage::reset() {
