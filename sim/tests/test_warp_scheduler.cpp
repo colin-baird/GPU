@@ -251,6 +251,7 @@ TEST_CASE("WarpScheduler: stalls on writeback-bitmap contention", "[scheduler]")
     // an ALU op (Phase 10B end-of-phase ALU issue->writeback offset is 3 —
     // three REGISTERED forward edges). Reserving at offset 4 here lands
     // exactly on (post-advance head) + 3, so the gate sees the collision.
+    f.scheduler->seed_next();
     f.scheduler->test_reserve_writeback_slot(ExecUnit::ALU, 4);
 
     f.scoreboard.seed_next();
@@ -282,6 +283,7 @@ TEST_CASE("WarpScheduler: multiply writeback bitmap uses configured pipeline dep
     // test_reserve_writeback_slot stamps writeback_bitmap_[head + offset]
     // before evaluate() advances the head. Reserve at +1 relative to the
     // runtime issue offset so the post-advance gate sees the collision.
+    f.scheduler->seed_next();
     f.scheduler->test_reserve_writeback_slot(ExecUnit::MULTIPLY,
                                              runtime_offset + 1);
 
@@ -304,6 +306,7 @@ TEST_CASE("WarpScheduler: stalls when iterative target unit busy", "[scheduler]"
 
     // Arm the DIVIDE countdown. evaluate() decrements it once at the top, so
     // arm with 2 to leave it at 1 (still > 0) when the gate reads it.
+    f.scheduler->seed_next();
     f.scheduler->test_set_unit_busy(ExecUnit::DIVIDE, 2);
 
     f.scoreboard.seed_next();

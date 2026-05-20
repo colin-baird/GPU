@@ -105,19 +105,19 @@ public:
     //  - test_reserve_writeback_slot claims a writeback-bitmap entry at
     //    (bitmap_head_ + offset), so the gate refuses a fixed-latency op whose
     //    predicted writeback cycle collides with the reservation.
-    // Phase 4 (reg.h migration): these are armed pre-evaluate, and the tests
-    // do NOT call scheduler->seed_next() before evaluate() — so we write into
-    // BOTH the committed and the staged slot. That preserves the pre-Phase-4
-    // single-buffered semantics regardless of whether the caller also seeds:
-    // if seed_all() runs, it copies current -> next (no-op given dual-write);
-    // if it does not, next already holds the test value. evaluate()'s in-place
-    // mutation then reads back the armed value via next() exactly as before.
+    // The hooks write to the staged slot only. The required setup order is:
+    //   1) f.scheduler->seed_next();       // copies committed -> staged
+    //   2) f.scheduler->test_set_unit_busy(...);   // overwrites staged
+    //   3) f.scheduler->evaluate();        // mutates staged in place
+    // Calling seed_next() AFTER a hook would clobber the armed value (seed
+    // copies committed -> staged). Pre-Phase-1-of-current_mut()-removal the
+    // hooks dual-wrote committed AND staged to be order-insensitive; the
+    // committed-side write was a Q-mutation that the current_mut() anti-pattern
+    // refactor eliminates.
     void test_set_unit_busy(ExecUnit unit, uint32_t cycles) {
-        unit_busy_.current_mut()[exec_unit_index(unit)] = cycles;
         unit_busy_.next_mut()[exec_unit_index(unit)] = cycles;
     }
     void test_reserve_writeback_slot(ExecUnit unit, uint32_t offset) {
-        writeback_bitmap_.current_mut()[bitmap_slot(offset)] = unit;
         writeback_bitmap_.next_mut()[bitmap_slot(offset)] = unit;
     }
 

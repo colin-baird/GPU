@@ -15,7 +15,13 @@ The deeper principle, which this plan also commits to:
 
 `current_mut()` is deleted at the end of the refactor and the lint enforces it cannot return.
 
-This is a behavior-correcting refactor following [`/resources/refactor_workflow.md`](/resources/refactor_workflow.md): regression-as-contract, phased commits, consolidation review every ~3 phases. The `reg-fidelity-audit.md` framing applies — most phases are expected byte-identical (the new shape produces the same observation as the old `current_mut()` shortcut), but each phase explicitly runs `bench_compare` and documents any delta as a revealed pre-existing fidelity bug.
+This is a behavior-correcting refactor following [`/resources/refactor_workflow.md`](/resources/refactor_workflow.md): regression-as-contract, phased commits, consolidation review every ~3 phases.
+
+**On cycle deltas.** The primary intent of each Phase 6 / Phase 7 conversion is to wrap *already-correct* per-structure hardware fidelity into the type system — the producer/consumer code is in most cases already respecting the cycle boundary, and the wrap just encodes that discipline so the lint can enforce it and a future contributor can't subvert it. The expected outcome of a faithful wrap is therefore byte-identical cycle counts.
+
+**However, exposing latent fidelity bugs is an explicit secondary goal of this refactor, not a side effect to suppress.** If a phase produces a cycle delta, the delta is evidence that the existing plain-field code path was *not* already hardware-faithful at that site — a pre-existing latent bug now made visible. The correct response is full delta-triage per `refactor_workflow.md`: (1) confirm the wrap itself is semantically faithful (no copy-paste mistake re-routing a committed read through a staged accessor or vice versa); (2) if faithful, investigate the cycle the divergence appears on, identify the field and mechanism, document them in this plan's per-phase findings; (3) accept the new cycle counts as the correct behavior — do **not** attempt to reproduce the old (incorrect) observation by adding combinational gating, dual-writes, or other workarounds. The new cycle counts become the baseline for subsequent phases.
+
+The `reg-fidelity-audit.md` framing applies: most phases are expected byte-identical, but the audit value is exactly in the deltas that surface.
 
 ## Anti-pattern inventory
 
@@ -272,7 +278,10 @@ Captured via `bash ./tests/run_workload_benchmarks.sh --build-dir build` on a cl
 - **Audit:** consolidated above; ~57 already-conformant members, 13 Phase 7 Wire conversions, 12 Phase 6 Reg/RegFifo conversions (including the known `warp_state.instr_buffer`), 7 Phase 4 PulseReg conversions (matches prior plan scope). Six open classification questions surfaced for operator review before Phase 6/7 execution.
 
 ### Phase 1
-(to be filled in)
+
+- **Delta:** zero across all 6 benchmarks. ctest 31/31 pass.
+- **Change:** `WarpScheduler::test_set_unit_busy` and `test_reserve_writeback_slot` now write `next_mut()` only. The committed-side write (which was the Pattern 5 `current_mut()` use) is removed. The three callers in `sim/tests/test_warp_scheduler.cpp` (lines 254, 285-286, 307) now call `f.scheduler->seed_next()` BEFORE arming the hook — required order, since seeding after the arm would clobber the staged value. Doc comment block at `warp_scheduler.h:100-114` rewritten to document the required setup sequence.
+- **2 of 11 `current_mut()` call sites eliminated.** Remaining patterns: 1 (redirect-flush), 2 (decode commit consumed-mark), 3 (7 memoryless-consumer sites), 4 (gather dual-write).
 
 ...
 
@@ -302,7 +311,9 @@ Standard `evaluate()`-writes-`commit()`-reads scratch. Mechanical conversion: `W
 
 ### Phase 6 — durable plain state → `Reg<T>` / `RegFifo<T>` (24 fields)
 
-Real durable cross-cycle state hiding as plain fields. Each is a genuine clocked register / register-array / FIFO in hardware terms. **Strict-compliance policy:** any container that holds data across `tick()` calls wraps, regardless of whether the producer and consumer co-occur within one `evaluate()`. The `MultiplyUnit::pipeline_` precedent (`multiply_unit.h:88` — `Reg<std::deque<PipelineEntry>>` with auto-seed-copy-then-mutate) applies uniformly.
+Currently-plain fields that already hold data across `tick()` calls. In most cases the existing producer/consumer code is already treating them with the correct cycle-boundary discipline; the wrap encodes that fidelity in the type system so the lint can verify it and a future contributor can't accidentally break it. **Strict-compliance policy:** any container that holds data across `tick()` calls wraps, regardless of whether the producer and consumer co-occur within one `evaluate()`. The `MultiplyUnit::pipeline_` precedent (`multiply_unit.h:88` — `Reg<std::deque<PipelineEntry>>` with auto-seed-copy-then-mutate) applies uniformly.
+
+Expected outcome per field: byte-identical cycle counts. Any delta is a discovered place where the existing plain-field code path was not actually respecting the cycle boundary — handle per the delta-triage policy in the Context section.
 
 | File:line | Field | Wrap |
 |-----------|-------|------|
