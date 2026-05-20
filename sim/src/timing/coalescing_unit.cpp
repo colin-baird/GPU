@@ -61,8 +61,14 @@ void CoalescingUnit::evaluate() {
         }
 
         current_entry_.set_next(fifo_front);
-        // Phase M1 + Phase 7: defer the pop to commit (Wire<bool>).
-        next_pop_.drive(true);
+        // Phase 3 (close-the-Reg-family-migration): stage the pop directly on
+        // the cross-stage addr-gen FIFO. The pop applies at TimingModel's
+        // dedicated ungated cross-stage commit pass (NOT at CoalescingUnit's
+        // own commit), so it drains even on a writeback-stall cycle when
+        // LdStUnit's commit is gated and the producer holds its push.
+        if (addr_gen_fifo_ != nullptr) {
+            addr_gen_fifo_->stage_pop();
+        }
         processing_.set_next(true);
 
         // All-or-nothing coalescing check.
@@ -141,16 +147,10 @@ void CoalescingUnit::evaluate() {
 }
 
 void CoalescingUnit::commit() {
-    // Phase M1: apply the deferred pop on the ldst addr-gen FIFO. This commit
-    // is ungated — coalescing is not part of the writeback-stall freeze, so a
-    // pop may still drain the FIFO even when LdStUnit::commit is held; the
-    // held push lands on the resumed cycle.
-    if (next_pop_.value()) {
-        if (!ldst_.current_fifo_empty()) {
-            ldst_.pop_front();
-        }
-        next_pop_.reset();
-    }
+    // Phase 3 (close-the-Reg-family-migration): the addr-gen FIFO pop is
+    // applied by TimingModel's dedicated ungated cross-stage commit pass,
+    // not here. CoalescingUnit::commit no longer mutates the FIFO directly;
+    // the pop intent was already staged on the RegFifo in evaluate().
     // Phase 6 of current_mut() elimination: flip the wrapped Regs
     // (processing_, current_entry_, is_coalesced_, serial_index_,
     // cmd_in_flight_) in one sweep.
@@ -159,7 +159,8 @@ void CoalescingUnit::commit() {
 
 void CoalescingUnit::reset() {
     reset_all();
-    next_pop_.reset();
+    // The cross-stage addr-gen FIFO is owned by TimingModel and reset by
+    // TimingModel; do not clear it here.
 }
 
 } // namespace gpu_sim

@@ -220,6 +220,12 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
                   mem_if, gather_file, stats);
     LdStUnit ldst(8, 4, stats);
     CoalescingUnit coal(ldst, cache, gather_file, LINE_SIZE, stats);
+    // Phase 3 (close-the-Reg-family-migration): wire the cross-stage addr-
+    // gen FIFO (normally owned by TimingModel) and commit it explicitly in
+    // the fixture's tick sequence.
+    RegFifo<AddrGenFIFOEntry> addr_gen_fifo;
+    ldst.set_addr_gen_fifo(&addr_gen_fifo);
+    coal.set_addr_gen_fifo(&addr_gen_fifo);
 
     // Mark warp 0's gather buffer busy without issuing a load.
     gather_file.claim(0, 1, 0, 0, 0);
@@ -235,11 +241,13 @@ TEST_CASE("LoadGatherBuffer: gather_buffer_stall_cycles increments when warp is 
     for (int i = 0; i < 16 && ldst.current_fifo_empty(); ++i) {
         ldst.evaluate();
         ldst.commit();
+        addr_gen_fifo.commit();
     }
     REQUIRE_FALSE(ldst.current_fifo_empty());
 
     coal.evaluate();
     coal.commit();
+    addr_gen_fifo.commit();
 
     REQUIRE(stats.gather_buffer_stall_cycles == 1);
     // FIFO entry must remain (not popped) because the buffer was busy.

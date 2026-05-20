@@ -31,6 +31,18 @@ public:
         return processing_.current() ? &current_entry_.current() : nullptr;
     }
 
+    // Phase 3 (close-the-Reg-family-migration): cross-stage addr-gen FIFO
+    // back-pointer. The FIFO is declared as a direct member of TimingModel
+    // (a peer of CoalescingUnit and the producer LdStUnit, not a member of
+    // either); TimingModel hands a back-pointer to both stages at
+    // construction. CoalescingUnit::evaluate() calls stage_pop() directly on
+    // it (unconditionally — modulo its own pop decision), and the cross-
+    // stage commit pass on TimingModel applies the pop. nullptr-tolerant for
+    // unit tests that exercise this stage in isolation.
+    void set_addr_gen_fifo(RegFifo<AddrGenFIFOEntry>* fifo) {
+        addr_gen_fifo_ = fifo;
+    }
+
 private:
     LdStUnit& ldst_;
     L1Cache& cache_;
@@ -59,13 +71,11 @@ private:
     // cycle semantics are register, not wire).
     Reg<bool> cmd_in_flight_;
 
-    // Phase 7 of current_mut() elimination: pop intent staged at evaluate,
-    // applied at commit by calling ldst_.pop_front(). Producer (LdStUnit)
-    // only writes the back of the deque at its own commit, so the front
-    // this consumer reads at commit is identical to the front it observed
-    // at evaluate. Wired as Wire<bool> encoding the transient evaluate→
-    // commit handoff.
-    Wire<bool> next_pop_;
+    // Phase 3 (close-the-Reg-family-migration): back-pointer to the cross-
+    // stage addr-gen FIFO owned by TimingModel. evaluate() calls stage_pop()
+    // directly; the pop applies at the ungated cross-stage commit pass.
+    // nullptr-tolerant for unit tests. back-pointer
+    RegFifo<AddrGenFIFOEntry>* addr_gen_fifo_ = nullptr;  // timing-naming-allow: back-pointer to TimingModel-owned cross-stage RegFifo; the FIFO itself is enrolled and committed at the TimingModel-owned cross-stage commit pass.
 };
 
 } // namespace gpu_sim

@@ -200,8 +200,15 @@ ROW_OVERRIDES: dict[int, list[tuple[str, str, str, str]]] = {
     # L1Cache stall flows back same-cycle COMBINATIONAL; gather-buffer
     # busyness is a REGISTERED back-pressure accessor read at the top of
     # coalescing's evaluate.
+    #
+    # Phase 3 (close-the-Reg-family-migration): the CoalescingUnit → LdStUnit
+    # "FIFO pop" edge is gone. The addr-gen FIFO is now a TimingModel-owned
+    # RegFifo<AddrGenFIFOEntry> (a peer of both stages, not a member of
+    # either). CoalescingUnit::evaluate calls stage_pop() directly on the
+    # FIFO; LdStUnit::evaluate calls stage_push() on the same FIFO; the
+    # cross-stage commit pass on TimingModel applies both atomically. There
+    # is no direct CoalescingUnit → LdStUnit method call at the source level.
     9: [
-        ("CoalescingUnit",       "LdStUnit",             "REGISTERED",    "FIFO pop"),
         ("CoalescingUnit",       "LoadGatherBufferFile", "REGISTERED",    "claim"),
         ("CoalescingUnit",       "L1Cache",              "REGISTERED",    "load/store"),
         ("L1Cache",              "CoalescingUnit",       "COMBINATIONAL", "stalled"),

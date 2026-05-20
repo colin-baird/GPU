@@ -47,19 +47,33 @@ void LdStUnit::evaluate() {
             cycles_remaining_.next_mut()--;
         }
         if (cycles_remaining_.next() == 0) {
-            // Phase M1: REGISTERED FIFO. Stage the push in next_push_; the
-            // commit phase applies it (gated by the writeback stall). The
-            // eligibility check uses the stable committed-cycle FIFO size;
-            // this mirrors fetch_stage.cpp's will_be_full check that does not
-            // account for the consumer's same-cycle pop. A one-cycle bubble
-            // when the FIFO is full and coalescing pops same-tick is the
-            // documented parity.
-            if (addr_gen_fifo_.size() < fifo_depth_) {
-                next_push_.drive(pending_entry_.next());
+            // Phase 3 (close-the-Reg-family-migration): cross-stage addr-gen
+            // FIFO. Stage the push on the TimingModel-owned RegFifo
+            // conditioned on !writeback_stall — the literal simulator
+            // translation of the RTL wr_en && !stall AND-gate. On a stalled
+            // cycle stage_push is skipped, this stage's commit_all() also
+            // early-returns, and the producer's pipeline registers
+            // (busy_/cycles_remaining_/pending_entry_) hold; the next-cycle
+            // evaluate() re-stages the push identically. The eligibility
+            // check reads current_size() (the stable committed-cycle FIFO
+            // depth) and ignores the consumer's same-cycle stage_pop, exactly
+            // mirroring the pre-migration "ignore same-cycle pop_front()"
+            // semantics — a one-cycle bubble when the FIFO is full and the
+            // consumer pops in the same tick is documented parity.
+            const bool wb_stall =
+                wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall();
+            const std::size_t fifo_size =
+                addr_gen_fifo_ != nullptr ? addr_gen_fifo_->current_size() : 0;
+            if (!wb_stall && fifo_size < fifo_depth_) {
+                if (addr_gen_fifo_ != nullptr) {
+                    addr_gen_fifo_->stage_push(pending_entry_.next());
+                }
+                push_staged_this_cycle_.drive(true);
                 pending_entry_.next_mut().valid = false;
                 busy_.set_next(false);
             }
-            // If FIFO full, stay busy (stall) until a slot opens
+            // If FIFO full or writeback-stalled, stay busy (stall) until a
+            // slot opens or the stall releases.
         }
     }
 }
@@ -67,10 +81,13 @@ void LdStUnit::evaluate() {
 void LdStUnit::commit() {
     // Phase 10B.3: writeback-stall self-gate. LdStUnit is one of the five
     // issue/execute units that freeze on a writeback-stall cycle: no
-    // commit_all() flip and no next_push_ application, so the next tick's
+    // commit_all() flip, no fifo_total_pushes_ increment, so the next tick's
     // seed_next()+evaluate() re-stages the push identically. Coalescing
-    // (ungated) may still pop from the FIFO this cycle, which simply
-    // shrinks it; the held push lands on the resumed cycle.
+    // (ungated) may still pop from the cross-stage FIFO this cycle via the
+    // TimingModel-owned commit pass, which simply shrinks it; the held push
+    // lands on the resumed cycle. Note that push_staged_this_cycle_ is also
+    // gated at evaluate() on the same !writeback_stall, so on a stall this
+    // wire is naturally de-asserted (the producer never staged the push).
     if (wb_arbiter_ != nullptr && wb_arbiter_->next_writeback_stall()) {
         return;
     }
@@ -87,28 +104,34 @@ void LdStUnit::commit() {
     busy_this_cycle_.reset();
     accepted_this_cycle_.reset();
 
-    // Phase M1: apply the staged push to the committed FIFO; advance the
-    // monotonic push counter in lockstep with the push (the scheduler's
-    // LDST FIFO-occupancy gate reads current_fifo_total_pushes()).
-    if (next_push_.value().has_value()) {
-        addr_gen_fifo_.push_back(*next_push_.value());
+    // Phase 3 (close-the-Reg-family-migration): the push lands at the cross-
+    // stage FIFO commit pass (TimingModel-owned, ungated, sequenced after
+    // this commit). Advance the monotonic push counter in lockstep with the
+    // push intent — the gating ensures push_staged_this_cycle_ was driven iff
+    // the cross-stage commit pass will apply the push to the queue. The
+    // scheduler's LDST FIFO-occupancy gate reads current_fifo_total_pushes()
+    // on the next tick (back-to-front sweep: scheduler.evaluate is sequenced
+    // after this commit), so the visibility timing matches the pre-migration
+    // commit-time-increment semantics byte-identically.
+    if (push_staged_this_cycle_.value()) {
         ++fifo_total_pushes_;
     }
-    next_push_.reset();
+    push_staged_this_cycle_.reset();
 
     commit_all();
 }
 
 void LdStUnit::reset() {
     reset_all();
-    addr_gen_fifo_.clear();
-    next_push_.reset();
+    // The cross-stage addr-gen FIFO is owned by TimingModel and reset by
+    // TimingModel; do not clear it here.
     // Phase 10B.0: cleared in lockstep with WarpScheduler::reset()'s
     // ldst_issued_total_ (both run in the panic-flush cascade) so the
     // (issued - pushed) difference restarts at zero.
     fifo_total_pushes_ = 0;
     busy_this_cycle_.reset();
     accepted_this_cycle_.reset();
+    push_staged_this_cycle_.reset();
 }
 
 bool LdStUnit::current_has_result() const {

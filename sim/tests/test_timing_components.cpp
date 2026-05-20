@@ -835,6 +835,11 @@ TEST_CASE("TLookupUnit: get_type returns TLOOKUP", "[timing][tlookup]") {
 TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[timing]") {
     Stats stats;
     LdStUnit ldst(32, 1, stats);
+    // Phase 3 (close-the-Reg-family-migration): addr-gen FIFO is a cross-
+    // stage RegFifo owned by TimingModel; here we provide a local one and
+    // drive its commit explicitly per fixture-pattern.
+    RegFifo<AddrGenFIFOEntry> addr_gen_fifo;
+    ldst.set_addr_gen_fifo(&addr_gen_fifo);
     auto first = make_issue_output(i_type(0, 1, isa::FUNCT3_LW, 5, isa::OP_LOAD));
     first.trace.is_load = true;
     auto second = make_issue_output(i_type(4, 1, isa::FUNCT3_LW, 6, isa::OP_LOAD));
@@ -844,17 +849,35 @@ TEST_CASE("LdStUnit: full address FIFO backpressures completion until a pop", "[
     ldst.accept(DispatchInput{first.decoded, first.trace, first.warp_id, first.pc}, 1);
     ldst.evaluate();
     ldst.commit();
+    addr_gen_fifo.commit();
     REQUIRE_FALSE(ldst.current_fifo_empty());
     REQUIRE_FALSE(ldst.current_busy());
 
     ldst.accept(DispatchInput{second.decoded, second.trace, second.warp_id, second.pc}, 2);
     ldst.evaluate();
     ldst.commit();
+    addr_gen_fifo.commit();
     REQUIRE(ldst.current_busy());
 
-    ldst.pop_front();
+    // The consumer (coalescing) would stage_pop on the cross-stage FIFO. The
+    // staged pop does not apply to the committed deque until addr_gen_fifo.
+    // commit() at the end of this tick; ldst.evaluate() therefore still sees
+    // current_size() == fifo_depth_ this cycle and cannot push (the
+    // documented one-cycle bubble when the FIFO is full and the consumer
+    // pops same-tick — mirrors the cross-stage hardware semantics of the
+    // production sweep).
+    addr_gen_fifo.stage_pop();
     ldst.evaluate();
     ldst.commit();
+    addr_gen_fifo.commit();
+    REQUIRE(ldst.current_fifo_empty());
+    REQUIRE(ldst.current_busy());
+
+    // Next tick: ldst.evaluate sees an empty committed FIFO and can stage
+    // its held push; the cross-stage FIFO commit applies it.
+    ldst.evaluate();
+    ldst.commit();
+    addr_gen_fifo.commit();
     REQUIRE_FALSE(ldst.current_fifo_empty());
     REQUIRE_FALSE(ldst.current_busy());
 }

@@ -226,6 +226,12 @@ TimingModel::TimingModel(const SimConfig& config, FunctionalModel& func_model, S
     ldst_->set_operand_collector(opcoll_.get());
     ldst_->set_writeback_arbiter(wb_arbiter_.get());
     ldst_->set_sim_cycle(&cycle_);
+    // Phase 3 (close-the-Reg-family-migration): wire the cross-stage addr-gen
+    // FIFO to both producer (LdStUnit) and consumer (CoalescingUnit). The
+    // FIFO is committed in commit_cross_stage_fifos() at the bottom of
+    // tick(), distinct from per-stage commit_all() calls.
+    ldst_->set_addr_gen_fifo(&addr_gen_fifo_);
+    coalescing_->set_addr_gen_fifo(&addr_gen_fifo_);
     opcoll_->set_scheduler(scheduler_.get());
     opcoll_->set_writeback_arbiter(wb_arbiter_.get());
     scheduler_->set_writeback_arbiter(wb_arbiter_.get());
@@ -308,6 +314,16 @@ bool TimingModel::execution_units_drained() const {
            !tlookup_->current_busy() && !tlookup_->current_has_result() &&
            !ldst_->current_busy() && ldst_->current_fifo_empty() &&
            !wb_arbiter_->current_busy();
+}
+
+void TimingModel::commit_cross_stage_fifos() {
+    // Phase 3 (close-the-Reg-family-migration): apply pop-then-push atomically
+    // on cross-stage FIFOs (peers of the producer/consumer stages, not
+    // members of either). Ungated by design — the FIFO's clock-enable
+    // semantics live at the producer's evaluate-time stage_push gating (the
+    // RTL wr_en && !stall AND-gate), not at the FIFO commit. Phases 4-5 add
+    // memory responses and DRAMSim3 CDC FIFOs here.
+    addr_gen_fifo_.commit();
 }
 
 void TimingModel::discard_writeback_results() {
@@ -415,6 +431,12 @@ bool TimingModel::tick() {
             warp.instr_buffer.commit();
             warp.commit();
         }
+        // Phase 3 (close-the-Reg-family-migration): ungated cross-stage FIFO
+        // commit pass. In the panic branch ldst_->evaluate / coalescing_->
+        // evaluate still run and may stage push/pop intents (the drain
+        // semantics rely on this — execution_units_drained() polls FIFO
+        // empty), so this pass applies them every panic-branch tick.
+        commit_cross_stage_fifos();
 
         record_cycle_trace(false);
 
@@ -687,6 +709,15 @@ bool TimingModel::tick() {
     // after every reader's evaluate() has already observed current_ from this
     // same cycle.
     branch_tracker_.commit();
+    // Phase 3 (close-the-Reg-family-migration): ungated cross-stage FIFO
+    // commit pass. Applies the addr-gen FIFO's pop-then-push atomically; the
+    // producer's writeback-stall gating happens at LdStUnit::evaluate-time
+    // (stage_push gated on !writeback_stall) and at LdStUnit::commit-time
+    // (gated commit_all() freezes the producer's pipeline registers on a
+    // stall), so on a stall the held push naturally re-stages next cycle.
+    // The FIFO itself is never frozen — its clock-enable lives at the
+    // evaluate-side stage_push AND-gate, not at this commit.
+    commit_cross_stage_fifos();
 
     // Phase 6: panic-flush cascade at the commit-phase boundary. Replaces
     // the prior mid-evaluate reset() cascade. pending_panic_flush_ was
@@ -702,6 +733,14 @@ bool TimingModel::tick() {
         gather_file_->flush();
         wb_arbiter_->flush();
         branch_tracker_.reset();
+        // Phase 3 (close-the-Reg-family-migration): the cross-stage addr-gen
+        // FIFO is intentionally NOT cleared here — pre-migration semantics
+        // also left it untouched in the panic-flush cascade (LdStUnit::reset
+        // is not called from this block; scheduler/opcoll/gather_file/
+        // wb_arbiter are the only stages flushed). The panic controller's
+        // step-2 drain polls execution_units_drained() — which checks
+        // ldst_->current_fifo_empty() — until quiescent, so any in-flight
+        // entries naturally drain during the panic-branch ticks that follow.
         pending_panic_flush_.reset();
     }
 

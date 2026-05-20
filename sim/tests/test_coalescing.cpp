@@ -43,10 +43,14 @@ DispatchInput make_load_dispatch(uint32_t warp_id, uint8_t dest_reg,
 }
 
 // Bring the ldst unit to the state where its FIFO has a pending entry.
-void settle_ldst(LdStUnit& ldst) {
+// Phase 3 (close-the-Reg-family-migration): commit the cross-stage addr-gen
+// FIFO each cycle so the staged push actually lands in the committed deque
+// (LdStUnit::commit no longer mutates the FIFO directly).
+void settle_ldst(LdStUnit& ldst, RegFifo<AddrGenFIFOEntry>& addr_gen_fifo) {
     for (int i = 0; i < 16 && ldst.current_fifo_empty(); ++i) {
         ldst.evaluate();
         ldst.commit();
+        addr_gen_fifo.commit();
     }
 }
 
@@ -58,23 +62,30 @@ struct CoalFixture {
                   mem_if, gather_file, stats};
     LdStUnit ldst{8, 4, stats};
     CoalescingUnit coal{ldst, cache, gather_file, LINE_SIZE, stats};
+    // Phase 3 (close-the-Reg-family-migration): the cross-stage addr-gen
+    // FIFO normally lives on TimingModel; this fixture owns one and wires
+    // it to both stages.
+    RegFifo<AddrGenFIFOEntry> addr_gen_fifo{};
+
+    CoalFixture() {
+        ldst.set_addr_gen_fifo(&addr_gen_fifo);
+        coal.set_addr_gen_fifo(&addr_gen_fifo);
+    }
 
     // Phase M3: drive one cycle of the memory pipeline. Order mirrors
     // TimingModel::tick() — gather_file.evaluate (apply REGISTERED claim)
     // → cache.evaluate (FILL + secondary + REGISTERED cmd processing) →
     // coalescing.evaluate (stage cmd) → mem_if.evaluate → drain_write_buffer
-    // → commits.
+    // → commits → cross-stage FIFO commit.
     //
     // Phase 10B.0.5: this fixture drives only the *downstream* memory
     // pipeline; settle_ldst() has already pushed the accepted op into ldst's
     // addr-gen FIFO and tick() never calls ldst.evaluate(). ldst.commit() is
-    // therefore not invoked here: under the explicit double-buffering
-    // convention the LdSt next_push_ staging slot is cleared at the top of
-    // evaluate() (not in commit()), so calling commit() without a preceding
-    // evaluate() would re-apply settle_ldst()'s last staged push every tick.
-    // Under the prior convention ldst.commit() here was a no-op (the last
-    // settle_ldst commit had self-cleared next_push_), so dropping it is
-    // byte-identical.
+    // therefore not invoked here.
+    //
+    // Phase 3 (close-the-Reg-family-migration): the addr-gen FIFO commit
+    // pass runs at the end of each tick, applying the staged pop from
+    // coal.evaluate. Mirrors TimingModel::commit_cross_stage_fifos().
     void tick() {
         gather_file.evaluate();
         cache.evaluate();
@@ -85,6 +96,7 @@ struct CoalFixture {
         cache.commit();
         mem_if.commit();
         gather_file.commit();
+        addr_gen_fifo.commit();
     }
 };
 
@@ -100,7 +112,7 @@ TEST_CASE("Coalescing: coalesced load issues one cache request and fills all 32 
     }
     auto input = make_load_dispatch(0, 5, addrs);
     f.ldst.accept(input, 1);
-    settle_ldst(f.ldst);
+    settle_ldst(f.ldst, f.addr_gen_fifo);
     REQUIRE_FALSE(f.ldst.current_fifo_empty());
 
     // Tick 1: coalescing pops the FIFO, claims the gather buffer, and
@@ -140,7 +152,7 @@ TEST_CASE("Coalescing: scattered addresses serialize to 32 cache requests",
     }
     auto input = make_load_dispatch(0, 6, addrs);
     f.ldst.accept(input, 1);
-    settle_ldst(f.ldst);
+    settle_ldst(f.ldst, f.addr_gen_fifo);
     REQUIRE_FALSE(f.ldst.current_fifo_empty());
 
     // Tick 1: coalescing pops FIFO, claims buffer, stages lane-0 cmd.
@@ -185,7 +197,7 @@ TEST_CASE("Coalescing: boundary case — one lane in a different line serializes
 
     auto input = make_load_dispatch(0, 7, addrs);
     f.ldst.accept(input, 1);
-    settle_ldst(f.ldst);
+    settle_ldst(f.ldst, f.addr_gen_fifo);
 
     f.tick();
     REQUIRE(f.stats.serialized_requests == 1);
@@ -216,7 +228,7 @@ TEST_CASE("Coalescing: store serialization walks 32 lanes without gather buffer 
     }
 
     f.ldst.accept(input, 1);
-    settle_ldst(f.ldst);
+    settle_ldst(f.ldst, f.addr_gen_fifo);
 
     // Drive the full memory pipeline (M3 tick helper) until coalescing
     // and cache have drained. The loop runs while any work remains in the

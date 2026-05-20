@@ -63,6 +63,14 @@ private:
     bool execution_units_drained() const;
     void discard_writeback_results();
     bool all_warps_done() const;
+    // Phase 3 (close-the-Reg-family-migration): dedicated ungated commit
+    // pass for cross-stage FIFOs. Sequenced in tick() after the per-stage
+    // gated commit_all() calls. By construction a cross-stage FIFO never
+    // sits inside a stage's gated commit, so the producer's writeback-stall
+    // gating cannot over-freeze the FIFO (which would otherwise block the
+    // consumer's pop). Phases 4-5 add additional cross-stage FIFOs (memory
+    // responses, DRAMSim3 CDC FIFOs) here.
+    void commit_cross_stage_fifos();
     void initialize_trace_writer();
     void record_cycle_trace(bool panic_triggered);
     CycleTraceSnapshot build_cycle_snapshot() const;
@@ -138,6 +146,22 @@ private:
     // fetch.evaluate() does not run in the panic branch, so no same-cycle
     // mask is required.
     Wire<std::array<bool, MAX_WARPS>> deactivation_request_;
+    // Phase 3 (close-the-Reg-family-migration): cross-stage addr-gen FIFO.
+    // The FIFO is a peer of LdStUnit (producer) and CoalescingUnit
+    // (consumer), not a member of either stage. LdStUnit::evaluate() stages
+    // the push gated on !wb_arbiter_->next_writeback_stall() (the literal
+    // simulator translation of the RTL wr_en && !stall AND-gate);
+    // CoalescingUnit::evaluate() stages the pop unconditionally on its pop
+    // decision. The FIFO is committed in a dedicated ungated cross-stage
+    // FIFO commit pass at the bottom of tick() — NEVER enrolled in either
+    // stage's gated commit_all(). On a stalled cycle: producer's pipeline
+    // registers freeze (LdStUnit's commit_all() is gated), the cross-stage
+    // commit pass still runs and applies any staged pop; the held push lands
+    // on the resumed cycle. Borrowed pattern: WarpState[] is owned by
+    // TimingModel and passed by reference. The cross-stage commit pass is
+    // designed to grow in Phases 4-5 (memory cross-stage FIFOs, DRAMSim3 CDC
+    // FIFOs).
+    RegFifo<AddrGenFIFOEntry> addr_gen_fifo_;  // timing-naming-allow: cross-stage FIFO committed by commit_cross_stage_fifos() (dedicated ungated pass, distinct from any per-stage commit_all). The cross-stage role precludes enrollment in a stage's RegisteredStage; the dedicated pass is the lifecycle owner.
     // Construction-time flag pair; set by enable_*_trace() helpers called
     // once at config time and read throughout the tick. Effectively config
     // after construction.
