@@ -630,9 +630,9 @@ body never runs on a stalled cycle and its increments stay safely in
   flow backward (upstream reader). A forward `next_*` read collapses
   pipeline depth and is a hard violation.
 - **New REGISTERED state uses the `reg.h` primitives** (`Reg<T>` /
-  `RegFifo<T>` / `Wire<T>` + `RegisteredStage`); see "State primitives"
-  above. Do not hand-roll a `current_*` / `next_*` field pair — the lint
-  rejects it.
+  `RegFifo<T>` / `PulseReg<T>` / `Wire<T>` + `RegisteredStage`); see
+  "State primitives" above. Do not hand-roll a `current_*` / `next_*`
+  field pair — the lint rejects it.
 - **Pre-evaluate setters that latch live state from another stage**
   (e.g. `set_opcoll_free`, `set_decode_pending_warp`, `set_units_drained`,
   `set_unit_ready_fn`) are forbidden. Expose the signal as a

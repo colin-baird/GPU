@@ -368,3 +368,25 @@ Inventory matches HEAD `6d5be5a`. Ready to dispatch Phase 1.
 - **Carry-over items from consolidation reviews #1 and #2 resolved here:** the Wire-reset convention table is now in `timing_discipline.md`; the setter nullptr-tolerance convention is documented (with the `set_instr_buffer_flush_request` fallback explicitly called out as a known fidelity-risk item); the phase-marker comment density in `timing_model.cpp` was NOT collapsed here — the comments remain in-source as the historical "why this lives here" record. Future churn can prune as natural touch occurs.
 - **Files modified:** `resources/timing_discipline.md`, `resources/cpp_coding_standard.md`, `.claude/CLAUDE.md` (the real path that `AGENTS.md` symlinks to).
 - **Latitude policy invocations:** none. Pure doc-sync.
+
+### Consolidation review #3 (final, opus, Phases 1-8 + sanity sweep)
+
+- **Range:** `6d5be5a..17dac91` (the full migration, 11 commits).
+- **Sign-off status:** SHIP-READY-WITH-FOLLOWUPS. No blockers; two minor follow-up items pre-documented.
+- **Hard requirements (all pass).**
+  - `current_mut(` absent from `sim/src/`, `sim/include/`, `tools/`. Every occurrence is in a `//` comment or docstring (including the canonical "no longer exists" pointer at `reg.h:53`).
+  - `python3 tools/lint_timing_naming.py --skip-cross-module --report-only` ends in `lint_timing_naming: clean`.
+  - `DELIBERATE_NON_REGISTER` allowlist is empty by construction — the strict-compliance taxonomy is structural; no per-field allowlist exists in `tools/lint_timing_naming.py`.
+  - No raw `current_*` / `next_*` field pair in any timing header (lint-enforced).
+  - ctest 31/31 from `/workspace/build` (DRAMSim3 ON, default).
+  - Benchmarks match Phase-5 baseline exactly (matmul 103157, gemv 6771, fla 2634, softmax 2475, embedding 49369, layernorm 9732).
+- **Drift risk (acted on).** `cpp_coding_standard.md`'s "Discipline overview rules" bullet listed only three primitives instead of four; added `PulseReg<T>` so the list matches the State primitives header above. Trivial follow-up cleanup committed alongside this review entry.
+- **Drift risk (deferred follow-ups, both explicitly tracked).**
+  - `FetchStage::apply_redirect`'s nullptr fallback at `fetch_stage.cpp:184-190` still falls back to immediate `instr_buffer.flush()` when the wire is unwired. `timing_discipline.md` § Setter nullptr-tolerance names this as the single live exception to the no-op convention. Code drift is documented, not fixed.
+  - Phase-marker comment density in `timing_model.cpp` (58 markers spanning four prior refactor families). Plan explicitly defers pruning ("the comments remain in-source as the historical record"). Not misleading enough to block.
+- **Dead code:** none. `Reg::initialize()` / `PulseReg::initialize()` retained per the plan's explicit "out of scope, defensible symmetry" carve-out.
+- **API sprawl:** five back-pointer setters with four nullptr-tolerance conventions — Phase 8 consolidated these under a single convention table in `timing_discipline.md`. Setter API itself retained.
+- **Doc accuracy:** verified `timing_discipline.md` and `cpp_coding_standard.md` reflect Phases 1-7 accurately after the one-line PulseReg addition above. Phase 1, Phase 5, Phase 7 findings entries cross-checked against actual commit diffs and match.
+- **`UNTESTED.md`:** no entry needed; behavior-preserving refactor with regression as contract. Phase 5's accepted CDC deltas are end-to-end exercised by every workload benchmark.
+- **README.md / onboarding.md:** no updates needed; no new CLI flags, directories, or user-visible features.
+- **Result:** the close-the-Reg-family migration is ship-ready. Every plain field in `sim/include/gpu_sim/timing/*.h` is now classified by the strict-compliance taxonomy; every cross-stage FIFO uses the TimingModel-owned ownership pattern; every Wire-mediated handshake follows one of the documented reset conventions; the DRAMSim3 backend faithfully presents the one-fabric-cycle CDC traversal latency; the lint mechanically enforces the discipline going forward.
